@@ -42,13 +42,19 @@ INSTALLED_APPS = [
       "rest_framework",
 
        'rest_framework_simplejwt',
+       'rest_framework_simplejwt.token_blacklist',
        'corsheaders',
-      "Users",
+      "users",
       "student",
       "courses",
       "rooms",
       "exams",
-      "Admin"
+      "Admin",
+      "departments",
+      "schedules",
+        "semesters",
+        "django_filters",
+        "enrollments"
 
 ]
 
@@ -59,7 +65,14 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
-    'EXCEPTION_HANDLER': 'Users.utils.custom_exception_handler',
+    'EXCEPTION_HANDLER': 'users.utils.custom_exception_handler',
+    'DEFAULT_FILTER_BACKENDS': [
+        'django_filters.rest_framework.DjangoFilterBackend',
+        'rest_framework.filters.SearchFilter',
+        'rest_framework.filters.OrderingFilter',
+        
+    ],
+    'DEFAULT_ORDERING': ['-id']
 }
 
 MIDDLEWARE = [
@@ -136,7 +149,7 @@ AUTH_PASSWORD_VALIDATORS = [
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
     {
-        'NAME': 'Users.validators.PasswordStrengthValidator',
+        'NAME': 'users.validators.PasswordStrengthValidator',
         'OPTIONS': {
             'min_length': 8,
         }
@@ -173,10 +186,10 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-AUTH_USER_MODEL = 'Users.User'
+AUTH_USER_MODEL = 'users.User'
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=6),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': True,
@@ -197,5 +210,6 @@ SIMPLE_JWT = {
     'TOKEN_TYPE_CLAIM': 'token_type',
 
     'JTI_CLAIM': 'jti',
+    "TOKEN_BLACKLIST_ENABLED": True,
 }
 

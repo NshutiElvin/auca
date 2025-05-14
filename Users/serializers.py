@@ -3,14 +3,19 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .validators import get_password_strength
-
+from rest_framework.permissions import AllowAny
+from departments.models import Department
+from django.db import transaction
+from student.models import Student
+from django.utils.translation import gettext_lazy as _
+from Admin.models import Admin
 User = get_user_model()
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+   
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
-        # Add custom claims
         token['email'] = user.email
         token['role'] = user.role
         return token
@@ -18,10 +23,15 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     password_strength = serializers.SerializerMethodField(read_only=True)
+    reg_no = serializers.CharField(write_only=True, required=False)
+    department = serializers.PrimaryKeyRelatedField(write_only=True, queryset=Department.objects.all(), required=False)
     
     class Meta:
         model = User
-        fields = ('id', 'email', 'first_name', 'last_name', 'password', 'password_strength', 'role')
+        fields = (
+            'id', 'email', 'first_name', 'last_name', 'password', 
+            'password_strength', 'role', 'reg_no', 'department'
+        )
         extra_kwargs = {
             'password': {'write_only': True}
         }
@@ -57,16 +67,46 @@ class UserSerializer(serializers.ModelSerializer):
         return value
     
     def create(self, validated_data):
-        user = User.objects.create_user(**validated_data)
+        role = validated_data.get('role')
+        if role not in ['admin', 'student', 'instructor', 'teacher']:
+            raise serializers.ValidationError("Invalid role. Must be 'admin', 'student', 'instructor', or 'teacher'.")
+
+        reg_no = validated_data.pop('reg_no', None)
+        department = validated_data.pop('department', None)
+
+        with transaction.atomic():
+            user = User.objects.create_user(**validated_data)
+
+            if user.role == 'student':
+                if not reg_no or not department:
+                    raise serializers.ValidationError("reg_no and department are required for students.")
+                try:
+                    Student.objects.create(user=user, reg_no=reg_no, department=department)
+
+                except Exception as e:
+
+                    raise serializers.ValidationError(str(e))
+            elif user.role == 'admin':
+                try:
+                    Admin.objects.create(user=user)
+
+                except Exception as e:
+
+                    raise serializers.ValidationError(str(e))
+
+
         return user
     
     def update(self, instance, validated_data):
+
+       
         password = validated_data.pop('password', None)
         user = super().update(instance, validated_data)
         
         if password:
             user.set_password(password)
             user.save()
+        
         
         return user
 

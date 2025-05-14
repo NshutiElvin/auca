@@ -6,12 +6,42 @@ from django.contrib.auth import get_user_model
 from .serializers import UserSerializer, CustomTokenObtainPairSerializer, PasswordChangeSerializer
 from .permissions import IsAdmin, IsModerator
 from .validators import get_password_strength
-
+from rest_framework.permissions import AllowAny
+from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 User = get_user_model()
+
+class CustomTokenRefreshView(TokenRefreshView):
+    # permission_classes = [permissions.IsAuthenticated]
+    def post(self, request, *args, **kwargs):
+        
+        refresh_token = request.COOKIES.get('refresh_token')
+        if refresh_token is None:
+            return Response({"detail": "Refresh token not found in cookies."}, status=status.HTTP_401_UNAUTHORIZED)
+         
+        request.data['refresh'] = refresh_token
+        return super().post(request, *args, **kwargs)
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
+    permission_classes = [permissions.AllowAny]
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == status.HTTP_200_OK:
+            refresh_token = response.data.get('refresh')
+            response.set_cookie(
+                key='refresh_token',
+                value=refresh_token,
+                httponly=True,
+                secure=True,  
+                samesite='Lax',  
+                max_age=60*60*24   
+            )
+            response.data.pop('refresh', None)
+        return response
 
+ 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
@@ -111,6 +141,7 @@ class UserViewSet(viewsets.ModelViewSet):
             'message': 'Password strength checked successfully'
         })
     
+    
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def change_password(self, request):
         """
@@ -125,3 +156,45 @@ class UserViewSet(viewsets.ModelViewSet):
             'data': {'password_strength': serializer.data.get('password_strength')},
             'message': 'Password changed successfully'
         })
+    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def logout(self, request):
+        try:
+           
+            refresh_token = request.COOKIES.get('refresh_token')
+ 
+            if refresh_token:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+
+            auth_header = request.headers.get('Authorization')
+            if auth_header and auth_header.startswith('Bearer '):
+                access_token_str = auth_header.split(' ')[1]
+                access_token = AccessToken(access_token_str)
+                try:
+                    outstanding_token = OutstandingToken.objects.get(token=access_token_str)
+                    BlacklistedToken.objects.get_or_create(token=outstanding_token)
+                except OutstandingToken.DoesNotExist:
+                    pass
+
+            response = Response({'success': True, 'message': 'Logged out'})
+            response.delete_cookie('refresh_token')
+            return response
+
+        except Exception as e:
+            return Response({'success': False, 'message': str(e)}, status=400)
+        
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
