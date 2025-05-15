@@ -109,15 +109,35 @@ WSGI_APPLICATION = "ExamManagementSystem.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',  
-        'NAME': os.getenv("DATABASE_NAME", default='exam_management'),
-        'USER': os.getenv("DATABASE_USER", default='root'),
-        'PASSWORD': os.getenv("DATABASE_PASSWORD", default='root'),
-        'HOST': os.getenv("DATABASE_HOST", default='localhost'),
-        'PORT': os.getenv("DATABASE_PORT", default='3306'),       
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',  
+#         'NAME': os.getenv("DATABASE_NAME", default='exam_management'),
+#         'USER': os.getenv("DATABASE_USER", default='root'),
+#         'PASSWORD': os.getenv("DATABASE_PASSWORD", default='root'),
+#         'HOST': os.getenv("DATABASE_HOST", default='localhost'),
+#         'PORT': os.getenv("DATABASE_PORT", default='3306'),       
                              
+#     }
+# }
+
+DATABASES = {
+    #   'default': {
+    #     'ENGINE': 'django.db.backends.mysql',  
+    #     'NAME': os.getenv("DATABASE_NAME", default='exam_management'),
+    #     'USER': os.getenv("DATABASE_USER", default='root'),
+    #     'PASSWORD': os.getenv("DATABASE_PASSWORD", default='root'),
+    #     'HOST': os.getenv("DATABASE_HOST", default='localhost'),
+    #     'PORT': os.getenv("DATABASE_PORT", default='3306'),       
+                             
+    # },
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'auca',
+        'USER': 'postgres',
+        'PASSWORD': 'postgres',
+        'HOST': 'localhost',
+        'PORT': '5432',
     }
 }
 

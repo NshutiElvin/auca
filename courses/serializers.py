@@ -39,6 +39,7 @@ class CourseSerializer(serializers.ModelSerializer):
     )
 
     schedules = CourseScheduleSerializer(many=True, read_only=True)
+    students_enrolled = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -48,8 +49,10 @@ class CourseSerializer(serializers.ModelSerializer):
             'department', 'department_id',
             'semester', 'semester_id',
             'prerequisites', 'start_date', 'end_date', 'enrollment_limit',
-            'schedules'
+            'schedules',  'students_enrolled'
         ]
+    def get_students_enrolled(self, obj):
+        return obj.enrollments.filter(status='enrolled').count()
 
 
  

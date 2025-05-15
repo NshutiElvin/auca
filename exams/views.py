@@ -8,6 +8,7 @@ from .serializers import ExamSerializer, StudentExamSerializer
 from django.shortcuts import render
 from schedules.utils import generate_exam_schedule, cancel_exam, reschedule_exam
 from .permissions import IsAdminOrInstructor
+from django.db import transaction
 
 from django.utils.dateparse import parse_date
 class ExamViewSet(viewsets.ModelViewSet):
@@ -56,13 +57,16 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             start_date_str = request.data.get('start_date')
             course_ids = request.data.get('course_ids', None)
+            semesterd=request.data.get('semester', None)
+            # print(semester)
             if start_date_str and "T" in start_date_str:
                 start_date_str = start_date_str.split("T")[0] 
 
             start_date = parse_date(start_date_str) if start_date_str else None
-            course_ids = list(map(int, course_ids)) if course_ids else None
+            # course_ids = list(map(int, course_ids)) if course_ids else None
+            course_ids = Course.objects.filter(semester=semesterd).values_list('id', flat=True)
 
-            exams,_ = generate_exam_schedule(start_date=start_date, course_ids=course_ids)
+            exams,_ = generate_exam_schedule(start_date=start_date, course_ids=course_ids, semester=int(semesterd))
             return Response({
                 'success': True,
                 'message': f'{len(exams)} exams scheduled successfully.',
@@ -132,6 +136,21 @@ class ExamViewSet(viewsets.ModelViewSet):
                 'success': False,
                 'message': f'Error rescheduling exam: {str(e)}'
             }, status=status.HTTP_400_BAD_REQUEST)
+    @action(detail=False, methods=['delete'], url_path='truncate-all', permission_classes=[permissions.IsAuthenticated])
+    def truncate_all(self, request):
+        try:
+            with transaction.atomic():
+                StudentExam.objects.all().delete()
+                Exam.objects.all().delete()
+            return Response({
+                'success': True,
+                'message': 'All exams and student exam assignments have been truncated successfully.'
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'message': f'Error truncating data: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class StudentExamViewSet(viewsets.ModelViewSet):
     queryset = StudentExam.objects.select_related('student', 'exam', 'room').all()
