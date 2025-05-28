@@ -52,7 +52,7 @@ class CourseSerializer(serializers.ModelSerializer):
             'schedules',  'students_enrolled'
         ]
     def get_students_enrolled(self, obj):
-        return obj.enrollments.filter(status='enrolled').count()
+        return obj.enrollments.filter(status='active').count()
 
 
  
