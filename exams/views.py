@@ -50,6 +50,7 @@ class ExamViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         self.perform_destroy(instance)
+        
         return Response({"success": True, "message": "Deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
     
     @action(detail=False, methods=['post'], url_path='generate-exam-schedule')
@@ -67,10 +68,12 @@ class ExamViewSet(viewsets.ModelViewSet):
             course_ids = Course.objects.filter(semester=semesterd).values_list('id', flat=True)
 
             exams,_ = generate_exam_schedule(start_date=start_date, course_ids=course_ids, semester=int(semesterd))
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
             return Response({
                 'success': True,
                 'message': f'{len(exams)} exams scheduled successfully.',
-                'data': [{'id': e.id, 'course': e.course.code, 'date': e.date} for e in exams]
+                "data": serializer.data
             })
         except Exception as e:
             return Response({
@@ -104,8 +107,7 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             exam_id = request.data.get('exam_id')
             new_date_str = request.data.get('new_date')
-            new_start_time = request.data.get('new_start_time', None)
-            new_end_time = request.data.get('new_end_time', None)
+            slot= request.data.get('slot', None)
 
             if not (exam_id and new_date_str):
                 return Response({
@@ -117,19 +119,14 @@ class ExamViewSet(viewsets.ModelViewSet):
             updated_exam = reschedule_exam(
                 exam_id=exam_id,
                 new_date=new_date,
-                new_start_time=new_start_time,
-                new_end_time=new_end_time
+                slot=slot
             )
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
             return Response({
                 'success': True,
                 'message': f'Exam {exam_id} rescheduled successfully',
-                'data': {
-                    'id': updated_exam.id,
-                    'course': updated_exam.course.code,
-                    'date': updated_exam.date,
-                    'start_time': updated_exam.start_time,
-                    'end_time': updated_exam.end_time
-                }
+                "data": serializer.data
             })
         except Exception as e:
             return Response({
