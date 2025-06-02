@@ -9,7 +9,7 @@ from courses.models import Course
 from exams.models import Exam, StudentExam
 from enrollments.models import Enrollment
 from rooms.models import Room
-
+from django.db.models import Count
 SLOTS = [
     ('Morning', time(8, 0), time(11, 0)),
     ('Afternoon', time(13, 0), time(16, 0)),
@@ -69,9 +69,12 @@ def find_compatible_courses(course_conflict_matrix):
     for course1, course2 in course_conflict_matrix.keys():
         all_courses.add(course1)
         all_courses.add(course2)
+    enrolled_courses = Course.objects.annotate(
+         enrollment_count=Count('enrollments')
+        ).filter(enrollment_count__gt=0)
     
     # Add any courses that don't appear in the conflict matrix
-    for course in Course.objects.values_list('id', flat=True):
+    for course in enrolled_courses.values_list('id', flat=True):
         all_courses.add(course)
     
     # Build adjacency list for course compatibility graph
@@ -292,142 +295,65 @@ def generate_exam_schedule(start_date=None, course_ids=None, semester=None):
             
             unaccommodated = allocate_shared_rooms(pair_exams)
             unaccommodated_students.extend(unaccommodated)
-    
+    print(unaccommodated_students)
     return exams_created, unaccommodated_students
 
 
 
 def allocate_shared_rooms(exams):
-    """
-    Allocate students to shared rooms for the given exams
-    Each room should accommodate students from multiple exams
-    Returns a list of students who couldn't be accommodated
-    """
     if not exams:
         return []
         
-    if len(exams) == 1:
-        return allocate_single_exam_rooms(exams[0])
-    
-    # Get rooms ordered by capacity
     rooms = list(Room.objects.order_by('-capacity'))
-    
     if not rooms:
         raise Exception("No rooms available for allocation.")
     
-    # Create student exam records and count students by course
-    student_exams_by_course = {}
-    students_count_by_course = {}
-    
+    students_by_exam = {}
     for exam in exams:
-        enrolled_students = Enrollment.objects.filter(course=exam.course).select_related('student')
-        
-        student_exams = [
-            StudentExam(student=e.student, exam=exam) for e in enrolled_students
-        ]
-        StudentExam.objects.bulk_create(student_exams)
-        
-        student_exam_qs = StudentExam.objects.filter(exam=exam).select_related('student')
-        student_exams_by_course[exam.id] = list(student_exam_qs)
-        students_count_by_course[exam.id] = len(student_exams_by_course[exam.id])
+        enrolled_students = list(Enrollment.objects.filter(course=exam.course).select_related('student'))
+        students_by_exam[exam.id] = enrolled_students
     
-    # Calculate total students and capacity
-    total_students = sum(students_count_by_course.values())
-    total_capacity = sum(r.capacity for r in rooms)
+    total_students = sum(len(students) for students in students_by_exam.values())
+    total_capacity = sum(room.capacity for room in rooms)
     
     unaccommodated_students = []
     
-    # Handle case where we don't have enough room capacity
     if total_students > total_capacity:
-        accommodated_count = total_capacity
-        
-        # Distribute available capacity proportionally
-        accommodated_by_course = {}
-        for exam_id, count in students_count_by_course.items():
-            proportion = count / total_students
-            accommodated_by_course[exam_id] = int(proportion * accommodated_count)
-        
-        # Distribute any remaining seats
-        total_accommodated = sum(accommodated_by_course.values())
-        if total_accommodated < accommodated_count:
-            remaining = accommodated_count - total_accommodated
-            for exam_id in sorted(students_count_by_course.keys()):
-                if remaining <= 0:
-                    break
-                accommodated_by_course[exam_id] += 1
-                remaining -= 1
-        
-        # Track unaccommodated students
-        for exam_id, student_exams in student_exams_by_course.items():
-            accommodated = accommodated_by_course[exam_id]
-            if accommodated < len(student_exams):
-                unaccommodated = student_exams[accommodated:]
-                unaccommodated_students.extend([se.student for se in unaccommodated])
-                student_exams_by_course[exam_id] = student_exams[:accommodated]
+        for exam_id, students in students_by_exam.items():
+            proportion = len(students) / total_students
+            max_accommodated = int(proportion * total_capacity)
+            if len(students) > max_accommodated:
+                unaccommodated_students.extend([s.student for s in students[max_accommodated:]])
+                students_by_exam[exam_id] = students[:max_accommodated]
     
-    # Allocate students to rooms
-    remaining_by_course = {exam_id: student_exams.copy() 
-                           for exam_id, student_exams in student_exams_by_course.items()}
+    all_student_exams = []
+    for exam in exams:
+        for enrollment in students_by_exam[exam.id]:
+            student_exam = StudentExam(student=enrollment.student, exam=exam)
+            all_student_exams.append(student_exam)
     
-    # Anti-cheating: Shuffle students to make it harder for friends to sit together
-    for exam_id in remaining_by_course:
-        random.shuffle(remaining_by_course[exam_id])
+    random.shuffle(all_student_exams)
     
-    # Distribute students across rooms
-    for room in rooms:
-        students_per_course = {}
-        remaining_capacity = room.capacity
+    current_room_index = 0
+    current_room_capacity = rooms[0].capacity if rooms else 0
+    
+    for student_exam in all_student_exams:
+        if current_room_capacity <= 0:
+            current_room_index += 1
+            if current_room_index >= len(rooms):
+                unaccommodated_students.append(student_exam.student)
+                continue
+            current_room_capacity = rooms[current_room_index].capacity
         
-        if len(exams) == 1:
-            # Single exam case - use entire room capacity
-            exam_id = exams[0].id
-            students_per_course[exam_id] = min(len(remaining_by_course[exam_id]), remaining_capacity)
-        else:
-            # Multiple exams - try to allocate room capacity fairly
-            # Calculate seats per exam course based on proportional allocation
-            course_capacity = room.capacity // len(exams)
-            if course_capacity == 0:  # Room too small to fit all exam types
-                course_capacity = 1  # Minimum allocation
-            
-            # First pass: allocate capacity to each exam with minimum of course_capacity
-            for exam_id, remaining in remaining_by_course.items():
-                students_per_course[exam_id] = min(len(remaining), course_capacity)
-                remaining_capacity -= students_per_course[exam_id]
-            
-            # Second pass: distribute any remaining capacity
-            if remaining_capacity > 0:
-                # Sort by most remaining students
-                sorted_exams = sorted(
-                    remaining_by_course.items(), 
-                    key=lambda x: len(x[1]) - students_per_course[x[0]], 
-                    reverse=True
-                )
-                
-                for exam_id, remaining in sorted_exams:
-                    if remaining_capacity <= 0:
-                        break
-                        
-                    if len(remaining) > students_per_course[exam_id]:
-                        additional = min(remaining_capacity, len(remaining) - students_per_course[exam_id])
-                        students_per_course[exam_id] += additional
-                        remaining_capacity -= additional
-        
-        # Assign students to this room
-        for exam_id, count in students_per_course.items():
-            if count > 0:
-                students_to_assign = remaining_by_course[exam_id][:count]
-                for se in students_to_assign:
-                    se.room = room
-                    se.save(update_fields=['room'])
-                
-                remaining_by_course[exam_id] = remaining_by_course[exam_id][count:]
+        student_exam.room = rooms[current_room_index]
+        current_room_capacity -= 1
     
-    # Track any students who still couldn't be assigned to rooms
-    for exam_id, remaining in remaining_by_course.items():
-        if remaining:
-            unaccommodated_students.extend([se.student for se in remaining])
+    StudentExam.objects.bulk_create(all_student_exams)
     
     return unaccommodated_students
+
+
+ 
 
 def allocate_single_exam_rooms(exam):
     """

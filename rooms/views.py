@@ -59,7 +59,7 @@ class RoomViewSet(viewsets.ModelViewSet):
             StudentExam.objects
             .filter(room__isnull=False)
             .values(
-                'room__id', 'room__name',
+                'room__id', 'room__name',"room__capacity",
                 'exam__id', 'exam__course__code','exam__course__title',
                 'exam__date', 'exam__start_time', 'exam__end_time'
             )
@@ -73,6 +73,7 @@ class RoomViewSet(viewsets.ModelViewSet):
         for item in student_exams:
             room_id = item['room__id']
             room_name = item['room__name']
+            room_capacity = item['room__capacity']  
             exam_date = item['exam__date']
             start_time = item['exam__start_time']
             end_time = item['exam__end_time']
@@ -82,6 +83,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 rooms[room_id] = {
                     "room_id": room_id,
                     "room_name": room_name,
+                    "room_capacity": room_capacity,
                     "schedules": []
                 }
 

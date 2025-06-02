@@ -9,6 +9,8 @@ from django.shortcuts import render
 from schedules.utils import generate_exam_schedule, cancel_exam, reschedule_exam
 from .permissions import IsAdminOrInstructor
 from django.db import transaction
+from django.db.models import Count
+from enrollments.models import Enrollment
 
 from django.utils.dateparse import parse_date
 class ExamViewSet(viewsets.ModelViewSet):
@@ -65,7 +67,15 @@ class ExamViewSet(viewsets.ModelViewSet):
 
             start_date = parse_date(start_date_str) if start_date_str else None
             # course_ids = list(map(int, course_ids)) if course_ids else None
-            course_ids = Course.objects.filter(semester=semesterd).values_list('id', flat=True)
+            
+            course_ids = (
+            Enrollment.objects
+            .filter(course__semester=semesterd)
+            .values('course_id')                      # Get course IDs
+            .annotate(enrollment_count=Count('id'))   # Count enrollments per course
+            .filter(enrollment_count__gt=1)           # Keep those with >1 enrollment
+            .values_list('course_id', flat=True)      # Extract course IDs as list
+        )
 
             exams,_ = generate_exam_schedule(start_date=start_date, course_ids=course_ids, semester=int(semesterd))
             queryset = self.filter_queryset(self.get_queryset())
