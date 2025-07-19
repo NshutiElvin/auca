@@ -82,7 +82,7 @@ class CourseScheduleViewSet(viewsets.ModelViewSet):
     def generate_slots(self, request, *args, **kwargs):
         try:
 
-            date="2025-07-01T22:00:00.000Z"
+            date="2025-07-17T22:00:00.000Z"
             if date and "T" in date:
                 date = date.split("T")[0] 
 
@@ -92,7 +92,7 @@ class CourseScheduleViewSet(viewsets.ModelViewSet):
             if end_date and "T" in end_date:
                 end_date = end_date.split("T")[0] 
 
-            date = parse_date("2025-07-01") 
+            date = parse_date("2025-07-17") 
             end_date = parse_date("2025-07-30") 
 
             slots=get_exam_slots(date,end_date, max_slots=40)
