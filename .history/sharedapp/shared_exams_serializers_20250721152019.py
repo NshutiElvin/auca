@@ -1,0 +1,24 @@
+from rest_framework import serializers
+from courses.models import CourseGroup, Course
+from courses.serializers import CourseSerializer
+from exams.models import UnscheduledExam
+from sharedapp.models import UnscheduledExamGroup
+
+class UnscheduledExamSerializer(serializers.ModelSerializer):
+    group_id= serializers.PrimaryKeyRelatedField(
+          queryset=UnscheduledExamGroup.objects.all(), source='groups'
+
+    )
+    course= CourseSerializer(read_only=True)
+    course_id= serializers.PrimaryKeyRelatedField(
+          queryset=Course.objects.all(), source='course', write_only=True
+
+    )
+
+    class Meta:
+        model = UnscheduledExam
+        fields = [
+            "id","course", 
+              "course_id", "group_id", "created_at", "updated_at"
+        ]
+ 
