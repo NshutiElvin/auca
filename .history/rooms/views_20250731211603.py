@@ -201,7 +201,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                             "success": False,
                             "error_code": "ROOM_CAPACITY_EXCEEDED",
                             "message": (
-                                f"Room '{room.name}' cannot accommodate this student(s). "
+                                f"Room '{room.name}' cannot accommodate this course group. "
                                 f"Capacity ({room.capacity}) is insufficient for "
                                 f"{total_required_capacity} students (including {current_room_occupancy} already assigned)."
                             ),
@@ -284,99 +284,66 @@ class RoomViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["POST"], url_path="verify_room_change")
     def verify_room_change(self, request):
         try:
+
             with transaction.atomic():
-                room_data = request.data.get("room")
+                print(request.data)
+                room = request.data.get("room")
                 course_group = request.data.get("courseGroup")
-
-                # ✅ Validate required fields
-                if not room_data or not course_group:
+                if not room or not course_group:
                     return Response(
                         {
                             "success": False,
-                            "error_code": "MISSING_FIELDS",
-                            "message": "Both 'room' and 'courseGroup' fields are required.",
+                            "message": "Room and Course Group are required",
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-
-                # ✅ Fetch room and course details
-                exam = Exam.objects.filter(id=course_group.get("courseId")).first()
-                room = Room.objects.filter(name=room_data.get("roomName")).first()
-                existing_room = Room.objects.filter(name=course_group.get("roomName")).first()
-
-                if not exam or not room or not existing_room:
+                exam = Exam.objects.filter(id=course_group["courseId"]).first()
+                room = Room.objects.filter(name=room["roomName"]).first()
+                existingRoom = Room.objects.filter(
+                    name=course_group["roomName"]
+                ).first()
+                if not exam or not room or not existingRoom:
+                    print(exam, room, existingRoom)
                     return Response(
                         {
                             "success": False,
-                            "error_code": "INVALID_DATA",
-                            "message": (
-                                f"Invalid data provided. "
-                                f"Exam exists: {bool(exam)}, "
-                                f"New room exists: {bool(room)}, "
-                                f"Current room exists: {bool(existing_room)}."
-                            ),
+                            "message": "Invalid Room, existing romm and Course Group",
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-
-                # ✅ Get all student exams currently assigned to the existing room
-                student_exams = StudentExam.objects.filter(exam=exam, room=existing_room)
-
+                student_exams = StudentExam.objects.filter(exam=exam, room=existingRoom)
                 if not student_exams.exists():
                     return Response(
                         {
                             "success": False,
-                            "error_code": "NO_EXAMS_FOUND",
-                            "message": (
-                                f"No students found assigned to exam '{exam.course.name}' "
-                                f"in room '{existing_room.name}'."
-                            ),
+                            "message": "No student exams found for the specified exam and room",
                         },
                         status=status.HTTP_404_NOT_FOUND,
                     )
-
-                # ✅ Calculate current occupancy in the target room
-                current_room_occupancy = StudentExam.objects.filter(
-                    room=room,
-                    exam__date=exam.date,
-                    exam__start_time=exam.start_time
-                ).count()
-
-                total_required_capacity = student_exams.count() + current_room_occupancy
-
-                if room.capacity < total_required_capacity:
+                current_room_occuapncy= StudentExam.objects.filter(room=room, exam__date= exam.date, exam__start_time= exam.start_time).count()
+                if room.capacity < student_exams.count() + current_room_occuapncy:
                     return Response(
-                        {
-                            "success": False,
-                            "error_code": "ROOM_CAPACITY_EXCEEDED",
-                            "message": (
-                                f"Room '{room.name}' cannot accommodate this course group. "
-                                f"Capacity ({room.capacity}) is insufficient for "
-                                f"{total_required_capacity} students "
-                                f"(including {current_room_occupancy} already assigned)."
-                            ),
-                        },
-                        status=status.HTTP_412_PRECONDITION_FAILED,
-                    )
-
-                return Response(
-                    {
-                        "success": True,
-                        "message": f"Room '{room.name}' is available and can accommodate this course group.",
-                    },
+                    {"success": False, "message": f"Room {room.name} can't accommodate this exam because of limited capacity"},
+                    status=status.HTTP_412_PRECONDITION_FAILED,
+                )
+                else:
+                      return Response(
+                    {"success": True, "message": f"Room {room.name} can accomodate this course"},
                     status=status.HTTP_200_OK,
                 )
 
+
+          
+                 
         except Exception as e:
+            print(e)
             return Response(
                 {
                     "success": False,
-                    "error_code": "INTERNAL_ERROR",
-                    "message": f"An unexpected error occurred while verifying room change: {str(e)}",
+                    "message": "An error occurred while changing room occupancy",
                 },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status=status.HTTP_400_BAD_REQUEST,
             )
-
 
     @action(detail=False, methods=["PATCH"], url_path="change_room")
     def change_room(self, request):

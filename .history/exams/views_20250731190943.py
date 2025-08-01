@@ -532,24 +532,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                             student_id=student_id, exam=exam
                         )
                         student_exam.save()
-                    existing_student_exams=  StudentExam.objects.filter(
-                            exam__date=date_formatted,
-                            exam__start_time=start_time,
-                            exam__end_time=end_time,
-                        ).select_related(
-                            'exam',
-                            'exam__group__course__semester',
-                            'student'
-                        ).order_by('exam__date', 'exam__start_time')
-                    student_exams = StudentExam.objects.filter(
-                        student_id__in=student_ids, exam=exam
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time')
-                    student_exams=student_exams.union( existing_student_exams)
-                    allocate_shared_rooms_updated(student_exams)
+                    # deleting scheduled from unscheduled exam
 
                 except Exception as e:
                     raise Exception(str(e))
@@ -592,6 +575,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 weekday = date_formatted.strftime("%A")
                 exam = new_group_to_add.get("exam")
                 exam = Exam.objects.get(id=exam.get("id"))
+                print(exam)
 
                 if weekday == "Friday" and existing_slot.name.lower() == "evening":
                     raise ValueError("We can't schedule exam on Friday evening.")
@@ -613,27 +597,6 @@ class ExamViewSet(viewsets.ModelViewSet):
                     exam.end_time = end_time
                     exam.date = date_formatted
                     exam.save()
-                    student_ids = Enrollment.objects.filter(
-                        course=exam.group.course, group=exam.group
-                    ).values_list("student_id", flat=True)
-                    existing_student_exams=  StudentExam.objects.filter(
-                        exam__date=date_formatted,
-                        exam__start_time=start_time,
-                        exam__end_time=end_time,
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time')
-                    student_exams = StudentExam.objects.filter(
-                        student_id__in=student_ids, exam=exam
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time')
-                    student_exams=student_exams.union( existing_student_exams)
-                    allocate_shared_rooms_updated(student_exams)
 
                 except Exception as e:
                     raise Exception(str(e))
@@ -678,29 +641,6 @@ class ExamViewSet(viewsets.ModelViewSet):
                 )
                 unscheduled.groups.add(unscheduled_group)
                 unscheduled.save()
-                student_ids = Enrollment.objects.filter(
-                        course=course, group=exam.group
-                    ).values_list("student_id", flat=True)
-               
-                
-                StudentExam.objects.filter(
-                        student_id__in=student_ids, exam=exam
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time').delete()
-                existing_student_exams=  StudentExam.objects.filter(
-                        exam__date=date_formatted,
-                        exam__start_time=exam.start_time,
-                        exam__end_time=exam.end_time,
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time')
-                
-                allocate_shared_rooms_updated(existing_student_exams)
                 exam.delete()
                 exams = UnscheduledExam.objects.all()
                 serializer = UnscheduledExamSerializer(exams, many=True)

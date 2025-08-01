@@ -230,15 +230,6 @@ def check_rooms_availability_for_slots(n_students):
     
     return True
 
-
-def get_occupied_seats_by_time_slot(date, start_time):
-    
-    occupied_count = StudentExam.objects.filter(
-        exam__date=date,
-        exam__start_time=start_time,
-    ).count()
-    
-    return occupied_count
  
 
 
@@ -284,15 +275,11 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
                 conflicts.append(f"Student {student} already has an exam of {exam.group.course.title} in the {slot} slot on {check_date}")
         
         return conflicts, len(slot_students)
- 
-                                      
-
 
     # Function to evaluate a date and slot combination
     def evaluate_slot(check_date, slot, is_suggested=False):
         conflicts, student_count = check_slot_conflicts(check_date, slot)
         total_students = len(enrolled_students_new_group) + student_count
-      
         
         if conflicts:
             conflict_msg = f"{check_date} {slot} slot has conflicts"
@@ -782,158 +769,6 @@ def generate_exam_schedule(start_date=None, end_date=None, course_ids=None, seme
         print(f"Error generating schedule: {str(e)}")
         logger.error(f"Error generating schedule: {str(e)}")
         return [], f"Error generating schedule: {str(e)}", []
-    
-
-
-def allocate_shared_rooms_updated(student_exams):
-    # Get all unassigned student exams with related data
-    print(student_exams)
- 
-    
-    if not student_exams:
-        return []
-
-    rooms = list(Room.objects.order_by('-capacity'))
-    if not rooms:
-        raise Exception("No rooms available for allocation.")
-    
-    # Define time slots
-    SLOTS = [
-        ('Morning', time(8, 0), time(11, 0)),
-        ('Afternoon', time(13, 0), time(16, 0)),
-        ('Evening', time(18, 0), time(20, 0)),
-    ]
-
-    with transaction.atomic():
-        schedule = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-        unaccommodated = []
-
-        # Organize students by date and slot
-        date_slot_students = defaultdict(lambda: defaultdict(list))
-        for se in student_exams:
-            for slot_name, start, end in SLOTS:
-                if se.exam.start_time == start and se.exam.end_time == end:
-                    date_slot_students[se.exam.date][slot_name].append(se)
-                    break
-
-        # Process each date and slot
-        for date, slots in date_slot_students.items():
-            for slot_name, slot_start, slot_end in SLOTS:
-                slot_students = slots.get(slot_name, [])
-                if not slot_students:
-                    continue
-
-                # Group by exam
-                exams = defaultdict(list)
-                for se in slot_students:
-                    exams[se.exam].append(se)
-
-                # Sort exams (largest first for pairing)
-                sorted_exams = sorted(exams.items(), key=lambda x: -len(x[1]))
-
-                room_index = 0
-                remaining_students = slot_students.copy()
-
-                while remaining_students and room_index < len(rooms):
-                    room = rooms[room_index]
-                    room_index += 1
-
-                    if room.id in schedule[date][slot_name]:
-                        continue
-
-                    available = room.capacity
-                    if available <= 0:
-                        continue
-
-                    # --- Try to find the best pair ---
-                    best_pair = None
-                    max_fill = 0
-
-                    for i in range(len(sorted_exams)):
-                        exam1, students1 = sorted_exams[i]
-                        if not students1:
-                            continue
-                        for j in range(i+1, len(sorted_exams)):
-                            exam2, students2 = sorted_exams[j]
-                            if not students2:
-                                continue
-
-                            sem1 = int(exam1.group.course.semester.name.split()[1])
-                            sem2 = int(exam2.group.course.semester.name.split()[1])
-
-                            if abs(sem1 - sem2) > 1:
-                                # Calculate split sizes (equal proportioning)
-                                max_each = available // 2
-                                size1 = min(len(students1), max_each)
-                                size2 = min(len(students2), max_each)
-                                total_fill = size1 + size2
-                                if total_fill > max_fill:
-                                    best_pair = (exam1, exam2, size1, size2)
-                                    max_fill = total_fill
-
-                    if best_pair:
-                        exam1, exam2, size1, size2 = best_pair
-                        assigned = []
-
-                        # Assign proportionally
-                        for exam, size in [(exam1, size1), (exam2, size2)]:
-                            exam_students = [se for se in remaining_students if se.exam == exam][:size]
-                            assigned.extend(exam_students)
-                            for se in exam_students:
-                                remaining_students.remove(se)
-                                exams[exam].remove(se)
-
-                        schedule[date][slot_name][room.id].extend(assigned)
-
-                    else:
-                        # --- No pair found: assign smallest course alone ---
-                        smallest_exam, students = min(
-                            ((e, s) for e, s in sorted_exams if s),
-                            key=lambda x: len(x[1]),
-                            default=(None, None)
-                        )
-                        if smallest_exam:
-                            to_assign = students[:available]
-                            schedule[date][slot_name][room.id].extend(to_assign)
-                            for se in to_assign:
-                                remaining_students.remove(se)
-                                exams[smallest_exam].remove(se)
-
-                # Track unassigned students
-                unaccommodated.extend([se.student for se in remaining_students])
-
-        # Save all assignments to DB
-        for date, slots in schedule.items():
-            for slot_name, room_assignments in slots.items():
-                for room_id, student_exams in room_assignments.items():
-                    StudentExam.objects.filter(
-                        id__in=[se.id for se in student_exams]
-                    ).update(room_id=room_id)
-
-        # Final attempt for leftover students
-        if unaccommodated:
-            remaining_exams = StudentExam.objects.filter(
-                student__in=unaccommodated,
-                room__isnull=True
-            ).select_related('exam')
-
-            for se in remaining_exams:
-                date = se.exam.date
-                for slot_name, start, end in SLOTS:
-                    if se.exam.start_time == start and se.exam.end_time == end:
-                        for room in rooms:
-                            current = len(schedule[date][slot_name].get(room.id, []))
-                            if current < room.capacity:
-                                se.room = room
-                                se.save()
-                                try:
-                                    unaccommodated.remove(se.student)
-                                except ValueError:
-                                    pass
-                                schedule[date][slot_name][room.id].append(se)
-                                break
-
-    return unaccommodated
 def allocate_shared_rooms():
     # Get all unassigned student exams with related data
     student_exams = StudentExam.objects.filter(

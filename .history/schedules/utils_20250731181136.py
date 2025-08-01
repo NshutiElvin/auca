@@ -787,7 +787,6 @@ def generate_exam_schedule(start_date=None, end_date=None, course_ids=None, seme
 
 def allocate_shared_rooms_updated(student_exams):
     # Get all unassigned student exams with related data
-    print(student_exams)
  
     
     if not student_exams:

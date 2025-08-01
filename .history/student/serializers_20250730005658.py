@@ -10,7 +10,7 @@ from .models import Student
 
 User = get_user_model()
 class StudentSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
+    user = serializers.StringRelatedField(read_only=True)
     department=DepartmentSerializer(read_only=True)
     department_id= serializers.PrimaryKeyRelatedField(
           queryset=Department.objects.all(), source='department', write_only=True

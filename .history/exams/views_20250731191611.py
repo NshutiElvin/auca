@@ -678,29 +678,6 @@ class ExamViewSet(viewsets.ModelViewSet):
                 )
                 unscheduled.groups.add(unscheduled_group)
                 unscheduled.save()
-                student_ids = Enrollment.objects.filter(
-                        course=course, group=exam.group
-                    ).values_list("student_id", flat=True)
-               
-                
-                StudentExam.objects.filter(
-                        student_id__in=student_ids, exam=exam
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time').delete()
-                existing_student_exams=  StudentExam.objects.filter(
-                        exam__date=date_formatted,
-                        exam__start_time=exam.start_time,
-                        exam__end_time=exam.end_time,
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time')
-                
-                allocate_shared_rooms_updated(existing_student_exams)
                 exam.delete()
                 exams = UnscheduledExam.objects.all()
                 serializer = UnscheduledExamSerializer(exams, many=True)
