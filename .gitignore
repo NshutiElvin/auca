@@ -11,7 +11,8 @@ __pycache__/
 
 # Environment variables
 .env
-
+.history
+.history/
 # Virtual environment
 venv/
 env/
