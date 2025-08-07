@@ -28,7 +28,9 @@ from django.utils.dateparse import parse_date
 from django.conf import settings
 import json
 from .utils import decrypt_message
-
+from pytz import timezone as pytz_timezone
+from django.utils import timezone
+from datetime import timedelta
 class ExamViewSet(viewsets.ModelViewSet):
     queryset = (
         Exam.objects.select_related("group", "room")
@@ -882,6 +884,39 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                 "message": "Fetched successfully",
             }
         )
+    
+    @action(detail=False, methods=["get"], url_path="time")
+    def get_exam_qcode_expiration_time(self, request, *args, **kwargs):
+        try:
+
+            tz =  pytz_timezone(settings.TIME_ZONE )
+            now = timezone.now().astimezone(tz)
+            expiration_time = now + timedelta(minutes=settings.QRCODE_LIFETIME)
+            
+            
+           
+            return Response(
+                {
+                    "success": True,
+                    "time":expiration_time
+                   
+                },
+                status=200,
+            )
+       
+
+        
+       
+        except Exception as e:
+            print(e)
+            return Response(
+                {
+                    "success": False,
+                    "message": f"An error occurred: {str(e)}",
+                },
+                status=500,
+            )
+        
     @action(detail=False, methods=["post"], url_path="verify")
     def verify(self, request, *args, **kwargs):
         try:
@@ -889,9 +924,25 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             data = request.data
             
             encryptedData= data.get("encryptedData")
+           
             try:
                 decrypted_data= decrypt_message(encryptedData, settings.ENCRYPTION_KEY)
                 data= json.loads(decrypted_data)
+                tz =  pytz_timezone(settings.TIME_ZONE )
+                now = timezone.now().astimezone(tz)
+                qr_expiration_time_str=data.get("expirationTime")
+                expiration_time = timezone.datetime.fromisoformat(qr_expiration_time_str)
+                is_expired = now > expiration_time
+                if is_expired:
+                    return Response(
+                    {
+                        "success": False,
+                        "message": "QR Code expired",
+                    },
+                    status=400,
+                )
+
+
             except:
                  return Response(
                 {

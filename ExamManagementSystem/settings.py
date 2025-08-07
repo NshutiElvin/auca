@@ -76,7 +76,7 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
         
     ],
-    'DEFAULT_ORDERING': ['-id']
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
 }
 
 MIDDLEWARE = [
@@ -269,3 +269,4 @@ CHANNEL_LAYERS = {
 
 JWT_SIGNING_KEY=  os.getenv('SIGNING_KEY', default='django-in secure-!@#4$%^&*()_+')
 ENCRYPTION_KEY= "zi04hD8XCSjoaK50qPhGUMfFJ62ixG6YVpdIzm8Z7K0"
+QRCODE_LIFETIME=5
