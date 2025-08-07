@@ -50,16 +50,13 @@ class ExamViewSet(viewsets.ModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
       
         serializer = self.get_serializer(queryset, many=True)
-        return Response(
-            {
+        return  Response(    {
                 "success": True,
                 "data": serializer.data,
                 "masterTimetable": MasterTimetableExam.objects.filter(exam=self.queryset[0]).first().master_timetable.id,
                 "status": MasterTimetableExam.objects.filter(exam=self.queryset[0]).first().master_timetable.status,
                 "message": "Fetched successfully",
-            }
-        )
-
+            })
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
@@ -805,14 +802,22 @@ class StudentExamViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(
-            {
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response({
                 "success": True,
                 "data": serializer.data,
                 "message": "Fetched successfully",
-            }
-        )
+            })
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            "success": True,
+            "data": serializer.data,
+            "message": "Fetched successfully",
+        })
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -1022,3 +1027,8 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                 },
                 status=500,
             )
+
+
+
+
+import random
