@@ -24,7 +24,7 @@ class ExamSerializer(serializers.ModelSerializer):
     class Meta:
         model = Exam
         fields = [
-            "id", "group", "start_time", "end_time","date" ,
+            "id", "group", "start_time", "end_time","date", "slot_name" ,
             "room","status", "room_id", "group_id"
         ]
 

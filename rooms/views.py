@@ -5,6 +5,8 @@ from django.shortcuts import render
 from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 
+from courses.serializers import CourseSerializer
+from enrollments.models import Enrollment
 from exams.serializers import StudentExamSerializer
 from schedules.utils import get_occupied_seats_by_time_slot
 from .models import Room, RoomAllocationSwitch
@@ -514,7 +516,7 @@ class RoomViewSet(viewsets.ModelViewSet):
     @permission_classes([])
     def verify_room(self, request, *args, **kwargs):
         try:
-            tz =  pytz_timezone(settings.TIME_ZONE )
+            tz = pytz_timezone(settings.TIME_ZONE)
             now = timezone.now().astimezone(tz)
             today = now.date()
             regNumber = request.data.get("regNumber")
@@ -523,14 +525,16 @@ class RoomViewSet(viewsets.ModelViewSet):
                 exam__date=today,
                 exam__status__in=["READY", "ONGOING"],
             )
-            serializer= StudentExamSerializer(student_exam)
-            roomSerializer=RoomSerializer(student_exam.room)
+            serializer = StudentExamSerializer(student_exam)
+            roomSerializer = RoomSerializer(student_exam.room)
 
             return Response(
-                {"success": True, 
-                 "exam":serializer.data,
-                 "room":roomSerializer.data,
-                 "message": "Your exam found"},
+                {
+                    "success": True,
+                    "exam": serializer.data,
+                    "room": roomSerializer.data,
+                    "message": "Your exam found",
+                },
                 status=status.HTTP_200_OK,
             )
 
@@ -538,11 +542,242 @@ class RoomViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     "success": False,
-                "message":  "Your exam information will be available soon. Please check again later.",
-
+                    "message": "Your exam information will be available soon. Please check again later.",
                 },
                 status=status.HTTP_200_OK,
             )
+
+        except:
+            return Response(
+                {
+                    "success": False,
+                    "message": "An error occurred while changing room occupancy",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=False, methods=["post"], url_path="student_check")
+    @permission_classes([])
+    def verify_room(self, request, *args, **kwargs):
+        try:
+            tz = pytz_timezone(settings.TIME_ZONE)
+            now = timezone.now().astimezone(tz)
+            today = now.date()
+            regNumber = request.data.get("regNumber")
+            student_exam = StudentExam.objects.get(
+                student__reg_no=regNumber,
+                exam__date=today,
+                exam__status__in=["READY", "ONGOING"],
+            )
+            serializer = StudentExamSerializer(student_exam)
+            roomSerializer = RoomSerializer(student_exam.room)
+
+            return Response(
+                {
+                    "success": True,
+                    "exam": serializer.data,
+                    "room": roomSerializer.data,
+                    "message": "Your exam found",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except StudentExam.DoesNotExist:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Your exam information will be available soon. Please check again later.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except:
+            return Response(
+                {
+                    "success": False,
+                    "message": "An error occurred while changing room occupancy",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=False, methods=["post"], url_path="instructor_check_qr")
+    @permission_classes([])
+    def instructor_room_qr(self, request, *args, **kwargs):
+        try:
+           
+            room = request.data.get("name")
+            tz = pytz_timezone(settings.TIME_ZONE)
+            now = timezone.now().astimezone(tz)
+            today = now.date()
+            examRoom = Room.objects.filter(name=room).first()
+            student_exams = StudentExam.objects.filter(
+                exam__date=today,
+                room=examRoom,
+                exam__status__in=["READY", "ONGOING"],
+            )
+            students_info = []
+            for student_exam in student_exams:
+                enrollments = Enrollment.objects.filter(student_id=student_exam.student.id)
+                total_to_pay = sum(
+                    enrollment.amount_to_pay for enrollment in enrollments
+                )
+                total_paid = sum(enrollment.amount_paid for enrollment in enrollments)
+                all_paid = total_to_pay == total_paid
+                students_info.append(
+                    {
+                        "id": student_exam.student.user.id,
+                        "first_name": student_exam.student.user.first_name,
+                        "last_name":student_exam.student.user.last_name,
+                        "amount_to_pay":total_to_pay,
+                        "amount_paid":total_paid,
+                        "all_paid":all_paid
+                    }
+                )
+
+            return Response(
+                {
+                    "success": True,
+                    "data": students_info,
+                },
+                status=200,
+            )
+
+        except Exception as e:
+            return Response(
+                {
+                    "success": False,
+                     "message": str(e)
+                },
+                status=500,
+            )
+
+    @action(detail=False, methods=["post"], url_path="student_check_qr")
+    @permission_classes([])
+    def verify_room_qr(self, request, *args, **kwargs):
+        try:
+            student = request.user.student
+            room = request.data.get("name")
+            tz = pytz_timezone(settings.TIME_ZONE)
+            now = timezone.now().astimezone(tz)
+            today = now.date()
+            regNumber = student.reg_no
+            examRoom = Room.objects.filter(name=room).first()
+            student_exam = StudentExam.objects.get(
+                student__reg_no=regNumber,
+                exam__date=today,
+                room=examRoom,
+                exam__status__in=["READY", "ONGOING"],
+            )
+
+            enrollments = Enrollment.objects.filter(student_id=student.id)
+
+            if not enrollments.exists():
+                return Response(
+                    {
+                        "success": False,
+                        "message": "No enrolled courses found for this student.",
+                    },
+                    status=404,
+                )
+
+            # Calculate totals across all enrollments
+            total_to_pay = sum(enrollment.amount_to_pay for enrollment in enrollments)
+            total_paid = sum(enrollment.amount_paid for enrollment in enrollments)
+            all_paid = total_to_pay == total_paid
+
+            if all_paid:
+                return Response(
+                    {
+                        "success": True,
+                        "data": {
+                            "status": True,
+                            "studentName": f"{student.user.first_name} {student.user.last_name}",
+                            "studentRegNumber": student.reg_no,
+                            "message": f"Now you have {student_exam.exam.group.course.title} in room {student_exam.room.name}",
+                        },
+                    },
+                    status=200,
+                )
+            else:
+                return Response(
+                    {
+                        "success": False,
+                        "data": {
+                            "status": False,
+                            "message": f"Now you have {student_exam.exam.group.course.title} in room {student_exam.room.name} but  You haven't paid for all courses",
+                            "studentName": f"{student.user.first_name} {student.user.last_name}",
+                            "studentRegNumber": student.reg_no,
+                            "amountToPay": total_to_pay,
+                            "amountPaid": total_paid,
+                        },
+                    },
+                    status=200,
+                )
+
+        except StudentExam.DoesNotExist:
+            try:
+                student_exam = StudentExam.objects.get(
+                    student__reg_no=regNumber,
+                    exam__date=today,
+                    exam__status__in=["READY", "ONGOING"],
+                )
+
+                enrollments = Enrollment.objects.filter(student_id=student.id)
+
+                if not enrollments.exists():
+                    return Response(
+                        {
+                            "success": False,
+                            "message": "No enrolled courses found for this student.",
+                        },
+                        status=404,
+                    )
+
+                # Calculate totals across all enrollments
+                total_to_pay = sum(
+                    enrollment.amount_to_pay for enrollment in enrollments
+                )
+                total_paid = sum(enrollment.amount_paid for enrollment in enrollments)
+                all_paid = total_to_pay == total_paid
+ 
+
+                if all_paid:
+                    return Response(
+                        {
+                            "success": True,
+                            "data": {
+                                "status": True,
+                                "studentName": f"{student.user.first_name} {student.user.last_name}",
+                                "studentRegNumber": student.reg_no,
+                                "message": f"Now you have {student_exam.exam.group.course.title} in room {student_exam.room.name}",
+                            },
+                        },
+                        status=200,
+                    )
+                else:
+                    return Response(
+                        {
+                            "success": False,
+                            "data": {
+                                "status": False,
+                                "message": f"Now you have {student_exam.exam.group.course.title} in room {student_exam.room.name} but  You haven't paid for all courses",
+                                "studentName": f"{student.user.first_name} {student.user.last_name}",
+                                "studentRegNumber": student.reg_no,
+                                "amountToPay": total_to_pay,
+                                "amountPaid": total_paid,
+                            },
+                        },
+                        status=200,
+                    )
+            except StudentExam.DoesNotExist:
+
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Your exam information will be available soon. Please check again later.",
+                    },
+                    status=status.HTTP_200_OK,
+                )
 
         except:
             return Response(

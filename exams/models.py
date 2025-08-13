@@ -24,6 +24,7 @@ class Exam(TimeStampedModel):
     room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True, blank=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='SCHEDULED')
     group= models.ForeignKey("courses.CourseGroup", on_delete=models.DO_NOTHING, null=True)
+    slot_name=  models.CharField(max_length=10, default='Morning')
 
      
     def __str__(self):

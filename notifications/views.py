@@ -46,3 +46,6 @@ class NotificationViewSet(viewsets.ModelViewSet):
             read_at=timezone.now()
         )
         return Response({'status': f'{updated} notifications marked as read'})
+    
+
+

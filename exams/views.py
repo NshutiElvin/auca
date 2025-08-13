@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from datetime import time
 from schedules.models import MasterTimetable, MasterTimetableExam
+from student.serializers import StudentSerializer
 from .models import Student, Exam, StudentExam
 from .serializers import ExamSerializer, StudentExamSerializer
 from schedules.utils import (
@@ -31,6 +32,8 @@ from .utils import decrypt_message
 from pytz import timezone as pytz_timezone
 from django.utils import timezone
 from datetime import timedelta
+
+
 class ExamViewSet(viewsets.ModelViewSet):
     queryset = (
         Exam.objects.select_related("group", "room")
@@ -47,16 +50,52 @@ class ExamViewSet(viewsets.ModelViewSet):
         return [permission() for permission in permission_classes]
 
     def list(self, request, *args, **kwargs):
+        timetable_id = request.GET.get('id')   
         queryset = self.filter_queryset(self.get_queryset())
-      
-        serializer = self.get_serializer(queryset, many=True)
-        return  Response(    {
+        
+        
+
+        if timetable_id:
+            try:
+                queryset = queryset.filter(
+                    mastertimetableexam__master_timetable_id=timetable_id
+                )  
+
+                if not queryset.exists():
+                    return Response({
+                        "success": True,
+                        "data": [],
+                        "message": f"No exams found for MasterTimetable ID {timetable_id}",
+                    })
+                serializer = self.get_serializer(queryset, many=True)
+                return Response({
+                    "success": True,
+                    "data": serializer.data,
+                    "masterTimetable":timetable_id,
+                    "message": "Exams fetched successfully",
+                })
+
+                    
+
+            except ValueError:
+                return Response({
+                    "success": False,
+                    "message": "Invalid MasterTimetable ID (must be an integer)",
+                }, status=400)
+        else:
+            recent_timetable= MasterTimetable.objects.order_by("-created_at").first()
+            queryset = queryset.filter(
+                        mastertimetableexam__master_timetable_id=recent_timetable.id
+                    ).distinct()  
+
+            serializer = self.get_serializer(queryset, many=True)
+            return Response({
                 "success": True,
                 "data": serializer.data,
-                "masterTimetable": MasterTimetableExam.objects.filter(exam=self.queryset[0]).first().master_timetable.id,
-                "status": MasterTimetableExam.objects.filter(exam=self.queryset[0]).first().master_timetable.status,
-                "message": "Fetched successfully",
+                "masterTimetable":recent_timetable.id,
+                "message": "Exams fetched successfully",
             })
+
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
@@ -104,26 +143,25 @@ class ExamViewSet(viewsets.ModelViewSet):
             status=status.HTTP_204_NO_CONTENT,
         )
 
-
-    @action (detail=False, methods=["PUT"], url_path="publish")
+    @action(detail=False, methods=["PUT"], url_path="publish")
     def publish_timetable(self, request):
         try:
-            masterTimetable= request.data.get("masterTimetable")
-            masterTimetable= MasterTimetable.objects.get(id=masterTimetable)
-            if masterTimetable.status=="PUBLISHED":
-                masterTimetable.status="DRAFT"
+            masterTimetable = request.data.get("masterTimetable")
+            masterTimetable = MasterTimetable.objects.get(id=masterTimetable)
+            if masterTimetable.status == "PUBLISHED":
+                masterTimetable.status = "DRAFT"
             else:
-                masterTimetable.status="PUBLISHED"
+                masterTimetable.status = "PUBLISHED"
 
             masterTimetable.save()
             return Response(
-            {
-                "success": True,
-                "message": f"Exam timetable published successfully.",
-                "status": masterTimetable.status,
-            }
-        )
-        
+                {
+                    "success": True,
+                    "message": f"Exam timetable published successfully.",
+                    "status": masterTimetable.status,
+                }
+            )
+
         except Exception as e:
             print(e)
             return Response(
@@ -134,79 +172,153 @@ class ExamViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+    # @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
+    # def generate_exam_schedule_view(self, request):
+    #     import datetime
+
+    #     start_date_str = request.data.get("start_date")
+    #     end_date_str = request.data.get("end_date")
+    #     course_ids = request.data.get("course_ids", None)
+    #     master_timetable_id= request.data.get("master_timetable_id")
+    #     # print(semester)
+    #     if start_date_str and "T" in start_date_str:
+    #         start_date_str = start_date_str.split("T")[0]
+    #     if end_date_str and "T" in end_date_str:
+    #         end_date_str = end_date_str.split("T")[0]
+
+    #     start_date = parse_date(start_date_str) if start_date_str else None
+    #     end_date = parse_date(end_date_str) if end_date_str else None
+    #     master_timetable=None
+    #     if not master_timetable_id:
+    #         master_timetable= MasterTimetable.objects.create(
+    #             academic_year= datetime.datetime.now().year,
+    #             generated_by= request.user,
+    #             start_date= start_date,
+    #             end_date=end_date)
+    #     else:
+    #         master_timetable= MasterTimetable.objects.get(id=master_timetable_id)
+
+    #     exams, unaccomodated, unscheduled = generate_exam_schedule(
+    #         start_date=start_date,
+    #         end_date=end_date,
+    #         course_ids=course_ids,
+    #         semester=None,
+    #         master_timetable=master_timetable
+    #     )
+    #     queryset = self.filter_queryset(self.get_queryset())
+    #     serializer = self.get_serializer(queryset, many=True)
+    #     # get real unscheduled exams in database
+    #     unScheduled = []
+    #     unscheduled_courses = [course["courses"] for course in unscheduled]
+    #     if len(unscheduled_courses) > 0:
+    #         with transaction.atomic():
+    #             for unscheduleds_ in unscheduled_courses:
+    #                 for unscheduled_ in unscheduleds_:
+    #                     unscheduled_course = unscheduled_["course_id"]
+    #                     group = unscheduled_["groups"]
+    #                     c = {}
+    #                     course = Course.objects.get(id=unscheduled_course)
+    #                     courseSerializer = CourseSerializer(course)
+    #                     c["course"] = courseSerializer.data
+    #                     c["groups"] = []
+    #                     unscheduled = UnscheduledExam.objects.create(course=course, master_timetable=master_timetable)
+    #                     for g in group:
+    #                         enrollement = Enrollment.objects.filter(
+    #                             course=course, group_id=g
+    #                         ).first()
+    #                         unscheduled_group = UnscheduledExamGroup.objects.create(
+    #                             exam=unscheduled, group=enrollement.group
+    #                         )
+    #                         unscheduled.groups.add(unscheduled_group)
+    #                         courseGroupSerializer = CourseGroupSerializer(enrollement.group)
+    #                         c["groups"].append(courseGroupSerializer.data)
+    #                     unScheduled.append(c)
+    #                     unscheduled.save()
+
+    #     return Response(
+    #         {
+    #             "success": True,
+    #             "message": f"{len(exams)} exams scheduled successfully.",
+    #             "data": serializer.data,
+    #             "unaccomodated": [],
+    #             "unscheduled": unScheduled,
+    #         }
+    #     )
+
     @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
     def generate_exam_schedule_view(self, request):
         import datetime
 
-        start_date_str = request.data.get("start_date")
-        end_date_str = request.data.get("end_date")
-        course_ids = request.data.get("course_ids", None)
-        master_timetable_id= request.data.get("master_timetable_id")
-        # print(semester)
-        if start_date_str and "T" in start_date_str:
-            start_date_str = start_date_str.split("T")[0]
-        if end_date_str and "T" in end_date_str:
-            end_date_str = end_date_str.split("T")[0]
+        with transaction.atomic():
 
-        start_date = parse_date(start_date_str) if start_date_str else None
-        end_date = parse_date(end_date_str) if end_date_str else None
-        master_timetable=None
-        if not master_timetable_id:
-            master_timetable= MasterTimetable.objects.create(
-                academic_year= datetime.datetime.now().year,
-                generated_by= request.user,
-                start_date= start_date,
-                end_date=end_date)
-        else: 
-            master_timetable= MasterTimetable.objects.get(id=master_timetable_id)
-            
+            start_date_str = request.data.get("start_date")
+            end_date_str = request.data.get("end_date")
+            course_ids = request.data.get("course_ids", None)
+            slots = request.data.get("slots")
+ 
+            if start_date_str and "T" in start_date_str:
+                start_date_str = start_date_str.split("T")[0]
+            if end_date_str and "T" in end_date_str:
+                end_date_str = end_date_str.split("T")[0]
 
-        exams, unaccomodated, unscheduled = generate_exam_schedule(
-            start_date=start_date,
-            end_date=end_date,
-            course_ids=course_ids,
-            semester=None,
-            master_timetable=master_timetable
-        )
-        queryset = self.filter_queryset(self.get_queryset())
-        serializer = self.get_serializer(queryset, many=True)
-        # get real unscheduled exams in database
-        unScheduled = []
-        unscheduled_courses = [course["courses"] for course in unscheduled]
-        if len(unscheduled_courses) > 0:
-            with transaction.atomic():
-                for unscheduleds_ in unscheduled_courses:
-                    for unscheduled_ in unscheduleds_:
-                        unscheduled_course = unscheduled_["course_id"]
-                        group = unscheduled_["groups"]
-                        c = {}
-                        course = Course.objects.get(id=unscheduled_course)
-                        courseSerializer = CourseSerializer(course)
-                        c["course"] = courseSerializer.data
-                        c["groups"] = []
-                        unscheduled = UnscheduledExam.objects.create(course=course, master_timetable=master_timetable)
-                        for g in group:
-                            enrollement = Enrollment.objects.filter(
-                                course=course, group_id=g
-                            ).first()
-                            unscheduled_group = UnscheduledExamGroup.objects.create(
-                                exam=unscheduled, group=enrollement.group
+            start_date = parse_date(start_date_str) if start_date_str else None
+            end_date = parse_date(end_date_str) if end_date_str else None
+  
+        
+            master_timetable = MasterTimetable.objects.create(
+                academic_year=datetime.datetime.now().year,
+                generated_by=request.user,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        
+
+            exams, _, unscheduled = generate_exam_schedule(
+                slots=slots, course_ids=course_ids, master_timetable=master_timetable
+            )
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            # get real unscheduled exams in database
+            unScheduled = []
+            unscheduled_courses = [course["courses"] for course in unscheduled]
+            if len(unscheduled_courses) > 0:
+                with transaction.atomic():
+                    for unscheduleds_ in unscheduled_courses:
+                        for unscheduled_ in unscheduleds_:
+                            unscheduled_course = unscheduled_["course_id"]
+                            group = unscheduled_["groups"]
+                            c = {}
+                            course = Course.objects.get(id=unscheduled_course)
+                            courseSerializer = CourseSerializer(course)
+                            c["course"] = courseSerializer.data
+                            c["groups"] = []
+                            unscheduled = UnscheduledExam.objects.create(
+                                course=course, master_timetable=master_timetable
                             )
-                            unscheduled.groups.add(unscheduled_group)
-                            courseGroupSerializer = CourseGroupSerializer(enrollement.group)
-                            c["groups"].append(courseGroupSerializer.data)
-                        unScheduled.append(c)
-                        unscheduled.save()
+                            for g in group:
+                                enrollement = Enrollment.objects.filter(
+                                    course=course, group_id=g
+                                ).first()
+                                unscheduled_group = UnscheduledExamGroup.objects.create(
+                                    exam=unscheduled, group=enrollement.group
+                                )
+                                unscheduled.groups.add(unscheduled_group)
+                                courseGroupSerializer = CourseGroupSerializer(
+                                    enrollement.group
+                                )
+                                c["groups"].append(courseGroupSerializer.data)
+                            unScheduled.append(c)
+                            unscheduled.save()
 
-        return Response(
-            {
-                "success": True,
-                "message": f"{len(exams)} exams scheduled successfully.",
-                "data": serializer.data,
-                "unaccomodated": [],
-                "unscheduled": unScheduled,
-            }
-        )
+            return Response(
+                {
+                    "success": True,
+                    "message": f"{len(exams)} exams scheduled successfully.",
+                    "data": serializer.data,
+                    "unaccomodated": [],
+                    "unscheduled": unScheduled,
+                }
+            )
 
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
@@ -281,7 +393,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
- 
+
             queryset = self.filter_queryset(self.get_queryset())
             serializer = self.get_serializer(queryset, many=True)
             return Response(
@@ -307,7 +419,7 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             with transaction.atomic():
                 StudentExam.objects.all().delete()
-                Exam.objects.all().delete()
+                # Exam.objects.all().delete()
                 UnscheduledExam.objects.all().delete()
                 UnscheduledExamGroup.objects.all().delete()
 
@@ -335,6 +447,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             with transaction.atomic():
                 existing_slot = request.data.get("slot")
                 date = request.data.get("day")
+
                 new_group_to_add = request.data.get("course_group")
                 existing_groups = [
                     group["group"]["id"] for group in existing_slot["exams"]
@@ -370,11 +483,13 @@ class ExamViewSet(viewsets.ModelViewSet):
                         g1_slot = Exam.objects.filter(group__id=conf[0]).first()
                         g2_slot = Exam.objects.filter(group__id=conf[1]).first()
                         if g1_slot:
-                        
-                          g1["slot"] = get_slot_name(g1_slot.start_time, g1_slot.end_time)
-                        if  g2_slot:
-                          g2["slot"] = get_slot_name(g2_slot.start_time, g2_slot.end_time)
-                        conflict_matrix.append((g1, g2, conf[2]))
+
+                            g1["slot"] = g1_slot.slot_name
+                        if g2_slot:
+                            g2["slot"] = g2_slot.slot_name
+                        conflicted_students= Student.objects.filter(id__in=conf[2])
+                        serializer=StudentSerializer(conflicted_students, many=True)
+                        conflict_matrix.append((g1, g2,  serializer.data))
                     if conf[1] in new_groups:
                         g1 = CourseGroupSerializer(
                             CourseGroup.objects.get(id=conf[1])
@@ -385,18 +500,18 @@ class ExamViewSet(viewsets.ModelViewSet):
                         g1_slot = Exam.objects.filter(group__id=conf[0]).first()
                         g2_slot = Exam.objects.filter(group__id=conf[1]).first()
                         if g1_slot:
-                        
-                          g1["slot"] = get_slot_name(g1_slot.start_time, g1_slot.end_time)
-                        if  g2_slot:
-                          g2["slot"] = get_slot_name(g2_slot.start_time, g2_slot.end_time)
 
-                        conflict_matrix.append((g1, g2, conf[2]))
+                            g1["slot"] = g1_slot.slot_name
+                        if g2_slot:
+                            g2["slot"] = g2_slot.slot_name
+                        conflicted_students= Student.objects.filter(id__in=conf[2])
+                        serializer=StudentSerializer(conflicted_students, many=True)
+                        conflict_matrix.append((g1, g2,  serializer.data))
                 new_group, best_suggestion, all_suggestions, all_conflicts = (
                     which_suitable_slot_to_schedule_course_group(
                         date_formatted, new_groups, existing_slot.get("name")
                     )
                 )
-
                 return Response(
                     {
                         "success": True,
@@ -414,6 +529,51 @@ class ExamViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+
+    @action(
+        detail=False,
+        methods=["patch"],
+        url_path="changeTime",
+        permission_classes=[permissions.IsAuthenticated],
+    )
+    def changeTime(self, request):
+
+        try:
+            with transaction.atomic():
+                existing_slot = request.data.get("slotToChange")
+                print(existing_slot)
+                name = existing_slot.get("name")
+                start_time = time.fromisoformat(existing_slot.get("start"))
+                end_time = time.fromisoformat(existing_slot.get("end"))
+                date = existing_slot.get("date")
+                
+
+                date = parse_date(date)
+                print(name, start_time, end_time, date, sep="\n")
+                exams= Exam.objects.filter(date=date, slot_name=name)
+                for exam in exams:
+                    exam.start_time = start_time
+                    exam.end_time = end_time
+
+                 
+                Exam.objects.bulk_update(exams, fields=['start_time', 'end_time'])
+                return Response(
+                    {
+                        "success": True,
+                        "conflict": True,
+                        
+                        "message": "time changed successfully.",
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+        except Exception as e:
+            print(e)
+            return Response(
+                {"success": False, "message": f"Error updating time: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
     @action(
         detail=False,
         methods=["post"],
@@ -421,7 +581,6 @@ class ExamViewSet(viewsets.ModelViewSet):
         permission_classes=[permissions.IsAuthenticated],
     )
     def schedule_new_exam(self, request):
-        
 
         try:
             with transaction.atomic():
@@ -432,32 +591,22 @@ class ExamViewSet(viewsets.ModelViewSet):
                 course_id = new_group_to_add["course"]["id"]
                 course = Course.objects.get(id=course_id)
                 weekday = date_formatted.strftime("%A")
-                suggestedSlot= request.data.get("suggestedSlot")
-                print(UnscheduledExam.objects.get(id=new_group_to_add["id"]).master_timetable)
-                master_timetable= UnscheduledExam.objects.get(id=new_group_to_add["id"]).master_timetable
+                suggestedSlot = request.data.get("suggestedSlot")
+                start_time = time.fromisoformat(existing_slot.get("start"))
+                end_time = time.fromisoformat(existing_slot.get("end"))
+                master_timetable = UnscheduledExam.objects.get(
+                    id=new_group_to_add["id"]
+                ).master_timetable
                 if suggestedSlot:
                     existing_slot["name"] = suggestedSlot["slot"].lower()
-                    date_formatted=parse_date(suggestedSlot["date"])
+                    date_formatted = parse_date(suggestedSlot["date"])
                 if weekday == "Friday" and existing_slot["name"].lower() == "evening":
                     raise ValueError("We can't schedule exam on Friday evening.")
                 for group in new_group_to_add["groups"]:
 
                     group_id = group["group"]["id"]
                     real_group = CourseGroup.objects.get(id=group_id, course=course)
-                    start_time = None
-                    end_time = None
-                    if existing_slot["name"].lower() == "morning":
-                        start_time = time(8, 0)
-                        end_time = time(11, 0)
-                    elif existing_slot["name"].lower() == "afternoon":
-                        start_time = time(13, 0)
-                        end_time = time(16, 0)
-                    elif existing_slot["name"].lower() == "evening":
-                        start_time = time(18, 0)
-                        end_time = time(20, 0)
-                    else:
-                        raise ValueError("Unknown exam slot")
-                    
+                  
                     try:
                         exam = Exam.objects.create(
                             date=date_formatted,
@@ -476,23 +625,27 @@ class ExamViewSet(viewsets.ModelViewSet):
                             )
                             student_exam.save()
                         # assigning rooms
-                        existing_student_exams=  StudentExam.objects.filter(
-                            exam__date=date_formatted,
-                            exam__start_time=start_time,
-                            exam__end_time=end_time,
-                        ).select_related(
-                            'exam',
-                            'exam__group__course__semester',
-                            'student'
-                        ).order_by('exam__date', 'exam__start_time')
-                        student_exams = StudentExam.objects.filter(
-                            student_id__in=student_ids, exam=exam
-                        ).select_related(
-                            'exam',
-                            'exam__group__course__semester',
-                            'student'
-                        ).order_by('exam__date', 'exam__start_time')
-                        student_exams=student_exams.union( existing_student_exams)
+                        existing_student_exams = (
+                            StudentExam.objects.filter(
+                                exam__date=date_formatted,
+                                exam__start_time=start_time,
+                                exam__end_time=end_time,
+                            )
+                            .select_related(
+                                "exam", "exam__group__course__semester", "student"
+                            )
+                            .order_by("exam__date", "exam__start_time")
+                        )
+                        student_exams = (
+                            StudentExam.objects.filter(
+                                student_id__in=student_ids, exam=exam
+                            )
+                            .select_related(
+                                "exam", "exam__group__course__semester", "student"
+                            )
+                            .order_by("exam__date", "exam__start_time")
+                        )
+                        student_exams = student_exams.union(existing_student_exams)
                         allocate_shared_rooms_updated(student_exams)
 
                     except Exception as e:
@@ -501,7 +654,6 @@ class ExamViewSet(viewsets.ModelViewSet):
                 exam_group = UnscheduledExamGroup.objects.filter(exam=exam_to_delete)
                 exam_group.delete()
                 exam_to_delete.delete()
-
 
             return Response(
                 {
@@ -533,7 +685,8 @@ class ExamViewSet(viewsets.ModelViewSet):
                 date = request.data.get("day")
                 new_group_to_add = request.data.get("course_group")
                 date_formatted = parse_date(date)
-
+                start_time = time.fromisoformat(existing_slot.get("start"))
+                end_time = time.fromisoformat(existing_slot.get("end"))
                 weekday = date_formatted.strftime("%A")
                 exam = new_group_to_add.get("exam")
                 group = new_group_to_add.get("group")
@@ -544,33 +697,20 @@ class ExamViewSet(viewsets.ModelViewSet):
                     raise ValueError("We can't schedule exam on Friday evening.")
                 group_id = group.get("id")
                 real_exam = UnscheduledExam.objects.get(id=exam.get("id"))
-                master_timetable= real_exam.master_timetable
+                master_timetable = real_exam.master_timetable
                 real_group = CourseGroup.objects.get(id=group_id)
                 real_group = UnscheduledExamGroup.objects.get(
                     group=real_group, exam=real_exam
                 )
 
-                start_time = None
-                end_time = None
-                if existing_slot["name"].lower() == "morning":
-                    start_time = time(8, 0)
-                    end_time = time(11, 0)
-                elif existing_slot["name"].lower() == "afternoon":
-                    start_time = time(13, 0)
-                    end_time = time(16, 0)
-                elif existing_slot["name"].lower() == "evening":
-                    start_time = time(18, 0)
-                    end_time = time(20, 0)
-                else:
-                    raise ValueError("Unknown exam slot")
                 try:
                     exam = Exam.objects.create(
                         date=date_formatted,
                         start_time=start_time,
                         end_time=end_time,
                         group=real_group.group,
-                        master_timetable= master_timetable
                     )
+                    master_timetable.exams.add(exam)
 
                     # Update student exam dates
                     student_ids = Enrollment.objects.filter(
@@ -581,24 +721,30 @@ class ExamViewSet(viewsets.ModelViewSet):
                             student_id=student_id, exam=exam
                         )
                         student_exam.save()
-                    existing_student_exams=  StudentExam.objects.filter(
+                    existing_student_exams = (
+                        StudentExam.objects.filter(
                             exam__date=date_formatted,
                             exam__start_time=start_time,
                             exam__end_time=end_time,
-                        ).select_related(
-                            'exam',
-                            'exam__group__course__semester',
-                            'student'
-                        ).order_by('exam__date', 'exam__start_time')
-                    student_exams = StudentExam.objects.filter(
-                        student_id__in=student_ids, exam=exam
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time')
-                    student_exams=student_exams.union( existing_student_exams)
+                        )
+                        .select_related(
+                            "exam", "exam__group__course__semester", "student"
+                        )
+                        .order_by("exam__date", "exam__start_time")
+                    )
+                    student_exams = (
+                        StudentExam.objects.filter(
+                            student_id__in=student_ids, exam=exam
+                        )
+                        .select_related(
+                            "exam", "exam__group__course__semester", "student"
+                        )
+                        .order_by("exam__date", "exam__start_time")
+                    )
+                    student_exams = student_exams.union(existing_student_exams)
                     allocate_shared_rooms_updated(student_exams)
+                except UnscheduledExam .DoesNotExist:
+                    pass
 
                 except Exception as e:
                     raise Exception(str(e))
@@ -629,34 +775,23 @@ class ExamViewSet(viewsets.ModelViewSet):
         permission_classes=[permissions.IsAuthenticated],
     )
     def schedule_existing_course_single_group(self, request):
-        from datetime import time
 
         try:
             with transaction.atomic():
                 existing_slot = request.data.get("slot")
+                print(request.data.get("slot"))
                 date = request.data.get("day")
                 new_group_to_add = request.data.get("course_group")
                 date_formatted = parse_date(date)
-
                 weekday = date_formatted.strftime("%A")
                 exam = new_group_to_add.get("exam")
                 exam = Exam.objects.get(id=exam.get("id"))
+                start_time = time.fromisoformat(existing_slot.get("start"))
+                end_time = time.fromisoformat(existing_slot.get("end"))
 
                 if weekday == "Friday" and existing_slot.name.lower() == "evening":
                     raise ValueError("We can't schedule exam on Friday evening.")
-                start_time = None
-                end_time = None
-                if existing_slot["name"].lower() == "morning":
-                    start_time = time(8, 0)
-                    end_time = time(11, 0)
-                elif existing_slot["name"].lower() == "afternoon":
-                    start_time = time(13, 0)
-                    end_time = time(16, 0)
-                elif existing_slot["name"].lower() == "evening":
-                    start_time = time(18, 0)
-                    end_time = time(20, 0)
-                else:
-                    raise ValueError("Unknown exam slot")
+
                 try:
                     exam.start_time = start_time
                     exam.end_time = end_time
@@ -665,23 +800,27 @@ class ExamViewSet(viewsets.ModelViewSet):
                     student_ids = Enrollment.objects.filter(
                         course=exam.group.course, group=exam.group
                     ).values_list("student_id", flat=True)
-                    existing_student_exams=  StudentExam.objects.filter(
-                        exam__date=date_formatted,
-                        exam__start_time=start_time,
-                        exam__end_time=end_time,
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time')
-                    student_exams = StudentExam.objects.filter(
-                        student_id__in=student_ids, exam=exam
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time')
-                    student_exams=student_exams.union( existing_student_exams)
+                    existing_student_exams = (
+                        StudentExam.objects.filter(
+                            exam__date=date_formatted,
+                            exam__start_time=start_time,
+                            exam__end_time=end_time,
+                        )
+                        .select_related(
+                            "exam", "exam__group__course__semester", "student"
+                        )
+                        .order_by("exam__date", "exam__start_time")
+                    )
+                    student_exams = (
+                        StudentExam.objects.filter(
+                            student_id__in=student_ids, exam=exam
+                        )
+                        .select_related(
+                            "exam", "exam__group__course__semester", "student"
+                        )
+                        .order_by("exam__date", "exam__start_time")
+                    )
+                    student_exams = student_exams.union(existing_student_exams)
                     allocate_shared_rooms_updated(student_exams)
 
                 except Exception as e:
@@ -714,42 +853,47 @@ class ExamViewSet(viewsets.ModelViewSet):
                 date = request.data.get("day")
                 group_id = request.data.get("group_id")
                 date_formatted = parse_date(date)
-                exam = Exam.objects.filter(group__id=group_id, date=date_formatted).first()
-                master_timetable= MasterTimetableExam.objects.get(exam=exam).master_timetable
+                exam = Exam.objects.filter(
+                    group__id=group_id, date=date_formatted
+                ).first()
+                master_timetable = MasterTimetableExam.objects.get(
+                    exam=exam
+                ).master_timetable
                 course = exam.group.course
                 unscheduled = None
                 try:
                     unscheduled = UnscheduledExam.objects.get(course=course)
                 except UnscheduledExam.DoesNotExist:
 
-                    unscheduled = UnscheduledExam.objects.create(course=course, master_timetable=master_timetable)
+                    unscheduled = UnscheduledExam.objects.create(
+                        course=course, master_timetable=master_timetable
+                    )
                 unscheduled_group = UnscheduledExamGroup.objects.create(
                     exam=unscheduled, group=exam.group
                 )
                 unscheduled.groups.add(unscheduled_group)
                 unscheduled.save()
                 student_ids = Enrollment.objects.filter(
-                        course=course, group=exam.group
-                    ).values_list("student_id", flat=True)
-               
-                
+                    course=course, group=exam.group
+                ).values_list("student_id", flat=True)
+
                 StudentExam.objects.filter(
-                        student_id__in=student_ids, exam=exam
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time').delete()
-                existing_student_exams=  StudentExam.objects.filter(
+                    student_id__in=student_ids, exam=exam
+                ).select_related(
+                    "exam", "exam__group__course__semester", "student"
+                ).order_by(
+                    "exam__date", "exam__start_time"
+                ).delete()
+                existing_student_exams = (
+                    StudentExam.objects.filter(
                         exam__date=date_formatted,
                         exam__start_time=exam.start_time,
                         exam__end_time=exam.end_time,
-                    ).select_related(
-                        'exam',
-                        'exam__group__course__semester',
-                        'student'
-                    ).order_by('exam__date', 'exam__start_time')
-                
+                    )
+                    .select_related("exam", "exam__group__course__semester", "student")
+                    .order_by("exam__date", "exam__start_time")
+                )
+
                 allocate_shared_rooms_updated(existing_student_exams)
                 master_timetable.exams.remove(exam)
                 exam.delete()
@@ -802,22 +946,26 @@ class StudentExamViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
-        
+
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response({
+            return self.get_paginated_response(
+                {
+                    "success": True,
+                    "data": serializer.data,
+                    "message": "Fetched successfully",
+                }
+            )
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(
+            {
                 "success": True,
                 "data": serializer.data,
                 "message": "Fetched successfully",
-            })
-        
-        serializer = self.get_serializer(queryset, many=True)
-        return Response({
-            "success": True,
-            "data": serializer.data,
-            "message": "Fetched successfully",
-        })
+            }
+        )
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -880,38 +1028,33 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             )
 
         exams = StudentExam.objects.filter(student=student)
-        masterTimetable= MasterTimetableExam.objects.get(exam= exams[0].exam)
+        masterTimetable = MasterTimetableExam.objects.get(exam=exams[0].exam)
         serializer = StudentExamSerializer(exams, many=True)
         return Response(
             {
                 "success": True,
-                "data": serializer.data if masterTimetable.master_timetable.status=="PUBLISHED" else [],
+                "data": (
+                    serializer.data
+                    if masterTimetable.master_timetable.status == "PUBLISHED"
+                    else []
+                ),
                 "message": "Fetched successfully",
             }
         )
-    
+
     @action(detail=False, methods=["get"], url_path="time")
     def get_exam_qcode_expiration_time(self, request, *args, **kwargs):
         try:
 
-            tz =  pytz_timezone(settings.TIME_ZONE )
+            tz = pytz_timezone(settings.TIME_ZONE)
             now = timezone.now().astimezone(tz)
             expiration_time = now + timedelta(minutes=settings.QRCODE_LIFETIME)
-            
-            
-           
+
             return Response(
-                {
-                    "success": True,
-                    "time":expiration_time
-                   
-                },
+                {"success": True, "time": expiration_time},
                 status=200,
             )
-       
 
-        
-       
         except Exception as e:
             print(e)
             return Response(
@@ -921,45 +1064,46 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                 },
                 status=500,
             )
-        
+
     @action(detail=False, methods=["post"], url_path="verify")
     def verify(self, request, *args, **kwargs):
         try:
 
             data = request.data
-            
-            encryptedData= data.get("encryptedData")
-           
+
+            encryptedData = data.get("encryptedData")
+
             try:
-                decrypted_data= decrypt_message(encryptedData, settings.ENCRYPTION_KEY)
-                data= json.loads(decrypted_data)
-                tz =  pytz_timezone(settings.TIME_ZONE )
+                decrypted_data = decrypt_message(encryptedData, settings.ENCRYPTION_KEY)
+                data = json.loads(decrypted_data)
+                tz = pytz_timezone(settings.TIME_ZONE)
                 now = timezone.now().astimezone(tz)
-                qr_expiration_time_str=data.get("expirationTime")
-                expiration_time = timezone.datetime.fromisoformat(qr_expiration_time_str)
+                qr_expiration_time_str = data.get("expirationTime")
+                expiration_time = timezone.datetime.fromisoformat(
+                    qr_expiration_time_str
+                )
                 is_expired = now > expiration_time
                 if is_expired:
                     return Response(
-                    {
-                        "success": False,
-                        "message": "QR Code expired",
-                    },
-                    status=400,
-                )
-
+                        {
+                            "success": False,
+                            "message": "QR Code expired",
+                        },
+                        status=400,
+                    )
 
             except:
-                 return Response(
-                {
-                    "success": False,
-                    "message": f"Invalid QR code",
-                },
-                status=500,
-            )
+                return Response(
+                    {
+                        "success": False,
+                        "message": f"Invalid QR code",
+                    },
+                    status=500,
+                )
             student_id = data.get("studentId")
             student = Student.objects.get(user_id=student_id)
             enrollments = Enrollment.objects.filter(student_id=student.id)
-            
+
             if not enrollments.exists():
                 return Response(
                     {
@@ -973,7 +1117,7 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             total_to_pay = sum(enrollment.amount_to_pay for enrollment in enrollments)
             total_paid = sum(enrollment.amount_paid for enrollment in enrollments)
             all_paid = total_to_pay == total_paid
-            
+
             # Get first enrollment for the response format (maintaining your original structure)
             first_enrollment = enrollments.first()
             course_serializer = CourseSerializer(first_enrollment.course)
@@ -988,8 +1132,8 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                             "course": course_serializer.data,
                             "studentName": f"{student.user.first_name} {student.user.last_name}",
                             "studentRegNumber": student.reg_no,
-                            "amountToPay": total_to_pay,  
-                            "amountPaid": total_paid,      
+                            "amountToPay": total_to_pay,
+                            "amountPaid": total_paid,
                         },
                     },
                     status=200,
@@ -1004,8 +1148,8 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                             "course": course_serializer.data,
                             "studentName": f"{student.user.first_name} {student.user.last_name}",
                             "studentRegNumber": student.reg_no,
-                            "amountToPay": total_to_pay, 
-                            "amountPaid": total_paid,       
+                            "amountToPay": total_to_pay,
+                            "amountPaid": total_paid,
                         },
                     },
                     status=200,
@@ -1027,8 +1171,6 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                 },
                 status=500,
             )
-
-
 
 
 import random
