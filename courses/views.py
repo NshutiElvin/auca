@@ -8,6 +8,7 @@ from .permissions import IsAdminOrInstructor, IsStudent
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter
+from enrollments.models import Enrollment
 
 
 class BaseViewSet(viewsets.ModelViewSet):
@@ -17,9 +18,21 @@ class BaseViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         serializer = self.get_serializer(queryset, many=True)
+        enrollments= Enrollment.objects.all()
+        courses=serializer.data
+        for enrollment in enrollments:
+            
+            for course in courses:
+                if course['id'] == enrollment.course_id:
+                    course['students_enrolled'] += 1
+                    break
+
+    
+        print(courses)
         return Response({
             'success': True,
-            'data': serializer.data,
+            'data': courses,
+            
             'message': f'{self.basename.title()}s fetched successfully'
         })
 

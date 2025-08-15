@@ -30,7 +30,7 @@ class RoomViewSet(viewsets.ModelViewSet):
     serializer_class = RoomSerializer
 
     def get_permissions(self):
-        if self.action == "verify_room":
+        if self.action in ["verify_room", "instructor_room_qr", "verify_room_qr"]:
             return []  # No permissions required
         elif self.action in ["list", "retrieve"]:
             return [permissions.IsAuthenticated()]
@@ -613,7 +613,7 @@ class RoomViewSet(viewsets.ModelViewSet):
             student_exams = StudentExam.objects.filter(
                 exam__date=today,
                 room=examRoom,
-                exam__status__in=["READY", "ONGOING"],
+                # exam__status__in=["READY", "ONGOING"],
             )
             students_info = []
             for student_exam in student_exams:
@@ -626,7 +626,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 students_info.append(
                     {
                         "id": student_exam.student.user.id,
-                        "first_name": student_exam.student.user.first_name,
+                        "reg_no": student_exam.student.reg_no, "first_name": student_exam.student.user.first_name,
                         "last_name":student_exam.student.user.last_name,
                         "amount_to_pay":total_to_pay,
                         "amount_paid":total_paid,
@@ -666,7 +666,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 student__reg_no=regNumber,
                 exam__date=today,
                 room=examRoom,
-                exam__status__in=["READY", "ONGOING"],
+                # exam__status__in=["READY", "ONGOING"],
             )
 
             enrollments = Enrollment.objects.filter(student_id=student.id)
@@ -719,7 +719,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 student_exam = StudentExam.objects.get(
                     student__reg_no=regNumber,
                     exam__date=today,
-                    exam__status__in=["READY", "ONGOING"],
+                    # exam__status__in=["READY", "ONGOING"],
                 )
 
                 enrollments = Enrollment.objects.filter(student_id=student.id)
@@ -744,13 +744,12 @@ class RoomViewSet(viewsets.ModelViewSet):
                 if all_paid:
                     return Response(
                         {
-                            "success": True,
+                            "success": False,
                             "data": {
-                                "status": True,
+                                "status": False,
                                 "studentName": f"{student.user.first_name} {student.user.last_name}",
                                 "studentRegNumber": student.reg_no,
-                                "message": f"Now you have {student_exam.exam.group.course.title} in room {student_exam.room.name}",
-                            },
+                                "message": f"Now you have {student_exam.exam.group.course.title} in room {student_exam.room.name} but you've scanned on Wrong room", },
                         },
                         status=200,
                     )

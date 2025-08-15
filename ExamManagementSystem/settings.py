@@ -27,8 +27,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', default='django-insecure-!@#4$%^&*()_+')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
-
+ALLOWED_HOSTS = ["*"]
 
 # Application definition
 
@@ -139,7 +138,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'auca',
         'USER': 'postgres',
-        'PASSWORD': 'postgres',
+        'PASSWORD': 'elvin24.',
         'HOST': 'localhost',
         'PORT': '5432',
     }
@@ -148,7 +147,7 @@ DATABASES = {
 CORS_ALLOW_ALL_ORIGINS = True  
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",   
+    "*",   
     "http://127.0.0.1:3000",
 ]
 
@@ -260,7 +259,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("127.0.0.1", 6380)], 
+            "hosts": [("127.0.0.1", 6379)], 
             "capacity": 1500, 
             "expiry": 10,
         },
