@@ -63,6 +63,7 @@ class UnscheduledExam(models.Model):
 
     course= models.ForeignKey("courses.Course", on_delete=models.CASCADE, related_name="unscheduled_exam")
     groups= models.ManyToManyField(UnscheduledExamGroup, null=True, blank=True)
+    reason= models.CharField(max_length=255, null=True, blank=True)
     master_timetable = models.ForeignKey(MasterTimetable, on_delete=models.CASCADE, null=True)
     created_at = models.DateTimeField(auto_now_add=True)   
     updated_at = models.DateTimeField(auto_now=True)       

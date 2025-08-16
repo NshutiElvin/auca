@@ -141,11 +141,15 @@ class CourseScheduleViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="dashboard")
     def dashboard(self, request, *args, **kwargs):
         try:
+            location= request.GET.get("location")
             tz = pytz_timezone(settings.TIME_ZONE)
             now = timezone.now().astimezone(tz)
             today = now.date()
 
             recent_timetable = MasterTimetable.objects.order_by("-created_at").first()
+            if location:
+                recent_timetable=MasterTimetable.objects.filter(location_id=location).order_by("-created_at").first()
+                
 
             if not recent_timetable:
                 return Response(
@@ -237,6 +241,8 @@ class CourseScheduleViewSet(viewsets.ModelViewSet):
                 .order_by("start_time")
             ).count()
             recent_timetables= MasterTimetable.objects.order_by("-created_at").all()[:5]
+            if location:
+                recent_timetables=MasterTimetable.objects.filter(location_id=location).order_by("-created_at").all()[:5]
             serializer= MasterTimetableSerializer(recent_timetables, many=True)
 
             return Response(

@@ -19,6 +19,6 @@ class UnscheduledExamSerializer(serializers.ModelSerializer):
         model = UnscheduledExam
         fields = [
             "id","course", 
-              "course_id", "group_id", "created_at", "updated_at"
+              "course_id", "group_id", "created_at", "updated_at","reason"
         ]
  

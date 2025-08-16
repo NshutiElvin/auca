@@ -27,7 +27,7 @@ class Course(TimeStampedModel):
     ]
     code = models.CharField(max_length=10, unique=True)
     title = models.CharField(max_length=100)
-    description = models.TextField(blank=True)
+    description = models.TextField(blank=True, null=True)
     credits = models.PositiveIntegerField(default=3)
 
     instructor = models.ForeignKey(
@@ -41,10 +41,10 @@ class Course(TimeStampedModel):
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='courses')
     semester = models.ForeignKey(Semester, on_delete=models.CASCADE, related_name='courses')
 
-    prerequisites = models.ManyToManyField('self', blank=True, symmetrical=False)
-    start_date = models.DateField()
-    end_date = models.DateField()
-    enrollment_limit = models.PositiveIntegerField(default=30)
+    prerequisites = models.ManyToManyField('self', blank=True, symmetrical=True, null=True)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    enrollment_limit = models.PositiveIntegerField(default=30, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

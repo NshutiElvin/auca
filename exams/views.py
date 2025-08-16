@@ -50,7 +50,10 @@ class ExamViewSet(viewsets.ModelViewSet):
         return [permission() for permission in permission_classes]
 
     def list(self, request, *args, **kwargs):
-        timetable_id = request.GET.get('id')   
+        timetable_id = request.GET.get('id') 
+        location= request.GET.get("location")
+        print(location)
+          
         queryset = self.filter_queryset(self.get_queryset())
         
         
@@ -60,6 +63,11 @@ class ExamViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(
                     mastertimetableexam__master_timetable_id=timetable_id
                 )  
+                if location:
+                    queryset = queryset.filter(
+                    mastertimetableexam__master_timetable_id=timetable_id,  mastertimetableexam__master_location_id=location, 
+                ) 
+
 
                 if not queryset.exists():
                     return Response({
@@ -83,18 +91,35 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "message": "Invalid MasterTimetable ID (must be an integer)",
                 }, status=400)
         else:
-            recent_timetable= MasterTimetable.objects.order_by("-created_at").first()
-            queryset = queryset.filter(
-                        mastertimetableexam__master_timetable_id=recent_timetable.id
-                    ).distinct()  
-
-            serializer = self.get_serializer(queryset, many=True)
-            return Response({
-                "success": True,
-                "data": serializer.data,
-                "masterTimetable":recent_timetable.id,
-                "message": "Exams fetched successfully",
-            })
+        
+            if location:
+                    print("location found", location, sep=" ")
+                    recent_timetable=MasterTimetable.objects.filter(location_id=location).order_by("-created_at").first()
+                    print(recent_timetable.id)
+                    queryset = queryset.filter(
+                    mastertimetableexam__master_timetable_id=recent_timetable.id
+                )     
+                    
+ 
+                    serializer = self.get_serializer(queryset, many=True)
+                    return Response({
+                        "success": True,
+                        "data": serializer.data,
+                        "masterTimetable":recent_timetable.id,
+                        "message": "Exams fetched successfully",
+                    })
+            else:
+                recent_timetable= MasterTimetable.objects.order_by("-created_at").first()
+                queryset = queryset.filter(
+                            mastertimetableexam__master_timetable_id=recent_timetable.id
+                        ).distinct()  
+                serializer = self.get_serializer(queryset, many=True)
+                return Response({
+                    "success": True,
+                    "data": serializer.data,
+                    "masterTimetable":recent_timetable.id,
+                    "message": "Exams fetched successfully",
+                })
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -255,6 +280,10 @@ class ExamViewSet(viewsets.ModelViewSet):
             end_date_str = request.data.get("end_date")
             course_ids = request.data.get("course_ids", None)
             slots = request.data.get("slots")
+            client_config= request.data.get("configurations")
+            term= client_config.get("term")
+            location= client_config.get("location")
+            academic_year=client_config.get("academicYear")
  
             if start_date_str and "T" in start_date_str:
                 start_date_str = start_date_str.split("T")[0]
@@ -266,14 +295,17 @@ class ExamViewSet(viewsets.ModelViewSet):
   
         
             master_timetable = MasterTimetable.objects.create(
-                academic_year=datetime.datetime.now().year,
+                academic_year=academic_year,
                 generated_by=request.user,
                 start_date=start_date,
                 end_date=end_date,
+                location_id= int(location),
+                semester_id=int(term)
+
             )
         
 
-            exams, _, unscheduled = generate_exam_schedule(
+            exams, _, unscheduled, reasons = generate_exam_schedule(
                 slots=slots, course_ids=course_ids, master_timetable=master_timetable
             )
             queryset = self.filter_queryset(self.get_queryset())
@@ -292,23 +324,29 @@ class ExamViewSet(viewsets.ModelViewSet):
                             courseSerializer = CourseSerializer(course)
                             c["course"] = courseSerializer.data
                             c["groups"] = []
-                            unscheduled = UnscheduledExam.objects.create(
-                                course=course, master_timetable=master_timetable
-                            )
-                            for g in group:
-                                enrollement = Enrollment.objects.filter(
-                                    course=course, group_id=g
-                                ).first()
-                                unscheduled_group = UnscheduledExamGroup.objects.create(
-                                    exam=unscheduled, group=enrollement.group
+                            if any(group):
+                                reason=reasons[group[0]]
+                                c["reason"]=reason
+                                unscheduled = UnscheduledExam.objects.create(
+                                    course=course, master_timetable=master_timetable, reason=reason
                                 )
-                                unscheduled.groups.add(unscheduled_group)
-                                courseGroupSerializer = CourseGroupSerializer(
-                                    enrollement.group
-                                )
-                                c["groups"].append(courseGroupSerializer.data)
-                            unScheduled.append(c)
-                            unscheduled.save()
+                                for g in group:
+                                    if not g:
+                                        continue
+                                    enrollement = Enrollment.objects.filter(
+                                        course=course, group_id=g
+                                    ).first()
+                                
+                                    unscheduled_group = UnscheduledExamGroup.objects.create(
+                                        exam=unscheduled, group=enrollement.group
+                                    )
+                                    unscheduled.groups.add(unscheduled_group)
+                                    courseGroupSerializer = CourseGroupSerializer(
+                                        enrollement.group
+                                    )
+                                    c["groups"].append(courseGroupSerializer.data)
+                                unScheduled.append(c)
+                                unscheduled.save()
 
             return Response(
                 {
@@ -323,8 +361,15 @@ class ExamViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
+            location=request.GET.get("location")
+
             exams = UnscheduledExam.objects.all()
+            if location:
+                recent_timetable=MasterTimetable.objects.filter(location_id=location).order_by("-created_at").first()
+                exams = UnscheduledExam.objects.filter(master_timetable_id=recent_timetable.id)
+
             serializer = UnscheduledExamSerializer(exams, many=True)
+         
 
             converted = map(
                 lambda exam: {
@@ -349,7 +394,6 @@ class ExamViewSet(viewsets.ModelViewSet):
             )
 
         except Exception as e:
-            print(e)
             return Response(
                 {
                     "success": False,
@@ -524,8 +568,10 @@ class ExamViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_200_OK,
                 )
         except Exception as e:
+            print(e)
+
             return Response(
-                {"success": False, "message": f"Error truncating data: {str(e)}"},
+                {"success": False, "message": f"Error finding slot conflict data: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 

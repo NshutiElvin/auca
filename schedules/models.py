@@ -3,6 +3,9 @@ from courses.models import Course
 from courses.models import Course
 from django.contrib.auth import get_user_model
 
+from rooms.models import Location
+from semesters.models import Semester
+
 User= get_user_model()
 class TimeStampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)   
@@ -52,6 +55,8 @@ class MasterTimetable( TimeStampedModel):
     start_date = models.DateField()
     end_date = models.DateField()
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='DRAFT')
+    location= models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL)
+    semester= models.ForeignKey(Semester, null=True, blank=True, on_delete=models.SET_NULL)
     exams = models.ManyToManyField(
         'exams.Exam',
         through='MasterTimetableExam',

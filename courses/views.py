@@ -8,6 +8,7 @@ from .permissions import IsAdminOrInstructor, IsStudent
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter
+from enrollments.models import Enrollment
 
 
 class BaseViewSet(viewsets.ModelViewSet):
@@ -17,9 +18,16 @@ class BaseViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         serializer = self.get_serializer(queryset, many=True)
+        courses= serializer.data
+        enrollments= Enrollment.objects.all()
+        for course in courses:
+            for enrollment in enrollments:
+                if enrollment.course_id==course["id"]:
+                    course["students_enrolled"]+=1
+
         return Response({
             'success': True,
-            'data': serializer.data,
+            'data': courses,
             'message': f'{self.basename.title()}s fetched successfully'
         })
 
@@ -62,6 +70,24 @@ class BaseViewSet(viewsets.ModelViewSet):
             'success': True,
             'message': f'{self.basename.title()} deleted successfully'
         }, status=status.HTTP_204_NO_CONTENT)
+    @action(detail=False, methods=["post"], url_path="timetable-courses")
+    def timetable_tables(self, request, *args, **kwargs):
+        try:
+            client_conf= request.data.get("configurations")
+            semester= client_conf.get("term")
+            location=client_conf.get("location")
+            courses= Course.objects.filter(semester__id=int(semester), department__location_id=int(location))
+            coursesSerializer= CourseSerializer(courses, many=True)
+            return Response({
+            'success': True,
+            "data": coursesSerializer.data,
+            'message': f'timetable courses retrieved successfully'
+        }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                "success":False,
+                "message":"Failed to get the timetable courses"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
  
