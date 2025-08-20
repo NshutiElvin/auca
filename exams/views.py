@@ -306,7 +306,7 @@ class ExamViewSet(viewsets.ModelViewSet):
         
 
             exams, _, unscheduled, reasons = generate_exam_schedule(
-                slots=slots, course_ids=course_ids, master_timetable=master_timetable
+                slots=slots, course_ids=course_ids, master_timetable=master_timetable, location=int(location)
             )
             queryset = self.filter_queryset(self.get_queryset())
             serializer = self.get_serializer(queryset, many=True)
@@ -571,8 +571,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             print(e)
 
             return Response(
-                {"success": False, "message": f"Error finding slot conflict data: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status=status.HTTP_200_OK,
             )
 
 

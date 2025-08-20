@@ -465,80 +465,138 @@ def verify_groups_compatiblity(groups):
     return group_conflicts
 
 
-def find_compatible_courses_within_group(courses):
+ 
+
+def  find_compatible_courses_within_group(courses):
     if not courses:
-        return {"compatible_groups": [], "group_conflicts": defaultdict(list)}
+        return {"compatible_courses": [], "course_conflicts": defaultdict(list)}
 
-    # Data structure: {course_id: {group_id: [student_ids]}}
-    course_group_students = defaultdict(lambda: defaultdict(list))
+    # Data structure: {course_id: set(student_ids)}
+    course_students = defaultdict(set)
 
-    # Populate enrollment data
+    # Populate enrollment data (aggregate all students across all groups for each course)
     for enrollment in Enrollment.objects.filter(course_id__in=courses).iterator():
-        course_group_students[enrollment.course_id][enrollment.group_id].append(
-            enrollment.student_id
-        )
+        course_students[enrollment.course_id].add(enrollment.student_id)
 
-    # Generate all group pairs across courses
-    all_groups = [
-        (course_id, group_id)
-        for course_id in course_group_students
-        for group_id in course_group_students[course_id]
-    ]
-
-    # Build group-level conflict graph
-    group_conflicts = defaultdict(list)
-    for (course1, group1), (course2, group2) in combinations(all_groups, 2):
-        students1 = set(course_group_students[course1][group1])
-        students2 = set(course_group_students[course2][group2])
+    # Build course-level conflict graph
+    course_conflicts = defaultdict(list)
+    for course1, course2 in combinations(courses, 2):
+        students1 = course_students[course1]
+        students2 = course_students[course2]
 
         if students1 & students2:  # Shared students exist
-            group_conflicts[(course1, group1)].append((course2, group2))
-            group_conflicts[(course2, group2)].append((course1, group1))
+            course_conflicts[course1].append(course2)
+            course_conflicts[course2].append(course1)
 
-    # Greedy graph coloring for groups
-    color_groups = defaultdict(list)
+    # Greedy graph coloring for courses
+    color_courses = defaultdict(list)
     colored = {}
-    group_list = sorted(all_groups, key=lambda x: -len(group_conflicts[x]))
+    course_list = sorted(courses, key=lambda x: -len(course_conflicts[x]))
 
-    for group in group_list:
-        # Find used colors in conflicting groups
+    for course in course_list:
+        # Find used colors in conflicting courses
         used_colors = {
             colored[conflict]
-            for conflict in group_conflicts[group]
+            for conflict in course_conflicts[course]
             if conflict in colored
         }
 
         # Assign first available color
-        for color in range(len(all_groups)):
+        for color in range(len(courses)):
             if color not in used_colors:
-                colored[group] = color
-                color_groups[color].append(group)
+                colored[course] = color
+                color_courses[color].append(course)
                 break
 
-    # Convert to compatible groups format
-    compatible_groups = []
-    for color, groups in color_groups.items():
-        # Group by course to maintain structure
-        course_map = defaultdict(list)
-        for course_id, group_id in groups:
-            course_map[course_id].append(group_id)
-
-        compatible_groups.append(
+    # Convert to compatible courses format
+    compatible_courses = []
+    for color, course_ids in color_courses.items():
+        compatible_courses.append(
             {
                 "timeslot": color + 1,
-                "courses": [
-                    {"course_id": course_id, "groups": group_ids}
-                    for course_id, group_ids in course_map.items()
-                ],
-                "student_count": sum(
-                    len(course_group_students[course_id][group_id])
-                    for course_id, group_id in groups
-                ),
+                "courses": course_ids,
+                "student_count": sum(len(course_students[course_id]) for course_id in course_ids),
             }
         )
 
-    compatible_groups.sort(key=lambda x: -x["student_count"])
-    return compatible_groups, group_conflicts
+    compatible_courses.sort(key=lambda x: -x["student_count"])
+    return compatible_courses, course_conflicts
+
+
+# def find_compatible_courses_within_group(courses):
+#     if not courses:
+#         return {"compatible_groups": [], "group_conflicts": defaultdict(list)}
+
+#     # Data structure: {course_id: {group_id: [student_ids]}}
+#     course_group_students = defaultdict(lambda: defaultdict(list))
+
+#     # Populate enrollment data
+#     for enrollment in Enrollment.objects.filter(course_id__in=courses).iterator():
+#         course_group_students[enrollment.course_id][enrollment.group_id].append(
+#             enrollment.student_id
+#         )
+
+#     # Generate all group pairs across courses
+#     all_groups = [
+#         (course_id, group_id)
+#         for course_id in course_group_students
+#         for group_id in course_group_students[course_id]
+#     ]
+
+#     # Build group-level conflict graph
+#     group_conflicts = defaultdict(list)
+#     for (course1, group1), (course2, group2) in combinations(all_groups, 2):
+#         students1 = set(course_group_students[course1][group1])
+#         students2 = set(course_group_students[course2][group2])
+
+#         if students1 & students2:  # Shared students exist
+#             group_conflicts[(course1, group1)].append((course2, group2))
+#             group_conflicts[(course2, group2)].append((course1, group1))
+
+#     # Greedy graph coloring for groups
+#     color_groups = defaultdict(list)
+#     colored = {}
+#     group_list = sorted(all_groups, key=lambda x: -len(group_conflicts[x]))
+
+#     for group in group_list:
+#         # Find used colors in conflicting groups
+#         used_colors = {
+#             colored[conflict]
+#             for conflict in group_conflicts[group]
+#             if conflict in colored
+#         }
+
+#         # Assign first available color
+#         for color in range(len(all_groups)):
+#             if color not in used_colors:
+#                 colored[group] = color
+#                 color_groups[color].append(group)
+#                 break
+
+#     # Convert to compatible groups format
+#     compatible_groups = []
+#     for color, groups in color_groups.items():
+#         # Group by course to maintain structure
+#         course_map = defaultdict(list)
+#         for course_id, group_id in groups:
+#             course_map[course_id].append(group_id)
+
+#         compatible_groups.append(
+#             {
+#                 "timeslot": color + 1,
+#                 "courses": [
+#                     {"course_id": course_id, "groups": group_ids}
+#                     for course_id, group_ids in course_map.items()
+#                 ],
+#                 "student_count": sum(
+#                     len(course_group_students[course_id][group_id])
+#                     for course_id, group_id in groups
+#                 ),
+#             }
+#         )
+
+#     compatible_groups.sort(key=lambda x: -x["student_count"])
+#     return compatible_groups, group_conflicts
 
 
 def has_sufficient_gap(student_exam_dates, proposed_date, min_gap_days=2):
@@ -571,20 +629,16 @@ def can_schedule_course_group_on_slot(group, course, proposed_date, student_exam
     for student_id in student_ids:
         current_exam_dates = student_exam_dates.get(student_id, [])
 
-        # Check for same-slot conflict
-        same_slot_exam = StudentExam.objects.filter(
-            student_id=student_id,
-            exam__date=proposed_date,
-            exam__start_time=course.start_time if hasattr(course, "start_time") else None,
-            exam__end_time=course.end_time if hasattr(course, "end_time") else None,
-        ).exists()
-        if same_slot_exam:
+        # Check for same-day conflict
+        if proposed_date in current_exam_dates:
             conflicts.append(
-            f"Student {student_id} already has an exam in the same slot on {proposed_date}"
+                f"Student {student_id} already has exam on {proposed_date}"
             )
             continue
 
-       
+        # Check for day-off constraint
+        if not has_sufficient_gap(current_exam_dates, proposed_date):
+            conflicts.append(f"Student {student_id} would not have sufficient gap")
 
     return len(conflicts) == 0, conflicts
 
@@ -697,20 +751,20 @@ def get_fallback_priority(group_name, weekday):
 def generate_exam_schedule(
     slots=None, course_ids=None, master_timetable: MasterTimetable = None, location=None
 ):
-
-    try:
-
+    # try:
         if course_ids:
             enrolled_courses = course_ids
         else:
             enrolled_courses = Course.objects.annotate(
                 enrollment_count=Count("enrollments")
-            ).filter(enrollment_count__gt=0)
+            ).filter(enrollment_count__gt=0).values_list('id', flat=True)
 
-        # Find compatible groups
-        compatible_groups, _ = find_compatible_courses_within_group(enrolled_courses)
+        # Find compatible courses (course-level instead of group-level)
+        compatible_courses, _ = find_compatible_courses_within_group(enrolled_courses)
+        print("Compatible courses:", compatible_courses)
+        
         unscheduled_reasons = {}
-        if not compatible_groups:
+        if not compatible_courses:
             print("No compatible course groups found")
             return [], "No compatible course groups found", []
 
@@ -720,27 +774,27 @@ def generate_exam_schedule(
         }
 
         # Initialize tracking variables
-        remaining_groups = copy.deepcopy(compatible_groups)
-        unscheduled_groups = []
+        remaining_courses = copy.deepcopy(compatible_courses)
+        unscheduled_courses = []
         exams_created = []
         student_exam_dates = defaultdict(list)
         scheduled_exams_per_date = defaultdict(list)
-
+        
         # Get total available seats
         all_available_seats = (
             Room.objects.filter(location_id=location).order_by("-capacity").aggregate(total=Sum("capacity"))["total"]
             or 0
         )
 
-        print(f"Total compatible groups to schedule: {len(compatible_groups)}")
+        print(f"Total compatible course groups to schedule: {len(compatible_courses)}")
         print(f"Available seats: {all_available_seats}")
 
         with transaction.atomic():
             dates = sorted(slots_by_date.keys())
             date_index = 0
 
-            # Process each compatible group on its own day
-            for group_idx, course_group in enumerate(compatible_groups):
+            # Process each compatible course group on its own day
+            for group_idx, course_group in enumerate(compatible_courses):
                 # Find next available date (skip Saturdays)
                 while date_index < len(dates):
                     current_date = dates[date_index]
@@ -752,182 +806,147 @@ def generate_exam_schedule(
 
                 # Check if we have available dates
                 if date_index >= len(dates):
-                    print(
-                        f"No more available dates. Remaining groups will be unscheduled."
-                    )
-                    unscheduled_groups.extend(remaining_groups[group_idx:])
-                    for g in remaining_groups[group_idx:]:
-                        for course in g["courses"]:
-                            for group in course["groups"]:
-                                unscheduled_reasons[group] = f"No more available dates."
-
+                    print(f"No more available dates. Remaining groups will be unscheduled.")
+                    unscheduled_courses.extend(remaining_courses[group_idx:])
+                    for g in remaining_courses[group_idx:]:
+                        for course_id in g["courses"]:
+                            unscheduled_reasons[course_id] = f"No more available dates."
                     break
 
                 current_date = dates[date_index]
                 weekday = current_date.strftime("%A")
 
-                print(f"Scheduling group {group_idx + 1} on {current_date} ({weekday})")
+                print(f"Scheduling course group {group_idx + 1} on {current_date} ({weekday})")
 
                 # Track slot usage for this date
                 slot_seats_usage = {"Morning": 0, "Evening": 0, "Afternoon": 0}
                 group_fully_scheduled = True
-                current_group = remaining_groups[group_idx]
+                current_group = remaining_courses[group_idx]
 
                 # Process all courses in this compatible group
-                for course_dict in current_group["courses"][
-                    :
-                ]:  # Create copy to iterate
-                    course_id = course_dict["course_id"]
-                    course_groups = course_dict["groups"][:]
-
+                for course_id in current_group["courses"][:]:  # Create copy to iterate
                     try:
                         course = Course.objects.get(id=course_id)
                     except Course.DoesNotExist:
                         print(f"Course with id {course_id} not found")
                         continue
 
-                    # Process all groups for this course
-                    for group_id in course_groups:
-                        try:
-                            group = CourseGroup.objects.get(id=group_id)
-                        except CourseGroup.DoesNotExist:
-                            print(f"Group with id {group_id} not found")
-                            continue
+                    # Get all students for this course (across all groups)
+                    student_ids = list(
+                        Enrollment.objects.filter(course=course)
+                        .values_list("student_id", flat=True)
+                        .distinct()
+                    )
 
-                        # Get students for this group
-                        student_ids = list(
-                            Enrollment.objects.filter(
-                                course=course, group=group
-                            ).values_list("student_id", flat=True)
+                    if not student_ids:
+                        # Remove empty courses
+                        remove_scheduled_course(remaining_courses, course_id)
+                        continue
+                    
+                    all_slots = set()
+                    for slot in slots_by_date[current_date]:
+                        all_slots.add(slot["name"])
+                    
+                    # Determine exam time based on course and day
+                    # You might want to modify get_exam_time_for_group or create a new function
+                    # For now, using a default slot or the first available
+                    slot_name = "Morning"  # Default, or implement course-based logic
+                    # Determine exam time based on course and day
+                    if all_slots:
+                        slot_name = list(all_slots)[0]  # Use first available slot
+                    
+                    wanted_slot = list(
+                        filter(
+                            lambda x: x["name"] == slot_name,
+                            slots_by_date[current_date],
                         )
+                    )[0]
+                    start_time = time(*map(int, wanted_slot["start"].split(":")))
+                    end_time = time(*map(int, wanted_slot["end"].split(":")))
 
-                        if not student_ids:
-                            # Remove empty groups
-                            remove_scheduled_group(
-                                remaining_groups, course_id, group_id
+                    if not start_time or not end_time:
+                        print(f"No valid time slot for course {course.code} on {weekday}")
+                        group_fully_scheduled = False
+                        continue
+
+                    # Check if we have enough seats for this slot
+                    if (
+                        slot_seats_usage[slot_name] + len(student_ids)
+                        <= all_available_seats
+                    ):
+                        # try:
+                            # Create the exam (no group association now)
+                            group= CourseGroup.objects.filter(course=course).first()
+                            exam = Exam.objects.create(
+                                date=current_date,
+                                start_time=start_time,
+                                end_time=end_time,
+                                group=group,   
+                                slot_name=slot_name,
                             )
-                            continue
-                        all_slots = set()
-                        for slot in slots_by_date[current_date]:
-                            all_slots.add(slot["name"])
-                        # Determine exam time based on group and day
-                        slot_name = get_exam_time_for_group(
-                            group.group_name, weekday, all_slots
+                            master_timetable.exams.add(exam)
+                            exams_created.append(exam)
+
+                            # Create student exams for all students in the course
+                            for student_id in student_ids:
+                                student_exam = StudentExam.objects.create(
+                                    student_id=student_id, exam=exam
+                                )
+                                scheduled_exams_per_date[current_date].append(
+                                    student_exam
+                                )
+                                student_exam_dates[student_id].append(current_date)
+                           
+
+                            # Update slot usage
+                            slot_seats_usage[slot_name] += len(student_ids)
+
+                            # Remove this course from remaining courses
+                            remove_scheduled_course(remaining_courses, course_id)
+
+                            print(f"  ✓ Scheduled course {course.code} at {start_time}-{end_time}")
+
+                        # except Exception as e:
+                        #     print(f"  ✗ Failed to create exam for course {course.code}: {str(e)}")
+                        #     logger.error(f"Failed to create exam: {str(e)}")
+                        #     group_fully_scheduled = False
+                    else:
+                        unscheduled_reasons[course_id] = (
+                            f"  ✗ Not enough seats for course {course.code} in {slot_name} slot"
                         )
-                        wanted_slot = list(
-                            filter(
-                                lambda x: x["name"] == slot_name,
-                                slots_by_date[current_date],
-                            )
-                        )[0]
-                        start_time = time(*map(int, wanted_slot["start"].split(":")))
-                        end_time = time(*map(int, wanted_slot["end"].split(":")))
-
-                        if not start_time or not end_time:
-                            print(
-                                f"No valid time slot for group {group.group_name} on {weekday}"
-                            )
-                            group_fully_scheduled = False
-                            continue
-
-                        # slot_name = get_slot_name(start_time, end_time)
-
-                        # Check if we have enough seats for this slot
-                        if (
-                            slot_seats_usage[slot_name] + len(student_ids)
-                            <= all_available_seats
-                        ):
-                            try:
-                                # Create the exam
-                                exam = Exam.objects.create(
-                                    date=current_date,
-                                    start_time=start_time,
-                                    end_time=end_time,
-                                    group=group,
-                                    slot_name=slot_name,
-                                )
-                                master_timetable.exams.add(exam)
-                                exams_created.append(exam)
-
-                                # Create student exams
-                                for student_id in student_ids:
-                                    student_exam = StudentExam.objects.create(
-                                        student_id=student_id, exam=exam
-                                    )
-                                    scheduled_exams_per_date[current_date].append(
-                                        student_exam
-                                    )
-                                    student_exam_dates[student_id].append(current_date)
-                                    current_exam_data = {
-                                        "student": student_exam.student.user.first_name
-                                        + " "
-                                        + student_exam.student.user.last_name,
-                                        "scheduled":len(remaining_groups)-1,
-                                        "all_exams":len(compatible_groups)
-                                    }
-                                    send_exam_data.delay(current_exam_data,user_id=1, broadcast=True)
-
-                                # Update slot usage
-                                slot_seats_usage[slot_name] += len(student_ids)
-
-                                # Remove this group from remaining groups
-                                remove_scheduled_group(
-                                    remaining_groups, course_id, group_id
-                                )
-
-                                print(
-                                    f"  ✓ Scheduled course {course_id}, group {group_id} at {start_time}-{end_time}"
-                                )
-
-                            except Exception as e:
-                                print(
-                                    f"  ✗ Failed to create exam for course {course_id}, group {group_id}: {str(e)}"
-                                )
-                                logger.error(f"Failed to create exam: {str(e)}")
-                                group_fully_scheduled = False
-                        else:
-                            unscheduled_reasons[group_id] = (
-                                f"  ✗ Not enough seats for course {course_id}, group {group_id} in {slot_name} slot"
-                            )
-                            print(
-                                f"  ✗ Not enough seats for course {course_id}, group {group_id} in {slot_name} slot"
-                            )
-                            print(
-                                f"    Required: {len(student_ids)}, Available: {all_available_seats - slot_seats_usage[slot_name]}"
-                            )
-                            group_fully_scheduled = False
+                        print(f"  ✗ Not enough seats for course {course.code} in {slot_name} slot")
+                        print(f"    Required: {len(student_ids)}, Available: {all_available_seats - slot_seats_usage[slot_name]}")
+                        group_fully_scheduled = False
 
                 # Clean up empty courses from this group
-                clean_empty_courses_from_group(remaining_groups[group_idx])
+                if not current_group["courses"]:
+                    remaining_courses[group_idx] = None
 
                 # Check if group was fully scheduled
-                if not group_fully_scheduled or remaining_groups[group_idx]["courses"]:
-                    # Some parts of the group couldn't be scheduled
-                    if remaining_groups[group_idx]["courses"]:
-                        unscheduled_groups.append(remaining_groups[group_idx])
-                        for course in remaining_groups[group_idx]["courses"]:
-                            for group in course["groups"]:
-
-                                unscheduled_reasons[group] = (
-                                    f"  ! Group {group_idx + 1} partially scheduled - some courses remain"
-                                )
-                        print(
-                            f"  ! Group {group_idx + 1} partially scheduled - some courses remain"
-                        )
+                if not group_fully_scheduled or (current_group["courses"] and any(current_group["courses"])):
+                    # Some courses couldn't be scheduled
+                    if current_group["courses"]:
+                        unscheduled_courses.append(current_group)
+                        for course_id in current_group["courses"]:
+                            unscheduled_reasons[course_id] = (
+                                f"  ! Course group {group_idx + 1} partially scheduled - some courses remain"
+                            )
+                        print(f"  ! Course group {group_idx + 1} partially scheduled - some courses remain")
                     else:
-                        print(
-                            f"  ! Group {group_idx + 1} had scheduling issues but no courses remain"
-                        )
+                        print(f"  ! Course group {group_idx + 1} had scheduling issues but no courses remain")
                 else:
-                    print(f"  ✓ Group {group_idx + 1} fully scheduled")
+                    print(f"  ✓ Course group {group_idx + 1} fully scheduled")
 
                 # Move to next date for next group
                 date_index += 1
 
+            # Remove None entries from remaining_courses
+            remaining_courses = [group for group in remaining_courses if group is not None]
+
             # Allocate rooms (assuming this function exists)
             try:
                 unaccommodated_students = allocate_shared_rooms(
-                    location
+                    master_timetable.location.id
                 )
             except Exception as e:
                 print(f"Error in room allocation: {str(e)}")
@@ -935,108 +954,279 @@ def generate_exam_schedule(
 
         print(f"\nScheduling Summary:")
         print(f"  Total exams created: {len(exams_created)}")
-        print(f"  Unscheduled groups: {len(unscheduled_groups)}")
-        print("Groups: ", compatible_groups)
+        print(f"  Unscheduled course groups: {len(unscheduled_courses)}")
+        print("Course groups: ", compatible_courses)
         pprint(unscheduled_reasons)
-        pprint(unscheduled_groups)
         return (
             exams_created,
             unaccommodated_students,
-            unscheduled_groups,
+            unscheduled_courses,
             unscheduled_reasons,
         )
 
-    except Exception as e:
-        print(f"Error generating schedule: {str(e)}")
-        logger.error(f"Error generating schedule: {str(e)}")
-        return [], f"Error generating schedule: {str(e)}", []
+    # except Exception as e:
+    #     print(f"Error generating schedule: {str(e)}")
+    #     logger.error(f"Error generating schedule: {str(e)}")
+    #     return [], f"Error generating schedule: {str(e)}", []
 
 
-def schedule_unscheduled_group(course_id, group_id):
-    try:
-        enrollments=Enrollment.objects.filter(course_id=course_id, group_id=group_id)
-        enrolled_students= set(
-                enrollments.values_list(
-                    "student_id", flat=True
-                )
-            )
-        if not enrolled_students:
-            print(f"No students enrolled in course {course_id}, group {group_id}")
-            return False
-        # look for scheduled exams days where enrolled students might have single exam or not if that day present 
-        min_exam_date = Exam.objects.aggregate(Min("date"))["date__min"]
-        max_exam_date = Exam.objects.aggregate(Max("date"))["date__max"]
-        if not min_exam_date or not max_exam_date:
-            print("No exams found in the system")
-            return False
-        # Build student_exam_dates: {student_id: [exam_date, ...]}
-        student_exam_dates = defaultdict(list)
-        all_student_exams = StudentExam.objects.filter(student_id__in=enrolled_students)
-        for se in all_student_exams:
-            student_exam_dates[se.student_id].append(se.exam.date)
+# Helper functions needed for the updated version
+def remove_scheduled_course(remaining_courses, course_id):
+    """Remove a scheduled course from the remaining courses list"""
+    for group in remaining_courses:
+        if group:
+            if course_id in group["courses"]:
+                group["courses"].remove(course_id)
+                break
+# def generate_exam_schedule(
+#     slots=None, course_ids=None, master_timetable: MasterTimetable = None
+# ):
 
-        for date in range((max_exam_date - min_exam_date).days + 1):
-            current_date = min_exam_date + timedelta(days=date)
-            weekday = current_date.strftime("%A")
-            
-            if weekday == "Saturday":
-                continue
-            # Check if any enrolled student has more than 1 exam on this date
-            student_exam_counts = (
-                StudentExam.objects.filter(
-                    student_id__in=enrolled_students,
-                    exam__date=current_date
-                )
-                .values('student_id')
-                .annotate(exam_count=Count('id'))
-            )
-            # Only proceed if all students have at most 1 exam on this date
-            if all(item['exam_count'] <= 1 for item in student_exam_counts):
-                # Check if we can schedule on this date
-                can_schedule, conflicts = can_schedule_course_group_on_slot(
-                    group_id, course_id, current_date, student_exam_dates
-                )
-                if can_schedule:
-                    # Create the exam
-                    group = CourseGroup.objects.get(id=group_id)
-                    course = Course.objects.get(id=course_id)
-                    slot_name = get_exam_time_for_group(
-                        group.group_name, weekday, ["Morning", "Afternoon", "Evening"]
-                    )
-                    start_time = time(8, 0) if slot_name == "Morning" else time(13, 0)
-                    end_time = time(11, 0) if slot_name == "Morning" else time(16, 0)
-                    existing_slot_students= StudentExam.objects.filter(exam__date=date, )
-                    existing_exams = Exam.objects.filter(
-                        date=current_date,
-                        start_time=start_time,
-                        end_time=end_time,
-                    )
-                    existing_students = Enrollment.objects.filter(
-                        course__in=existing_exams.values_list("group__course_id", flat=True)
-                    ).count()
-                    if existing_students + len(enrolled_students) > slot_capacity:
-                        print(
-                            f"Not enough room capacity for course {course_id}, group {group_id} on {current_date} in {slot_name} slot"
-                        )
-                        continue
+#     try:
 
-                    exam = Exam.objects.create(
-                        date=current_date,
-                        start_time=start_time,
-                        end_time=end_time,
-                        group=group,
-                        slot_name=slot_name,
-                    )
-                    for student_id in enrolled_students:
-                        StudentExam.objects.create(student_id=student_id, exam=exam)
-                    print(f"Scheduled course {course_id}, group {group_id} on {current_date}")
-                    return True
+#         if course_ids:
+#             enrolled_courses = course_ids
+#         else:
+#             enrolled_courses = Course.objects.annotate(
+#                 enrollment_count=Count("enrollments")
+#             ).filter(enrollment_count__gt=0)
 
-    except Exception as e:
-        print(e)
+#         # Find compatible groups
+#         compatible_groups, _ = find_compatible_courses_within_group(enrolled_courses)
+#         print(compatible_groups)
+#         unscheduled_reasons = {}
+#         if not compatible_groups:
+#             print("No compatible course groups found")
+#             return [], "No compatible course groups found", []
 
+#         slots_by_date = {
+#             datetime.strptime(date_str, "%Y-%m-%d").date(): value
+#             for date_str, value in slots.items()
+#         }
 
+#         # Initialize tracking variables
+#         remaining_groups = copy.deepcopy(compatible_groups)
+#         unscheduled_groups = []
+#         exams_created = []
+#         student_exam_dates = defaultdict(list)
+#         scheduled_exams_per_date = defaultdict(list)
 
+#         # Get total available seats
+#         all_available_seats = (
+#             Room.objects.order_by("-capacity").aggregate(total=Sum("capacity"))["total"]
+#             or 0
+#         )
+
+#         print(f"Total compatible groups to schedule: {len(compatible_groups)}")
+#         print(f"Available seats: {all_available_seats}")
+
+#         with transaction.atomic():
+#             dates = sorted(slots_by_date.keys())
+#             date_index = 0
+
+#             # Process each compatible group on its own day
+#             for group_idx, course_group in enumerate(compatible_groups):
+#                 # Find next available date (skip Saturdays)
+#                 while date_index < len(dates):
+#                     current_date = dates[date_index]
+#                     weekday = current_date.strftime("%A")
+
+#                     if weekday != "Saturday":
+#                         break
+#                     date_index += 1
+
+#                 # Check if we have available dates
+#                 if date_index >= len(dates):
+#                     print(
+#                         f"No more available dates. Remaining groups will be unscheduled."
+#                     )
+#                     unscheduled_groups.extend(remaining_groups[group_idx:])
+#                     for g in remaining_groups[group_idx:]:
+#                         for course in g["courses"]:
+#                             for group in course["groups"]:
+#                                 unscheduled_reasons[group] = f"No more available dates."
+
+#                     break
+
+#                 current_date = dates[date_index]
+#                 weekday = current_date.strftime("%A")
+
+#                 print(f"Scheduling group {group_idx + 1} on {current_date} ({weekday})")
+
+#                 # Track slot usage for this date
+#                 slot_seats_usage = {"Morning": 0, "Evening": 0, "Afternoon": 0}
+#                 group_fully_scheduled = True
+#                 current_group = remaining_groups[group_idx]
+
+#                 # Process all courses in this compatible group
+#                 for course_dict in current_group["courses"][
+#                     :
+#                 ]:  # Create copy to iterate
+#                     course_id = course_dict["course_id"]
+#                     course_groups = course_dict["groups"][:]
+
+#                     try:
+#                         course = Course.objects.get(id=course_id)
+#                     except Course.DoesNotExist:
+#                         print(f"Course with id {course_id} not found")
+#                         continue
+
+#                     # Process all groups for this course
+#                     for group_id in course_groups:
+#                         try:
+#                             group = CourseGroup.objects.get(id=group_id)
+#                         except CourseGroup.DoesNotExist:
+#                             print(f"Group with id {group_id} not found")
+#                             continue
+
+#                         # Get students for this group
+#                         student_ids = list(
+#                             Enrollment.objects.filter(
+#                                 course=course, group=group
+#                             ).values_list("student_id", flat=True)
+#                         )
+
+#                         if not student_ids:
+#                             # Remove empty groups
+#                             remove_scheduled_group(
+#                                 remaining_groups, course_id, group_id
+#                             )
+#                             continue
+#                         all_slots = set()
+#                         for slot in slots_by_date[current_date]:
+#                             all_slots.add(slot["name"])
+#                         # Determine exam time based on group and day
+#                         slot_name = get_exam_time_for_group(
+#                             group.group_name, weekday, all_slots
+#                         )
+#                         wanted_slot = list(
+#                             filter(
+#                                 lambda x: x["name"] == slot_name,
+#                                 slots_by_date[current_date],
+#                             )
+#                         )[0]
+#                         start_time = time(*map(int, wanted_slot["start"].split(":")))
+#                         end_time = time(*map(int, wanted_slot["end"].split(":")))
+
+#                         if not start_time or not end_time:
+#                             print(
+#                                 f"No valid time slot for group {group.group_name} on {weekday}"
+#                             )
+#                             group_fully_scheduled = False
+#                             continue
+
+#                         # slot_name = get_slot_name(start_time, end_time)
+
+#                         # Check if we have enough seats for this slot
+#                         if (
+#                             slot_seats_usage[slot_name] + len(student_ids)
+#                             <= all_available_seats
+#                         ):
+#                             try:
+#                                 # Create the exam
+#                                 exam = Exam.objects.create(
+#                                     date=current_date,
+#                                     start_time=start_time,
+#                                     end_time=end_time,
+#                                     group=group,
+#                                     slot_name=slot_name,
+#                                 )
+#                                 master_timetable.exams.add(exam)
+#                                 exams_created.append(exam)
+
+#                                 # Create student exams
+#                                 for student_id in student_ids:
+#                                     student_exam = StudentExam.objects.create(
+#                                         student_id=student_id, exam=exam
+#                                     )
+#                                     scheduled_exams_per_date[current_date].append(
+#                                         student_exam
+#                                     )
+#                                     student_exam_dates[student_id].append(current_date)
+                               
+
+#                                 # Update slot usage
+#                                 slot_seats_usage[slot_name] += len(student_ids)
+
+#                                 # Remove this group from remaining groups
+#                                 remove_scheduled_group(
+#                                     remaining_groups, course_id, group_id
+#                                 )
+
+#                                 print(
+#                                     f"  ✓ Scheduled course {course_id}, group {group_id} at {start_time}-{end_time}"
+#                                 )
+
+#                             except Exception as e:
+#                                 print(
+#                                     f"  ✗ Failed to create exam for course {course_id}, group {group_id}: {str(e)}"
+#                                 )
+#                                 logger.error(f"Failed to create exam: {str(e)}")
+#                                 group_fully_scheduled = False
+#                         else:
+#                             unscheduled_reasons[group_id] = (
+#                                 f"  ✗ Not enough seats for course {course_id}, group {group_id} in {slot_name} slot"
+#                             )
+#                             print(
+#                                 f"  ✗ Not enough seats for course {course_id}, group {group_id} in {slot_name} slot"
+#                             )
+#                             print(
+#                                 f"    Required: {len(student_ids)}, Available: {all_available_seats - slot_seats_usage[slot_name]}"
+#                             )
+#                             group_fully_scheduled = False
+
+#                 # Clean up empty courses from this group
+#                 clean_empty_courses_from_group(remaining_groups[group_idx])
+
+#                 # Check if group was fully scheduled
+#                 if not group_fully_scheduled or remaining_groups[group_idx]["courses"]:
+#                     # Some parts of the group couldn't be scheduled
+#                     if remaining_groups[group_idx]["courses"]:
+#                         unscheduled_groups.append(remaining_groups[group_idx])
+#                         for course in remaining_groups[group_idx]["courses"]:
+#                             for group in course["groups"]:
+
+#                                 unscheduled_reasons[group] = (
+#                                     f"  ! Group {group_idx + 1} partially scheduled - some courses remain"
+#                                 )
+#                         print(
+#                             f"  ! Group {group_idx + 1} partially scheduled - some courses remain"
+#                         )
+#                     else:
+#                         print(
+#                             f"  ! Group {group_idx + 1} had scheduling issues but no courses remain"
+#                         )
+#                 else:
+#                     print(f"  ✓ Group {group_idx + 1} fully scheduled")
+
+#                 # Move to next date for next group
+#                 date_index += 1
+
+#             # Allocate rooms (assuming this function exists)
+#             try:
+#                 unaccommodated_students = allocate_shared_rooms(
+#                     master_timetable.location.id
+#                 )
+#             except Exception as e:
+#                 print(f"Error in room allocation: {str(e)}")
+#                 unaccommodated_students = []
+
+#         print(f"\nScheduling Summary:")
+#         print(f"  Total exams created: {len(exams_created)}")
+#         print(f"  Unscheduled groups: {len(unscheduled_groups)}")
+#         print("Groups: ", compatible_groups)
+#         pprint(unscheduled_reasons)
+#         return (
+#             exams_created,
+#             unaccommodated_students,
+#             unscheduled_groups,
+#             unscheduled_reasons,
+#         )
+
+#     except Exception as e:
+#         print(f"Error generating schedule: {str(e)}")
+#         logger.error(f"Error generating schedule: {str(e)}")
+#         return [], f"Error generating schedule: {str(e)}", []
 
 
 def allocate_shared_rooms_updated(student_exams):

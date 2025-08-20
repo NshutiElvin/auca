@@ -25,6 +25,33 @@ def send_notification( message,user_id=None, broadcast=False):
         )
 
 
+
+
+@shared_task
+def send_exam_data( message,user_id=None, broadcast=False):
+    print(message, user_id, broadcast)
+    user = None
+    if user_id:
+        get_user_model().objects.get(id=user_id)
+ 
+    if user and not broadcast:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}_exams", {
+                "type": "send_exam_data",
+                "message": message
+            }
+        )
+    elif broadcast:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            "broadcast_exams", {
+                "type": "send_exam_data",
+                "message": message
+            }
+        )
+
+
 @shared_task
 def  send_email_task( subject=None, message=None, from_email=None, recipient_list=None):
 

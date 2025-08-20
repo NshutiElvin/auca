@@ -76,6 +76,7 @@ class BaseViewSet(viewsets.ModelViewSet):
             client_conf= request.data.get("configurations")
             semester= client_conf.get("term")
             location=client_conf.get("location")
+            print(semester, location)
             courses= Course.objects.filter(semester__id=int(semester), department__location_id=int(location))
             coursesSerializer= CourseSerializer(courses, many=True)
             return Response({
