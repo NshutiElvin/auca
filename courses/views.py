@@ -9,7 +9,8 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter
 from enrollments.models import Enrollment
-
+from django.db.models import Count
+from rest_framework.response import Response
 
 class BaseViewSet(viewsets.ModelViewSet):
     """
@@ -18,17 +19,24 @@ class BaseViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         serializer = self.get_serializer(queryset, many=True)
-        courses= serializer.data
-        enrollments= Enrollment.objects.all()
+        courses = serializer.data
+
+        course_ids = [course["id"] for course in courses]
+
+        enrollments_count = (
+            Enrollment.objects.filter(course_id__in=course_ids)
+            .values("course_id")
+            .annotate(students_enrolled=Count("id"))
+        )
+        enrollments_map = {e["course_id"]: e["students_enrolled"] for e in enrollments_count}
+
         for course in courses:
-            for enrollment in enrollments:
-                if enrollment.course_id==course["id"]:
-                    course["students_enrolled"]+=1
+            course["students_enrolled"] = enrollments_map.get(course["id"], 0)
 
         return Response({
-            'success': True,
-            'data': courses,
-            'message': f'{self.basename.title()}s fetched successfully'
+            "success": True,
+            "data": courses,
+            "message": f"{self.basename.title()}s fetched successfully"
         })
 
     def retrieve(self, request, *args, **kwargs):

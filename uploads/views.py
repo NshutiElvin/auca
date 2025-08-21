@@ -14,6 +14,10 @@ from semesters.models import Semester
 from django.db import transaction
 from django.utils import timezone
 from django.contrib.auth.hashers import make_password
+from django.utils.crypto import get_random_string
+
+def generate_unique_code():
+        return get_random_string(length=3)
 
 class ImportEnrollmentsData(generics.GenericAPIView):
     parser_classes = [parsers.MultiPartParser]
@@ -44,12 +48,13 @@ class ImportEnrollmentsData(generics.GenericAPIView):
             for code in departments:
                 if pd.isna(code):
                     continue  # Skip if FACULTYCODE is NaN
-                existing_department = Student.objects.filter(department__code=code).first()
+                code_str = str(int(code)) if isinstance(code, float) and code.is_integer() else str(code)
+                existing_department = Department.objects.filter(code=code_str).first()
                 if not existing_department:
                     Department.objects.create(
-                        code=code,
-                        name=code,
-                        location_id=1 if code in ["15", "12", "19"] else 2,
+                        code=code_str,
+                        name=code_str,
+                        location_id=1 if code_str in ["15", "12", "19"] else 2,
                     )
             for term in semesters:
                 existing_semester = Semester.objects.filter(name=term).first()
@@ -78,35 +83,43 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
                     user = User.objects.filter(id=existing_student.user.id).first()
                     if not user:
-                        user = User.objects.create(
-                            email=reg_no,
-                            first_name=first_name,
-                            last_name=last_name,
-                            role="student",
-                            password= make_password("password123."),
-                            is_active=True,
-                        )
+                        user = User.objects.filter(email="".join([first_name.lower(), last_name.lower(), reg_no])+"@auca.ac.rw".replace(" ","")).first()
+                        if not user:
+                            user = User.objects.create(
+                                email="".join([first_name.lower(), last_name.lower(), reg_no])+"@auca.ac.rw".replace(" ",""),
+                                first_name=first_name,
+                                last_name=last_name,
+                                role="student",
+                                password=make_password("password123."),
+                                is_active=True,
+                            )
+                        else:
+                            user.first_name = first_name
+                            user.last_name = last_name
+                            user.email="".join([first_name.lower(), last_name.lower(), reg_no])+"@auca.ac.rw".replace(" ","")
+                            user.save()
                     else:
                         user.first_name = first_name
                         user.last_name = last_name
+                        user.email="".join([first_name.lower(), last_name.lower(), reg_no])+"@auca.ac.rw".replace(" ","")
                         user.save()
                 else:
                     student_row = df[df["STUDNUM"] == stu]
                     student_name = student_row["STUDENTNAME"].values[0] if not student_row.empty else ""
-                    if isinstance(student_name, str):
-                        name_parts = student_name.split()
-                    else:
-                        name_parts = [str(student_name)]
-                    first_name = name_parts[0]
-                    last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
-                    user = User.objects.create(
-                        email=reg_no,
-                        first_name=first_name,
-                        last_name=last_name,
-                        role="student",
-                        password=make_password("password123."),
-                        is_active=True,
-                    )
+                    user = User.objects.filter(email=reg_no).first()
+                    if not user:
+                        user = User.objects.create(
+                            email= "".join([first_name.lower(), last_name.lower(), reg_no])+"@auca.ac.rw".replace(" ",""),
+                            first_name=first_name,
+                            last_name=last_name,
+                            role="student",
+                            password=make_password("password123."),
+                            is_active=True,
+                        )
+                        user.first_name = first_name
+                        user.last_name = last_name
+                        user.email="".join([first_name.lower(), last_name.lower(), reg_no])+"@auca.ac.rw".replace(" ","")
+                        user.save()
                     existing_department = Department.objects.filter(
                         code=df[df["STUDNUM"] == stu]["FACULTYCODE"].values[0]
                     ).first()
@@ -124,6 +137,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     existing_student = Student.objects.create(
                         user=user,
                         reg_no=reg_no,
+                         
                         department=existing_department,
                       )
             for code in courses:

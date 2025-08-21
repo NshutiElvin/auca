@@ -13,6 +13,7 @@ from schedules.utils import (
     get_slot_name,
     verify_groups_compatiblity,
     which_suitable_slot_to_schedule_course_group,
+    schedule_unscheduled_group
 )
 from django.db import transaction
 from enrollments.models import Enrollment
@@ -196,157 +197,140 @@ class ExamViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
-    # @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
-    # def generate_exam_schedule_view(self, request):
-    #     import datetime
-
-    #     start_date_str = request.data.get("start_date")
-    #     end_date_str = request.data.get("end_date")
-    #     course_ids = request.data.get("course_ids", None)
-    #     master_timetable_id= request.data.get("master_timetable_id")
-    #     # print(semester)
-    #     if start_date_str and "T" in start_date_str:
-    #         start_date_str = start_date_str.split("T")[0]
-    #     if end_date_str and "T" in end_date_str:
-    #         end_date_str = end_date_str.split("T")[0]
-
-    #     start_date = parse_date(start_date_str) if start_date_str else None
-    #     end_date = parse_date(end_date_str) if end_date_str else None
-    #     master_timetable=None
-    #     if not master_timetable_id:
-    #         master_timetable= MasterTimetable.objects.create(
-    #             academic_year= datetime.datetime.now().year,
-    #             generated_by= request.user,
-    #             start_date= start_date,
-    #             end_date=end_date)
-    #     else:
-    #         master_timetable= MasterTimetable.objects.get(id=master_timetable_id)
-
-    #     exams, unaccomodated, unscheduled = generate_exam_schedule(
-    #         start_date=start_date,
-    #         end_date=end_date,
-    #         course_ids=course_ids,
-    #         semester=None,
-    #         master_timetable=master_timetable
-    #     )
-    #     queryset = self.filter_queryset(self.get_queryset())
-    #     serializer = self.get_serializer(queryset, many=True)
-    #     # get real unscheduled exams in database
-    #     unScheduled = []
-    #     unscheduled_courses = [course["courses"] for course in unscheduled]
-    #     if len(unscheduled_courses) > 0:
-    #         with transaction.atomic():
-    #             for unscheduleds_ in unscheduled_courses:
-    #                 for unscheduled_ in unscheduleds_:
-    #                     unscheduled_course = unscheduled_["course_id"]
-    #                     group = unscheduled_["groups"]
-    #                     c = {}
-    #                     course = Course.objects.get(id=unscheduled_course)
-    #                     courseSerializer = CourseSerializer(course)
-    #                     c["course"] = courseSerializer.data
-    #                     c["groups"] = []
-    #                     unscheduled = UnscheduledExam.objects.create(course=course, master_timetable=master_timetable)
-    #                     for g in group:
-    #                         enrollement = Enrollment.objects.filter(
-    #                             course=course, group_id=g
-    #                         ).first()
-    #                         unscheduled_group = UnscheduledExamGroup.objects.create(
-    #                             exam=unscheduled, group=enrollement.group
-    #                         )
-    #                         unscheduled.groups.add(unscheduled_group)
-    #                         courseGroupSerializer = CourseGroupSerializer(enrollement.group)
-    #                         c["groups"].append(courseGroupSerializer.data)
-    #                     unScheduled.append(c)
-    #                     unscheduled.save()
-
-    #     return Response(
-    #         {
-    #             "success": True,
-    #             "message": f"{len(exams)} exams scheduled successfully.",
-    #             "data": serializer.data,
-    #             "unaccomodated": [],
-    #             "unscheduled": unScheduled,
-    #         }
-    #     )
+ 
 
     @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
     def generate_exam_schedule_view(self, request):
-        import datetime
+        start_date_str = request.data.get("start_date")
+        end_date_str = request.data.get("end_date")
+        course_ids = request.data.get("course_ids")
+        slots = request.data.get("slots")
+        client_config = request.data.get("configurations", {})
+        term = client_config.get("term")
+        location = client_config.get("location")
+        academic_year = client_config.get("academicYear")
+
+        if start_date_str and "T" in start_date_str:
+            start_date_str = start_date_str.split("T")[0]
+        if end_date_str and "T" in end_date_str:
+            end_date_str = end_date_str.split("T")[0]
+
+        start_date = parse_date(start_date_str) if start_date_str else None
+        end_date = parse_date(end_date_str) if end_date_str else None
 
         with transaction.atomic():
-
-            start_date_str = request.data.get("start_date")
-            end_date_str = request.data.get("end_date")
-            course_ids = request.data.get("course_ids", None)
-            slots = request.data.get("slots")
-            client_config= request.data.get("configurations")
-            term= client_config.get("term")
-            location= client_config.get("location")
-            academic_year=client_config.get("academicYear")
- 
-            if start_date_str and "T" in start_date_str:
-                start_date_str = start_date_str.split("T")[0]
-            if end_date_str and "T" in end_date_str:
-                end_date_str = end_date_str.split("T")[0]
-
-            start_date = parse_date(start_date_str) if start_date_str else None
-            end_date = parse_date(end_date_str) if end_date_str else None
-  
-        
             master_timetable = MasterTimetable.objects.create(
                 academic_year=academic_year,
                 generated_by=request.user,
                 start_date=start_date,
                 end_date=end_date,
-                location_id= int(location),
-                semester_id=int(term)
-
+                location_id=int(location),
+                semester_id=int(term),
             )
-        
 
             exams, _, unscheduled, reasons = generate_exam_schedule(
-                slots=slots, course_ids=course_ids, master_timetable=master_timetable, location=int(location)
+                slots=slots,
+                course_ids=course_ids,
+                master_timetable=master_timetable,
+                location=int(location),
             )
+
             queryset = self.filter_queryset(self.get_queryset())
             serializer = self.get_serializer(queryset, many=True)
-            # get real unscheduled exams in database
-            unScheduled = []
-            unscheduled_courses = [course["courses"] for course in unscheduled]
-            if len(unscheduled_courses) > 0:
-                with transaction.atomic():
-                    for unscheduleds_ in unscheduled_courses:
-                        for unscheduled_ in unscheduleds_:
-                            unscheduled_course = unscheduled_["course_id"]
-                            group = unscheduled_["groups"]
-                            c = {}
-                            course = Course.objects.get(id=unscheduled_course)
-                            courseSerializer = CourseSerializer(course)
-                            c["course"] = courseSerializer.data
-                            c["groups"] = []
-                            if any(group):
-                                reason=reasons[group[0]]
-                                c["reason"]=reason
-                                unscheduled = UnscheduledExam.objects.create(
-                                    course=course, master_timetable=master_timetable, reason=reason
-                                )
-                                for g in group:
-                                    if not g:
-                                        continue
-                                    enrollement = Enrollment.objects.filter(
-                                        course=course, group_id=g
-                                    ).first()
-                                
-                                    unscheduled_group = UnscheduledExamGroup.objects.create(
-                                        exam=unscheduled, group=enrollement.group
-                                    )
-                                    unscheduled.groups.add(unscheduled_group)
-                                    courseGroupSerializer = CourseGroupSerializer(
-                                        enrollement.group
-                                    )
-                                    c["groups"].append(courseGroupSerializer.data)
-                                unScheduled.append(c)
-                                unscheduled.save()
+
+            unscheduled_response = []
+            unscheduled_course_ids = set()
+            unscheduled_group_ids = set()
+            
+            # First, collect all course and group IDs from unscheduled items
+            for course_group in unscheduled:
+                for course_info in course_group.get("courses", []):
+                    course_id = course_info.get("course_id")
+                    groups = list(filter(None, course_info.get("groups", [])))
+                    
+                    if course_id and groups:  # Only consider if we have both course and groups
+                        unscheduled_course_ids.add(course_id)
+                        unscheduled_group_ids.update(groups)
+
+            courses_map = {
+                c.id: c for c in Course.objects.filter(id__in=unscheduled_course_ids)
+            }
+            groups_map = {
+                g.id: g for g in CourseGroup.objects.filter(id__in=unscheduled_group_ids)
+            }
+
+            course_serializers_cache = {}
+            group_serializers_cache = {}
+
+            unscheduled_exam_objs = []
+            unscheduled_exam_group_objs = []
+
+            # Process unscheduled items to create exam entries
+            for course_group in unscheduled:
+                for course_info in course_group.get("courses", []):
+                    course_id = course_info.get("course_id")
+                    groups = list(filter(None, course_info.get("groups", [])))
+                    
+                    # Skip if no course ID or no groups
+                    if not course_id or not groups:
+                        continue
+                    
+                    # Skip if course not found in database
+                    if course_id not in courses_map:
+                        continue
+
+                    course = courses_map[course_id]
+                    # Use the first group's reason or default
+                    reason = reasons.get(groups[0], "No reason provided")
+
+                    # Check if any of the groups are already scheduled
+                    unscheduled_groups_for_course = []
+                    for group_id in groups:
+                        group = groups_map.get(group_id)
+                        if group and not schedule_unscheduled_group(course.id, group.id):
+                            unscheduled_groups_for_course.append(group)
+                    
+                    # Only create unscheduled exam if there are actually unscheduled groups
+                    if unscheduled_groups_for_course:
+                        unscheduled_exam = UnscheduledExam(
+                            course=course,
+                            master_timetable=master_timetable,
+                            reason=reason,
+                        )
+                        unscheduled_exam_objs.append(unscheduled_exam)
+                        
+                        # Prepare response data
+                        c_data = {
+                            "course": course_serializers_cache.setdefault(
+                                course_id, CourseSerializer(course).data
+                            ),
+                            "groups": [],
+                            "reason": reason,
+                            "_unscheduled_exam_ref": unscheduled_exam,
+                            "_groups": unscheduled_groups_for_course,
+                        }
+                        unscheduled_response.append(c_data)
+
+            # Bulk create all unscheduled exams
+            UnscheduledExam.objects.bulk_create(unscheduled_exam_objs)
+
+            # Now create the exam-group relationships
+            for c_data in unscheduled_response:
+                unscheduled_exam = c_data.pop("_unscheduled_exam_ref")
+                groups_for_exam = c_data.pop("_groups")
+                
+                for group in groups_for_exam:
+                    unscheduled_exam_group_objs.append(
+                        UnscheduledExamGroup(exam=unscheduled_exam, group=group)
+                    )
+                    c_data["groups"].append(
+                        group_serializers_cache.setdefault(
+                            group.id, CourseGroupSerializer(group).data
+                        )
+                    )
+
+            # Bulk create all exam-group relationships
+            UnscheduledExamGroup.objects.bulk_create(unscheduled_exam_group_objs)
 
             return Response(
                 {
@@ -354,9 +338,96 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "message": f"{len(exams)} exams scheduled successfully.",
                     "data": serializer.data,
                     "unaccomodated": [],
-                    "unscheduled": unScheduled,
+                    "unscheduled": unscheduled_response,
                 }
             )
+    # @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
+    # def generate_exam_schedule_view(self, request):
+    #     import datetime
+
+    #     with transaction.atomic():
+
+    #         start_date_str = request.data.get("start_date")
+    #         end_date_str = request.data.get("end_date")
+    #         course_ids = request.data.get("course_ids", None)
+    #         slots = request.data.get("slots")
+    #         client_config= request.data.get("configurations")
+    #         term= client_config.get("term")
+    #         location= client_config.get("location")
+    #         academic_year=client_config.get("academicYear")
+ 
+    #         if start_date_str and "T" in start_date_str:
+    #             start_date_str = start_date_str.split("T")[0]
+    #         if end_date_str and "T" in end_date_str:
+    #             end_date_str = end_date_str.split("T")[0]
+
+    #         start_date = parse_date(start_date_str) if start_date_str else None
+    #         end_date = parse_date(end_date_str) if end_date_str else None
+  
+        
+    #         master_timetable = MasterTimetable.objects.create(
+    #             academic_year=academic_year,
+    #             generated_by=request.user,
+    #             start_date=start_date,
+    #             end_date=end_date,
+    #             location_id= int(location),
+    #             semester_id=int(term)
+
+    #         )
+        
+
+    #         exams, _, unscheduled, reasons = generate_exam_schedule(
+    #             slots=slots, course_ids=course_ids, master_timetable=master_timetable, location=int(location)
+    #         )
+    #         queryset = self.filter_queryset(self.get_queryset())
+    #         serializer = self.get_serializer(queryset, many=True)
+    #         # get real unscheduled exams in database
+    #         unScheduled = []
+    #         unscheduled_courses = [course["courses"] for course in unscheduled]
+    #         if len(unscheduled_courses) > 0:
+    #             with transaction.atomic():
+    #                 for unscheduleds_ in unscheduled_courses:
+    #                     for unscheduled_ in unscheduleds_:
+    #                         unscheduled_course = unscheduled_["course_id"]
+    #                         group = unscheduled_["groups"]
+    #                         c = {}
+    #                         course = Course.objects.get(id=unscheduled_course)
+    #                         courseSerializer = CourseSerializer(course)
+    #                         c["course"] = courseSerializer.data
+    #                         c["groups"] = []
+    #                         if any(group):
+    #                             reason=reasons[group[0]]
+    #                             c["reason"]=reason
+    #                             unscheduled = UnscheduledExam.objects.create(
+    #                                 course=course, master_timetable=master_timetable, reason=reason
+    #                             )
+    #                             for g in group:
+    #                                 if not g:
+    #                                     continue
+    #                                 enrollement = Enrollment.objects.filter(
+    #                                     course=course, group_id=g
+    #                                 ).first()
+                                
+    #                                 unscheduled_group = UnscheduledExamGroup.objects.create(
+    #                                     exam=unscheduled, group=enrollement.group
+    #                                 )
+    #                                 unscheduled.groups.add(unscheduled_group)
+    #                                 courseGroupSerializer = CourseGroupSerializer(
+    #                                     enrollement.group
+    #                                 )
+    #                                 c["groups"].append(courseGroupSerializer.data)
+    #                             unScheduled.append(c)
+    #                             unscheduled.save()
+
+    #         return Response(
+    #             {
+    #                 "success": True,
+    #                 "message": f"{len(exams)} exams scheduled successfully.",
+    #                 "data": serializer.data,
+    #                 "unaccomodated": [],
+    #                 "unscheduled": unScheduled,
+    #             }
+    #         )
 
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
