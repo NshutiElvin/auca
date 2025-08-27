@@ -1,4 +1,7 @@
 from rest_framework import serializers
+
+from rooms.serializers import LocationSerializer
+from semesters.serializers import SemesterSerializer
 from .models import CourseSchedule
 from rest_framework import serializers
 from .models import MasterTimetable, MasterTimetableExam
@@ -25,13 +28,15 @@ class CourseScheduleSerializer(serializers.ModelSerializer):
 class MasterTimetableSerializer(serializers.ModelSerializer):
     user= UserSerializer(read_only=True) 
     generated_by=  UserSerializer()   
+    location=LocationSerializer()
+    semester=SemesterSerializer()
   
 
     class Meta:
         model = MasterTimetable
         fields = [
-            "id","academic_year", "generated_by", "generated_at", "published_at", "start_date", "end_date", "status", "user"
-         ]
+            "id","academic_year","location", "generated_by", "generated_at", "published_at", "start_date", "end_date", "status", "user", "semester"
+,         ]
 
  
 

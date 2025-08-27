@@ -23,6 +23,7 @@ from django.db.models import Min, Max
 from datetime import timedelta, time
 from collections import defaultdict
 from notifications.tasks import send_exam_data
+from notifications.tasks import send_notification, send_email_task
 
 logger = logging.getLogger(__name__)
 GROUP_PREFERENCES = {
@@ -192,7 +193,7 @@ def get_course_group(course):
         return course.group
 
     # Option 2: If group is in course name
-    course_name = course.name or course.title
+    course_name =  course.title
     if course_name:
         # Extract last character as group (adjust as needed)
         group_char = course_name.strip()[-1].upper()
@@ -1524,6 +1525,7 @@ def schedule_group_exams(
     groups_dict,
     enrollments_by_group,
     master_timetable,
+    user_id
 ):
     slot_seats_usage = defaultdict(int)
     exams_created = []
@@ -1590,6 +1592,16 @@ def schedule_group_exams(
                     StudentExam(student_id=student_id, exam=exam) for student_id in student_ids
                 ]
                 StudentExam.objects.bulk_create(student_exam_objs)
+                for idx,student_exam in enumerate(student_exam_objs):
+                    notification_message = {
+                        "id":idx,
+                        "title": "Current scheduling status",
+                        "message": f"{student_exam.student.user.first_name} {student_exam.student.user.last_name}, your exam for {course.title} has been scheduled on {current_date} from {start_time} to {end_time}.",
+                        "created_at": datetime.now().isoformat(),
+                        "is_read": False,
+                        "read_at":  None,
+                    }
+                    send_notification.delay(notification_message, user_id)
 
                 slot_seats_usage[slot_name] += needed_seats
                 logger.debug(f"Scheduled course {course_id}, group {group_id} at {start_time}–{end_time}")
@@ -1609,7 +1621,7 @@ def schedule_group_exams(
     return exams_created, partially_scheduled, unscheduled_reasons
 
 
-def generate_exam_schedule(slots=None, course_ids=None, master_timetable: MasterTimetable = None, location=None):
+def generate_exam_schedule(slots=None, course_ids=None, master_timetable: MasterTimetable = None, location=None, user_id=None):
     try:
         courses_dict = fetch_courses(course_ids)
 
@@ -1684,6 +1696,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                     groups_dict,
                     enrollments_by_group,
                     master_timetable,
+                    user_id=user_id
                 )
 
                 exams_created.extend(group_exams)
@@ -1705,16 +1718,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                 logger.error(f"Error in room allocation: {e}")
                 unaccommodated_students = []
 
-        # Send batch notification once after scheduling is done
-        if exams_created:
-            send_exam_data.delay(
-                {
-                    "scheduled": len(compatible_groups),
-                    "all_exams": len(compatible_groups),
-                },
-                user_id=1,
-                broadcast=True,
-            )
+         
 
         logger.info(f"Scheduling Summary: Created {len(exams_created)} exams, {len(unscheduled_groups)} groups unscheduled.")
         return exams_created, unaccommodated_students, unscheduled_groups, unscheduled_reasons
@@ -2731,7 +2735,7 @@ def reschedule_exam(exam_id, new_date, slot=None):
                     common_count = len(common_students)
                     raise ValueError(
                         f"Course compatibility conflict: {common_count} student(s) are enrolled in both "
-                        f"'{exam.course.name}' and '{other_exam.course.name}'. "
+                      
                         f"These courses cannot be scheduled in the same time slot."
                     )
 

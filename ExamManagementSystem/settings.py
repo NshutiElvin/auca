@@ -141,7 +141,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'auca',
         'USER': 'postgres',
-        'PASSWORD': 'postgres',
+        'PASSWORD': 'elvin24.',
         'HOST': 'localhost',
         'PORT': '5432',
     }
@@ -262,7 +262,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("127.0.0.1", 6380)], 
+            "hosts": [("127.0.0.1", 6379)], 
             "capacity": 1500, 
             "expiry": 10,
         },

@@ -577,25 +577,30 @@ class CourseScheduleViewSet(viewsets.ModelViewSet):
 
             # Get today's exams with student counts
             today_exams = self.get_recent_exams(recent_timetable).filter(
-                date=today
+                date=today, status__in=["READY", "ONGOING"]
             ).annotate(
                 student_count=Count('studentexam')
             ).order_by('start_time')
 
             exam_data = []
             total_students = 0
+            students= StudentExam.objects.filter(
+                exam__date=today,   
+                exam__status__in=["READY", "ONGOING"]
+            )
+
             
-            for exam in today_exams:
-                exam_data.append({
-                    'exam_id': exam.id,
-                    'exam_name': f"{exam.group.course.title} {exam.group.group_name}",
-                    'start_time': exam.start_time,
-                    'end_time': exam.end_time,
-                    'status': exam.status,
-                    'student_count': exam.student_count,
-                    'location': exam.group.course.department.location.name if exam.group.course.department.location.name else None
+            for student in  students:
+                exam_data.append({ 'exam_id': student.student.id,
+                    'exam_name': f"{student.student.user.first_name} {student.student.user.last_name}",
+                    'start_time': student.exam.start_time,
+                    'end_time': student.exam.end_time,
+                    'status': student.exam.status,
+                    'student_count': student.student.user.email,
+                    'location': student.exam.group.location.name if student.exam.group.location else None
                 })
-                total_students += exam.student_count
+            
+                total_students += 1
 
             return Response({
                 "success": True,
