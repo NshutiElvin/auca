@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: django-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: daphne -b 0.0.0.0 -p $PORT xamManagementSystem.asgi:application
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.6
+      - key: DATABASE_URL
+        fromDatabase:
+          name: django-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: django-redis
+          property: connectionString
+
+  - type: redis
+    name: django-redis
+    plan: free
+    ipAllowList: []  # Allow all connections
+
+  - type: postgres
+    name: django-db
+    plan: free
