@@ -14,6 +14,7 @@ load_dotenv()
 from pathlib import Path
 from datetime import timedelta
 import os
+import dj_database_url
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -127,26 +128,29 @@ WSGI_APPLICATION = "ExamManagementSystem.wsgi.application"
 #     }
 # }
 
-DATABASES = {
-    #   'default': {
-    #     'ENGINE': 'django.db.backends.mysql',  
-    #     'NAME': os.getenv("DATABASE_NAME", default='exam_management'),
-    #     'USER': os.getenv("DATABASE_USER", default='root'),
-    #     'PASSWORD': os.getenv("DATABASE_PASSWORD", default='root'),
-    #     'HOST': os.getenv("DATABASE_HOST", default='localhost'),
-    #     'PORT': os.getenv("DATABASE_PORT", default='3306'),       
-                             
-    # },
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'auca',
-        'USER': 'auca_s9l7',
-        'PASSWORD': 'ZJAZNQ9W6M0CxycsCwJ2Jjp33CHniYVa.',
-        'HOST': 'dpg-d2omup0gjchc73ev4cfg-a',
-        'PORT': '5432',
-    }
-}
+ # Database
+# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+  
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+if DATABASE_URL:
+    # Parse the DATABASE_URL environment variable
+    DATABASES = {
+        'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600)
+    }
+else:
+    # Fallback to local development database
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv("DATABASE_NAME", 'auca'),
+            'USER': os.getenv("DATABASE_USER", 'auca_s9l7'),
+            'PASSWORD': os.getenv("DATABASE_PASSWORD", 'ZJAZNQ9W6M0CxycsCwJ2Jjp33CHniYVa'),
+            'HOST': os.getenv("DATABASE_HOST", 'dpg-d2omup0gjchc73ev4cfg-a'),
+            'PORT': os.getenv("DATABASE_PORT", '5432'),
+        }
+    }
 CORS_ALLOW_ALL_ORIGINS = True  
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
