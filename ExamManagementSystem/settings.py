@@ -240,8 +240,8 @@ SIMPLE_JWT = {
 }
 
 # settings.py
-CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
-CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/0'
+CELERY_BROKER_URL = 'redis-19670.c12.us-east-1-4.ec2.redns.redis-cloud.com:19670/0'
+CELERY_RESULT_BACKEND = 'redis-19670.c12.us-east-1-4.ec2.redns.redis-cloud.com:19670/0'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -256,19 +256,28 @@ EMAIL_HOST_PASSWORD = 'nturpkkuuehyqxvk'
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 TIME_ZONE = 'Africa/Kigali'
 
+REDIS_HOST = os.environ.get('REDIS_HOST', 'redis-19670.c12.us-east-1-4.ec2.redns.redis-cloud.com')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 19670))
+REDIS_PASSWORD = os.environ.get('REDIS_PASSWORD', 'ZW1Eu9awebxbZQqePrLvPQ8yMrOfJsPD')
+REDIS_USERNAME = os.environ.get('REDIS_USERNAME', 'default')  # Usually 'default' for Redis Cloud
 
+# Build Redis URL with authentication
+REDIS_URL = f"redis://{REDIS_USERNAME}:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
 
+# For Django Channels
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)], 
+            "hosts": [REDIS_URL],  
             "capacity": 1500, 
             "expiry": 10,
         },
     },
 }
 
+
+ 
 JWT_SIGNING_KEY=  os.getenv('SIGNING_KEY', default='django-in secure-!@#4$%^&*()_+')
 ENCRYPTION_KEY= "zi04hD8XCSjoaK50qPhGUMfFJ62ixG6YVpdIzm8Z7K0"
 QRCODE_LIFETIME=5
