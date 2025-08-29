@@ -34,7 +34,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 value=refresh_token,
                 httponly=True,
                 secure=True,  
-                samesite='Lax',  
+                samesite='None',  
                 max_age=60*60*24   
             )
             response.data.pop('refresh', None)
