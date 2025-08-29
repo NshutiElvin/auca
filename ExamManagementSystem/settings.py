@@ -142,7 +142,7 @@ DATABASES = {
         'NAME': 'auca',
         'USER': 'auca_s9l7',
         'PASSWORD': 'ZJAZNQ9W6M0CxycsCwJ2Jjp33CHniYVa.',
-        'HOST': 'dpg-d2omup0gjchc73ev4cfg-a.ohio-postgres.render.com',
+        'HOST': 'dpg-d2omup0gjchc73ev4cfg-a',
         'PORT': '5432',
     }
 }
