@@ -140,9 +140,9 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'auca',
-        'USER': 'postgres',
-        'PASSWORD': 'elvin24.',
-        'HOST': 'localhost',
+        'USER': 'auca_s9l7',
+        'PASSWORD': 'ZJAZNQ9W6M0CxycsCwJ2Jjp33CHniYVa.',
+        'HOST': 'dpg-d2omup0gjchc73ev4cfg-a.ohio-postgres.render.com',
         'PORT': '5432',
     }
 }
@@ -150,6 +150,7 @@ DATABASES = {
 CORS_ALLOW_ALL_ORIGINS = True  
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
+    "https://auca-frontend.onrender.com"
     "http://localhost:3000",   
     "http://127.0.0.1:3000",
 ]
