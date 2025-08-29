@@ -2343,21 +2343,28 @@ def allocate_shared_rooms_updated(student_exams):
 
 #     return unaccommodated
 
+from collections import defaultdict
+from django.db import transaction
+from datetime import time
 
 def allocate_shared_rooms(location_id):
-    # Get all unassigned student exams with related data
-    student_exams = (
+    # Get all unassigned student exams with related data in one query
+    student_exams = list(
         StudentExam.objects.filter(room__isnull=True)
         .select_related("exam", "exam__group__course__semester", "student")
         .order_by("exam__date", "exam__start_time")
     )
 
-    if not student_exams.exists():
+    if not student_exams:
         return []
 
+    # Cache rooms ordered by capacity (largest first for better filling)
     rooms = list(Room.objects.filter(location_id=location_id).order_by("-capacity"))
     if not rooms:
         raise Exception("No rooms available for allocation.")
+
+    # Create room lookup for faster access
+    room_dict = {room.id: room for room in rooms}
 
     # Define time slots
     SLOTS = [
@@ -2365,140 +2372,310 @@ def allocate_shared_rooms(location_id):
         ("Afternoon", time(13, 0), time(16, 0)),
         ("Evening", time(18, 0), time(20, 0)),
     ]
+    
+    # Create slot mapping for O(1) lookup
+    slot_mapping = {}
+    for slot_name, start, end in SLOTS:
+        slot_mapping[start] = (slot_name, start, end)
 
     with transaction.atomic():
-        schedule = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        # Track room allocations: schedule[date][slot_name][room_id] = count
+        schedule = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        
+        # Group student exams by date, slot, and exam for efficient processing
+        date_slot_exam_students = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        
+        for se in student_exams:
+            exam_start = se.exam.start_time
+            if exam_start in slot_mapping:
+                slot_name = slot_mapping[exam_start][0]
+                date_slot_exam_students[se.exam.date][slot_name][se.exam].append(se)
+
+        # Collect all assignments to batch update
+        assignments = []  # [(student_exam_id, room_id), ...]
         unaccommodated = []
 
-        # Organize students by date and slot
-        date_slot_students = defaultdict(lambda: defaultdict(list))
-        for se in student_exams:
-            for slot_name, start, end in SLOTS:
-                if se.exam.slot_name == slot_name:
-                    date_slot_students[se.exam.date][slot_name].append(se)
-                    break
-
         # Process each date and slot
-        for date, slots in date_slot_students.items():
-            for slot_name, slot_start, slot_end in SLOTS:
-                slot_students = slots.get(slot_name, [])
-                if not slot_students:
-                    continue
-
-                # Group by exam
-                exams = defaultdict(list)
-                for se in slot_students:
-                    exams[se.exam].append(se)
-
-                # Sort exams (largest first for pairing)
-                sorted_exams = sorted(exams.items(), key=lambda x: -len(x[1]))
-
-                room_index = 0
-                remaining_students = slot_students.copy()
-
-                while remaining_students and room_index < len(rooms):
-                    room = rooms[room_index]
-                    room_index += 1
-
-                    if room.id in schedule[date][slot_name]:
+        for exam_date, slots in date_slot_exam_students.items():
+            for slot_name, exams_dict in slots.items():
+                
+                # Convert to list and sort by size (largest first for better pairing)
+                exam_list = [(exam, students) for exam, students in exams_dict.items()]
+                exam_list.sort(key=lambda x: len(x[1]), reverse=True)
+                
+                # Track remaining students for this slot
+                remaining_students_by_exam = {exam: students.copy() for exam, students in exam_list}
+                
+                # Available rooms for this slot (reset capacity tracking)
+                available_rooms = [(room, room.capacity) for room in rooms]
+                
+                # Phase 1: Try to pair different courses in rooms
+                processed_pairs = set()
+                
+                for i in range(len(exam_list)):
+                    exam1, students1 = exam_list[i]
+                    remaining1 = remaining_students_by_exam[exam1]
+                    
+                    if not remaining1:
                         continue
-
-                    available = room.capacity
-                    if available <= 0:
-                        continue
-
-                    # --- Try to find the best pair ---
-                    best_pair = None
-                    max_fill = 0
-
-                    for i in range(len(sorted_exams)):
-                        exam1, students1 = sorted_exams[i]
-                        if not students1:
+                        
+                    for j in range(i + 1, len(exam_list)):
+                        exam2, students2 = exam_list[j]
+                        remaining2 = remaining_students_by_exam[exam2]
+                        
+                        if not remaining2:
                             continue
-                        for j in range(i + 1, len(sorted_exams)):
-                            exam2, students2 = sorted_exams[j]
-                            if not students2:
+                            
+                        # Check if different courses
+                        if exam1.group.course.id != exam2.group.course.id:
+                            pair_key = tuple(sorted([exam1.id, exam2.id]))
+                            if pair_key in processed_pairs:
                                 continue
+                            processed_pairs.add(pair_key)
+                            
+                            # Find best room for this pair
+                            best_room_idx = None
+                            best_utilization = 0
+                            
+                            for room_idx, (room, capacity) in enumerate(available_rooms):
+                                if capacity <= 0:
+                                    continue
+                                    
+                                max_each = capacity // 2
+                                size1 = min(len(remaining1), max_each)
+                                size2 = min(len(remaining2), max_each)
+                                total = size1 + size2
+                                
+                                if total > best_utilization:
+                                    best_utilization = total
+                                    best_room_idx = room_idx
+                            
+                            if best_room_idx is not None and best_utilization > 0:
+                                room, capacity = available_rooms[best_room_idx]
+                                
+                                # Calculate actual assignments
+                                max_each = capacity // 2
+                                assign1 = remaining1[:min(len(remaining1), max_each)]
+                                assign2 = remaining2[:min(len(remaining2), max_each)]
+                                
+                                # Record assignments
+                                for se in assign1:
+                                    assignments.append((se.id, room.id))
+                                for se in assign2:
+                                    assignments.append((se.id, room.id))
+                                
+                                # Update tracking
+                                for se in assign1:
+                                    remaining1.remove(se)
+                                for se in assign2:
+                                    remaining2.remove(se)
+                                
+                                total_assigned = len(assign1) + len(assign2)
+                                available_rooms[best_room_idx] = (room, capacity - total_assigned)
+                                schedule[exam_date][slot_name][room.id] += total_assigned
 
-                            # sem1 = int(exam1.group.course.semester.name.split()[1])
-                            # sem2 = int(exam2.group.course.semester.name.split()[1])
-                            course1 = exam1.group.course.id
-                            course2 = exam2.group.course.id
+                # Phase 2: Fill remaining capacity with single exams
+                for exam, _ in exam_list:
+                    remaining = remaining_students_by_exam[exam]
+                    
+                    while remaining:
+                        # Find room with most available capacity
+                        best_room_idx = None
+                        best_capacity = 0
+                        
+                        for room_idx, (room, capacity) in enumerate(available_rooms):
+                            if capacity > best_capacity:
+                                best_capacity = capacity
+                                best_room_idx = room_idx
+                        
+                        if best_room_idx is None or best_capacity <= 0:
+                            break
+                            
+                        room, capacity = available_rooms[best_room_idx]
+                        to_assign = remaining[:capacity]
+                        
+                        # Record assignments
+                        for se in to_assign:
+                            assignments.append((se.id, room.id))
+                        
+                        # Update tracking
+                        for se in to_assign:
+                            remaining.remove(se)
+                        
+                        available_rooms[best_room_idx] = (room, capacity - len(to_assign))
+                        schedule[exam_date][slot_name][room.id] += len(to_assign)
 
-                            if course1 != course2:
-                                # Calculate split sizes (equal proportioning)
-                                max_each = available // 2
-                                size1 = min(len(students1), max_each)
-                                size2 = min(len(students2), max_each)
-                                total_fill = size1 + size2
-                                if total_fill > max_fill:
-                                    best_pair = (exam1, exam2, size1, size2)
-                                    max_fill = total_fill
+        # Collect truly unaccommodated students
+        for exam, remaining in remaining_students_by_exam.items():
+            unaccommodated.extend([se.student for se in remaining])
 
-                    if best_pair:
-                        exam1, exam2, size1, size2 = best_pair
-                        assigned = []
-
-                        # Assign proportionally
-                        for exam, size in [(exam1, size1), (exam2, size2)]:
-                            exam_students = [
-                                se for se in remaining_students if se.exam == exam
-                            ][:size]
-                            assigned.extend(exam_students)
-                            for se in exam_students:
-                                remaining_students.remove(se)
-                                exams[exam].remove(se)
-
-                        schedule[date][slot_name][room.id].extend(assigned)
-
-                    else:
-                        # --- No pair found: assign smallest course alone ---
-                        smallest_exam, students = max(
-                            ((e, s) for e, s in sorted_exams if s),
-                            key=lambda x: len(x[1]),
-                            default=(None, None),
-                        )
-                        if smallest_exam:
-                            to_assign = students[:available]
-                            schedule[date][slot_name][room.id].extend(to_assign)
-                            for se in to_assign:
-                                remaining_students.remove(se)
-                                exams[smallest_exam].remove(se)
-
-                # Track unassigned students
-                unaccommodated.extend([se.student for se in remaining_students])
-
-        # Save all assignments to DB
-        for date, slots in schedule.items():
-            for slot_name, room_assignments in slots.items():
-                for room_id, student_exams in room_assignments.items():
-                    StudentExam.objects.filter(
-                        id__in=[se.id for se in student_exams]
-                    ).update(room_id=room_id)
-
-        # Final attempt for leftover students
-        if unaccommodated:
-            remaining_exams = StudentExam.objects.filter(
-                student__in=unaccommodated, room__isnull=True
-            ).select_related("exam")
-
-            for se in remaining_exams:
-                date = se.exam.date
-                for slot_name, start, end in SLOTS:
-                    if se.exam.start_time == start and se.exam.end_time == end:
-                        for room in rooms:
-                            current = len(schedule[date][slot_name].get(room.id, []))
-                            if current < room.capacity:
-                                se.room = room
-                                se.save()
-                                try:
-                                    unaccommodated.remove(se.student)
-                                except ValueError:
-                                    pass
-                                schedule[date][slot_name][room.id].append(se)
-                                break
+        # Bulk update all room assignments
+        if assignments:
+            # Group assignments by room for efficient bulk updates
+            assignments_by_room = defaultdict(list)
+            for se_id, room_id in assignments:
+                assignments_by_room[room_id].append(se_id)
+            
+            # Perform bulk updates for each room
+            for room_id, se_ids in assignments_by_room.items():
+                StudentExam.objects.filter(id__in=se_ids).update(room_id=room_id)
 
     return unaccommodated
+# def allocate_shared_rooms(location_id):
+#     # Get all unassigned student exams with related data
+#     student_exams = (
+#         StudentExam.objects.filter(room__isnull=True)
+#         .select_related("exam", "exam__group__course__semester", "student")
+#         .order_by("exam__date", "exam__start_time")
+#     )
+
+#     if not student_exams.exists():
+#         return []
+
+#     rooms = list(Room.objects.filter(location_id=location_id).order_by("-capacity"))
+#     if not rooms:
+#         raise Exception("No rooms available for allocation.")
+
+#     # Define time slots
+#     SLOTS = [
+#         ("Morning", time(8, 0), time(11, 0)),
+#         ("Afternoon", time(13, 0), time(16, 0)),
+#         ("Evening", time(18, 0), time(20, 0)),
+#     ]
+
+#     with transaction.atomic():
+#         schedule = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+#         unaccommodated = []
+
+#         # Organize students by date and slot
+#         date_slot_students = defaultdict(lambda: defaultdict(list))
+#         for se in student_exams:
+#             for slot_name, start, end in SLOTS:
+#                 if se.exam.slot_name == slot_name:
+#                     date_slot_students[se.exam.date][slot_name].append(se)
+#                     break
+
+#         # Process each date and slot
+#         for date, slots in date_slot_students.items():
+#             for slot_name, slot_start, slot_end in SLOTS:
+#                 slot_students = slots.get(slot_name, [])
+#                 if not slot_students:
+#                     continue
+
+#                 # Group by exam
+#                 exams = defaultdict(list)
+#                 for se in slot_students:
+#                     exams[se.exam].append(se)
+
+#                 # Sort exams (largest first for pairing)
+#                 sorted_exams = sorted(exams.items(), key=lambda x: -len(x[1]))
+
+#                 room_index = 0
+#                 remaining_students = slot_students.copy()
+
+#                 while remaining_students and room_index < len(rooms):
+#                     room = rooms[room_index]
+#                     room_index += 1
+
+#                     if room.id in schedule[date][slot_name]:
+#                         continue
+
+#                     available = room.capacity
+#                     if available <= 0:
+#                         continue
+
+#                     # --- Try to find the best pair ---
+#                     best_pair = None
+#                     max_fill = 0
+
+#                     for i in range(len(sorted_exams)):
+#                         exam1, students1 = sorted_exams[i]
+#                         if not students1:
+#                             continue
+#                         for j in range(i + 1, len(sorted_exams)):
+#                             exam2, students2 = sorted_exams[j]
+#                             if not students2:
+#                                 continue
+
+#                             # sem1 = int(exam1.group.course.semester.name.split()[1])
+#                             # sem2 = int(exam2.group.course.semester.name.split()[1])
+#                             course1 = exam1.group.course.id
+#                             course2 = exam2.group.course.id
+
+#                             if course1 != course2:
+#                                 # Calculate split sizes (equal proportioning)
+#                                 max_each = available // 2
+#                                 size1 = min(len(students1), max_each)
+#                                 size2 = min(len(students2), max_each)
+#                                 total_fill = size1 + size2
+#                                 if total_fill > max_fill:
+#                                     best_pair = (exam1, exam2, size1, size2)
+#                                     max_fill = total_fill
+
+#                     if best_pair:
+#                         exam1, exam2, size1, size2 = best_pair
+#                         assigned = []
+
+#                         # Assign proportionally
+#                         for exam, size in [(exam1, size1), (exam2, size2)]:
+#                             exam_students = [
+#                                 se for se in remaining_students if se.exam == exam
+#                             ][:size]
+#                             assigned.extend(exam_students)
+#                             for se in exam_students:
+#                                 remaining_students.remove(se)
+#                                 exams[exam].remove(se)
+
+#                         schedule[date][slot_name][room.id].extend(assigned)
+
+#                     else:
+#                         # --- No pair found: assign smallest course alone ---
+#                         smallest_exam, students = max(
+#                             ((e, s) for e, s in sorted_exams if s),
+#                             key=lambda x: len(x[1]),
+#                             default=(None, None),
+#                         )
+#                         if smallest_exam:
+#                             to_assign = students[:available]
+#                             schedule[date][slot_name][room.id].extend(to_assign)
+#                             for se in to_assign:
+#                                 remaining_students.remove(se)
+#                                 exams[smallest_exam].remove(se)
+
+#                 # Track unassigned students
+#                 unaccommodated.extend([se.student for se in remaining_students])
+
+#         # Save all assignments to DB
+#         for date, slots in schedule.items():
+#             for slot_name, room_assignments in slots.items():
+#                 for room_id, student_exams in room_assignments.items():
+#                     StudentExam.objects.filter(
+#                         id__in=[se.id for se in student_exams]
+#                     ).update(room_id=room_id)
+
+#         # Final attempt for leftover students
+#         if unaccommodated:
+#             remaining_exams = StudentExam.objects.filter(
+#                 student__in=unaccommodated, room__isnull=True
+#             ).select_related("exam")
+
+#             for se in remaining_exams:
+#                 date = se.exam.date
+#                 for slot_name, start, end in SLOTS:
+#                     if se.exam.start_time == start and se.exam.end_time == end:
+#                         for room in rooms:
+#                             current = len(schedule[date][slot_name].get(room.id, []))
+#                             if current < room.capacity:
+#                                 se.room = room
+#                                 se.save()
+#                                 try:
+#                                     unaccommodated.remove(se.student)
+#                                 except ValueError:
+#                                     pass
+#                                 schedule[date][slot_name][room.id].append(se)
+#                                 break
+
+#     return unaccommodated
 
 
 def verify_day_off_constraints(min_gap_days=1):
