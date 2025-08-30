@@ -1879,7 +1879,7 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             now = timezone.now().astimezone(tz)
             today = now.date()
        
-            student_exam = StudentExam.objects.get(
+            student_exam = StudentExam.objects.filter(
             
                 exam__date=today,
                 instructor=instructor,
