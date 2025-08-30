@@ -1907,10 +1907,11 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK,
             )
 
-        except:
+        except Exception as e:
             return Response(
                 {
                     "success": False,
+                    "error":str(e),
                     "message": "An error occurred while fetching student exams for this instructor.",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
