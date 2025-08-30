@@ -257,175 +257,369 @@ def get_occupied_seats_by_time_slot(date, start_time):
     ).count()
 
     return occupied_count
-
+from collections import defaultdict
+from datetime import timedelta
+from django.db.models import Min, Max, Prefetch
 
 def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot):
-
     all_suggestions = []
     all_conflicts = defaultdict(list)
     possible_slots = []
 
     day_of_week = date.weekday()
 
-    if day_of_week == 5:
+    # Early exits for optimization
+    if day_of_week == 5:  # Saturday
         all_conflicts["Saturday"].append("No exams can be scheduled on Saturday")
         return new_group, None, all_suggestions, all_conflicts
 
-    if day_of_week == 4 and suggested_slot == "Evening":
+    if day_of_week == 4 and suggested_slot == "Evening":  # Friday evening
         suggested_slot = "Morning"
 
-    enrolled_students_new_group = Enrollment.objects.filter(
-        group_id__in=new_group
-    ).values_list("student_id", flat=True)
+    # Get date range once
+    date_range = Exam.objects.aggregate(
+        min_date=Min("date"), 
+        max_date=Max("date")
+    )
+    min_exam_date = date_range["min_date"]
+    max_exam_date = date_range["max_date"]
 
-    # Function to check conflicts for a given date and slot
-    def check_slot_conflicts(check_date, slot):
-        slot_exams = Exam.objects.filter(date=check_date, slot_name=slot)
-        slot_groups = [exam.group.id for exam in slot_exams]
-        slot_students = StudentExam.objects.filter(
-            exam__group__in=slot_groups
-        ).values_list("student_id", flat=True)
+    # Calculate all dates to check upfront
+    dates_to_check = []
+    
+    # Current date
+    dates_to_check.append(date)
+    
+    # Past dates (up to min_exam_date)
+    current_date = date - timedelta(days=1)
+    while current_date >= min_exam_date:
+        if current_date.weekday() != 5:  # Skip Saturday
+            dates_to_check.append(current_date)
+        current_date -= timedelta(days=1)
+    
+    # Future dates (up to 14 days or max_exam_date)
+    for days_after in range(1, 15):
+        future_date = date + timedelta(days=days_after)
+        if future_date > max_exam_date or future_date.weekday() == 5:
+            continue
+        dates_to_check.append(future_date)
 
+    # Bulk fetch all enrolled students for new groups
+    enrolled_students_new_group = set(
+        Enrollment.objects.filter(group_id__in=new_group)
+        .values_list("student_id", flat=True)
+    )
+
+    # Bulk fetch all exams and related data for the date range
+    all_exams = (
+        Exam.objects
+        .filter(date__in=dates_to_check)
+        .select_related('group', 'group__course')
+        .prefetch_related(
+            Prefetch(
+                'studentexam_set',
+                queryset=StudentExam.objects.select_related('student')
+            )
+        )
+    )
+
+    # Pre-process exam data into efficient lookup structures
+    exams_by_date_slot = defaultdict(list)
+    students_by_date_slot = defaultdict(set)
+    
+    for exam in all_exams:
+        key = (exam.date, exam.slot_name)
+        exams_by_date_slot[key].append(exam)
+        
+        # Get all students for this exam
+        exam_students = {se.student_id for se in exam.studentexam_set.all()}
+        students_by_date_slot[key].update(exam_students)
+
+    def get_available_slots_for_date(check_date):
+        """Get available slots for a given date based on day of week"""
+        available_slots = ["Morning", "Afternoon", "Evening"]
+        if check_date.weekday() == 4:  # Friday
+            available_slots.remove("Evening")
+        return available_slots
+
+    def check_slot_conflicts_optimized(check_date, slot):
+        """Optimized conflict checking using pre-fetched data"""
+        key = (check_date, slot)
+        slot_students = students_by_date_slot.get(key, set())
+        
         conflicts = []
-        for student in enrolled_students_new_group:
-            if student in slot_students:
-                exam = slot_exams.filter(group__enrollment__student_id=student).first()
-                conflicts.append(
-                    {
-                        "student": student,
-                        "group": exam.group.group_name,
-                        "course": exam.group.course.title,
-                        "date": check_date,
-                        "slot": slot,
-                    }
-                )
+        conflicting_students = enrolled_students_new_group.intersection(slot_students)
+        
+        if conflicting_students:
+            # Only get exam details for conflicting students
+            slot_exams = exams_by_date_slot.get(key, [])
+            for student_id in conflicting_students:
+                # Find the exam this student is enrolled in
+                for exam in slot_exams:
+                    exam_student_ids = {se.student_id for se in exam.studentexam_set.all()}
+                    if student_id in exam_student_ids:
+                        conflicts.append({
+                            "student": student_id,
+                            "group": exam.group.group_name,
+                            "course": exam.group.course.title,
+                            "date": check_date,
+                            "slot": slot,
+                        })
+                        break
 
         return conflicts, len(slot_students)
 
-    def evaluate_slot(check_date, slot, is_suggested=False):
-        conflicts, student_count = check_slot_conflicts(check_date, slot)
+    def evaluate_slot_optimized(check_date, slot, is_suggested=False):
+        """Optimized slot evaluation"""
+        conflicts, student_count = check_slot_conflicts_optimized(check_date, slot)
         total_students = len(enrolled_students_new_group) + student_count
 
+        suggestion_type = "Suggested slot" if is_suggested else "Slot"
+        
         if conflicts:
             all_conflicts[check_date].extend(conflicts)
-            if is_suggested:
-                all_suggestions.append(
-                    {
-                        "suggested": False,
-                        "date": check_date,
-                        "slot": slot,
-                        "reason": f"Suggested slot {check_date} {slot} is not available (conflicts)",
-                    }
-                )
-            else:
-                all_suggestions.append(
-                    {
-                        "suggested": False,
-                        "date": check_date,
-                        "slot": slot,
-                        "reason": f"Slot {check_date} {slot} is not available (conflicts)",
-                    }
-                )
+            all_suggestions.append({
+                "suggested": False,
+                "date": check_date,
+                "slot": slot,
+                "reason": f"{suggestion_type} {check_date} {slot} is not available (conflicts)",
+            })
             return False
-        elif not check_rooms_availability_for_slots(
-            total_students,
-        ):
+            
+        elif not check_rooms_availability_for_slots(total_students):
             room_msg = f"{check_date} {slot} slot lacks room capacity"
             all_conflicts[check_date].append(room_msg)
-            if is_suggested:
-                all_suggestions.append(
-                    {
-                        "suggested": False,
-                        "date": check_date,
-                        "slot": slot,
-                        "reason": f"Suggested slot {check_date} {slot} is not available (insufficient rooms)",
-                    }
-                )
-            else:
-                all_suggestions.append(
-                    {
-                        "suggested": False,
-                        "date": check_date,
-                        "slot": slot,
-                        "reason": f"Slot {check_date} {slot} is not available (insufficient rooms)",
-                    }
-                )
+            all_suggestions.append({
+                "suggested": False,
+                "date": check_date,
+                "slot": slot,
+                "reason": f"{suggestion_type} {check_date} {slot} is not available (insufficient rooms)",
+            })
             return False
+            
         else:
-            msg = {
+            all_suggestions.append({
                 "suggested": True,
                 "date": check_date,
                 "slot": slot,
                 "reason": f"Slot {check_date} {slot} is available",
-            }
-            all_suggestions.append(msg)
+            })
             possible_slots.append({"date": check_date, "slot": slot})
             return True
 
-    # Check suggested slot first
-    evaluate_slot(date, suggested_slot, is_suggested=True)
+    # Process dates in priority order for early termination
+    # Priority: 1) Current date with suggested slot, 2) Current date other slots, 3) Other dates
+    
+    # Check suggested slot on current date first
+    if evaluate_slot_optimized(date, suggested_slot, is_suggested=True):
+        # If suggested slot is available, we can potentially return early
+        # depending on requirements
+        pass
 
     # Check other slots on the same day
-    available_slots = ["Morning", "Afternoon", "Evening"]
-    if day_of_week == 4:  # Friday
-        available_slots.remove("Evening")
-
+    available_slots = get_available_slots_for_date(date)
     for slot in available_slots:
         if slot != suggested_slot:
-            evaluate_slot(date, slot)
+            evaluate_slot_optimized(date, slot)
 
-    # Check past dates (up to 7 days before)
-    min_exam_date = Exam.objects.aggregate(Min("date"))["date__min"]
-    max_exam_date = Exam.objects.aggregate(Max("date"))["date__max"]
-    current_date = date - timedelta(days=1)
-    while current_date >= min_exam_date:
-        if current_date.weekday() != 5:
-            past_available_slots = ["Morning", "Afternoon", "Evening"]
-            if current_date.weekday() == 4:
-                past_available_slots.remove("Evening")
+    # Check other dates only if needed (based on business requirements)
+    for check_date in dates_to_check[1:]:  # Skip current date (already checked)
+        available_slots = get_available_slots_for_date(check_date)
+        for slot in available_slots:
+            evaluate_slot_optimized(check_date, slot)
 
-            for slot in past_available_slots:
-                evaluate_slot(current_date, slot)
-
-        current_date -= timedelta(days=1)
-
-    # Check future dates (up to 14 days after)
-    for days_after in range(1, 15):
-        future_date = date + timedelta(days=days_after)
-        if future_date > max_exam_date:  # Don't check beyond the latest exam date
-            continue
-        if future_date.weekday() == 5:  # Skip Saturday
-            continue
-
-        future_available_slots = ["Morning", "Afternoon", "Evening"]
-        if future_date.weekday() == 4:  # Friday
-            future_available_slots.remove("Evening")
-
-        for slot in future_available_slots:
-            evaluate_slot(future_date, slot)
-
-    # Determine best suggestion (prioritizing suggested date, then suggested slot, then earliest date)
+    # Optimized best suggestion finding
     best_suggestion = None
     if possible_slots:
-        # Try to find on the same date first
-        same_date_slots = [s for s in possible_slots if s["date"] == date]
-        if same_date_slots:
-            # Try to find the suggested slot first
-            suggested_slot_match = [
-                s for s in same_date_slots if s["slot"] == suggested_slot
-            ]
-            if suggested_slot_match:
-                best_suggestion = suggested_slot_match[0]
-            else:
+        # Group by date for faster lookup
+        slots_by_date = defaultdict(list)
+        for slot_info in possible_slots:
+            slots_by_date[slot_info["date"]].append(slot_info)
+        
+        # Prioritize: same date -> suggested slot -> earliest date
+        if date in slots_by_date:
+            same_date_slots = slots_by_date[date]
+            # Look for suggested slot first
+            for slot_info in same_date_slots:
+                if slot_info["slot"] == suggested_slot:
+                    best_suggestion = slot_info
+                    break
+            if not best_suggestion:
                 best_suggestion = same_date_slots[0]
         else:
-            # Find the earliest possible date
-            possible_slots.sort(key=lambda x: x["date"])
-            best_suggestion = possible_slots[0]
-
-    pprint(best_suggestion)
+            # Find earliest date
+            earliest_date = min(slots_by_date.keys())
+            best_suggestion = slots_by_date[earliest_date][0]
 
     return new_group, best_suggestion, all_suggestions, all_conflicts
+
+# def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot):
+
+#     all_suggestions = []
+#     all_conflicts = defaultdict(list)
+#     possible_slots = []
+
+#     day_of_week = date.weekday()
+
+#     if day_of_week == 5:
+#         all_conflicts["Saturday"].append("No exams can be scheduled on Saturday")
+#         return new_group, None, all_suggestions, all_conflicts
+
+#     if day_of_week == 4 and suggested_slot == "Evening":
+#         suggested_slot = "Morning"
+
+#     enrolled_students_new_group = Enrollment.objects.filter(
+#         group_id__in=new_group
+#     ).values_list("student_id", flat=True)
+
+#     # Function to check conflicts for a given date and slot
+#     def check_slot_conflicts(check_date, slot):
+#         slot_exams = Exam.objects.filter(date=check_date, slot_name=slot)
+#         slot_groups = [exam.group.id for exam in slot_exams]
+#         slot_students = StudentExam.objects.filter(
+#             exam__group__in=slot_groups
+#         ).values_list("student_id", flat=True)
+
+#         conflicts = []
+#         for student in enrolled_students_new_group:
+#             if student in slot_students:
+#                 exam = slot_exams.filter(group__enrollment__student_id=student).first()
+#                 conflicts.append(
+#                     {
+#                         "student": student,
+#                         "group": exam.group.group_name,
+#                         "course": exam.group.course.title,
+#                         "date": check_date,
+#                         "slot": slot,
+#                     }
+#                 )
+
+#         return conflicts, len(slot_students)
+
+#     def evaluate_slot(check_date, slot, is_suggested=False):
+#         conflicts, student_count = check_slot_conflicts(check_date, slot)
+#         total_students = len(enrolled_students_new_group) + student_count
+
+#         if conflicts:
+#             all_conflicts[check_date].extend(conflicts)
+#             if is_suggested:
+#                 all_suggestions.append(
+#                     {
+#                         "suggested": False,
+#                         "date": check_date,
+#                         "slot": slot,
+#                         "reason": f"Suggested slot {check_date} {slot} is not available (conflicts)",
+#                     }
+#                 )
+#             else:
+#                 all_suggestions.append(
+#                     {
+#                         "suggested": False,
+#                         "date": check_date,
+#                         "slot": slot,
+#                         "reason": f"Slot {check_date} {slot} is not available (conflicts)",
+#                     }
+#                 )
+#             return False
+#         elif not check_rooms_availability_for_slots(
+#             total_students,
+#         ):
+#             room_msg = f"{check_date} {slot} slot lacks room capacity"
+#             all_conflicts[check_date].append(room_msg)
+#             if is_suggested:
+#                 all_suggestions.append(
+#                     {
+#                         "suggested": False,
+#                         "date": check_date,
+#                         "slot": slot,
+#                         "reason": f"Suggested slot {check_date} {slot} is not available (insufficient rooms)",
+#                     }
+#                 )
+#             else:
+#                 all_suggestions.append(
+#                     {
+#                         "suggested": False,
+#                         "date": check_date,
+#                         "slot": slot,
+#                         "reason": f"Slot {check_date} {slot} is not available (insufficient rooms)",
+#                     }
+#                 )
+#             return False
+#         else:
+#             msg = {
+#                 "suggested": True,
+#                 "date": check_date,
+#                 "slot": slot,
+#                 "reason": f"Slot {check_date} {slot} is available",
+#             }
+#             all_suggestions.append(msg)
+#             possible_slots.append({"date": check_date, "slot": slot})
+#             return True
+
+#     # Check suggested slot first
+#     evaluate_slot(date, suggested_slot, is_suggested=True)
+
+#     # Check other slots on the same day
+#     available_slots = ["Morning", "Afternoon", "Evening"]
+#     if day_of_week == 4:  # Friday
+#         available_slots.remove("Evening")
+
+#     for slot in available_slots:
+#         if slot != suggested_slot:
+#             evaluate_slot(date, slot)
+
+#     # Check past dates (up to 7 days before)
+#     min_exam_date = Exam.objects.aggregate(Min("date"))["date__min"]
+#     max_exam_date = Exam.objects.aggregate(Max("date"))["date__max"]
+#     current_date = date - timedelta(days=1)
+#     while current_date >= min_exam_date:
+#         if current_date.weekday() != 5:
+#             past_available_slots = ["Morning", "Afternoon", "Evening"]
+#             if current_date.weekday() == 4:
+#                 past_available_slots.remove("Evening")
+
+#             for slot in past_available_slots:
+#                 evaluate_slot(current_date, slot)
+
+#         current_date -= timedelta(days=1)
+
+#     # Check future dates (up to 14 days after)
+#     for days_after in range(1, 15):
+#         future_date = date + timedelta(days=days_after)
+#         if future_date > max_exam_date:  # Don't check beyond the latest exam date
+#             continue
+#         if future_date.weekday() == 5:  # Skip Saturday
+#             continue
+
+#         future_available_slots = ["Morning", "Afternoon", "Evening"]
+#         if future_date.weekday() == 4:  # Friday
+#             future_available_slots.remove("Evening")
+
+#         for slot in future_available_slots:
+#             evaluate_slot(future_date, slot)
+
+#     # Determine best suggestion (prioritizing suggested date, then suggested slot, then earliest date)
+#     best_suggestion = None
+#     if possible_slots:
+#         # Try to find on the same date first
+#         same_date_slots = [s for s in possible_slots if s["date"] == date]
+#         if same_date_slots:
+#             # Try to find the suggested slot first
+#             suggested_slot_match = [
+#                 s for s in same_date_slots if s["slot"] == suggested_slot
+#             ]
+#             if suggested_slot_match:
+#                 best_suggestion = suggested_slot_match[0]
+#             else:
+#                 best_suggestion = same_date_slots[0]
+#         else:
+#             # Find the earliest possible date
+#             possible_slots.sort(key=lambda x: x["date"])
+#             best_suggestion = possible_slots[0]
+
+#     pprint(best_suggestion)
+
+#     return new_group, best_suggestion, all_suggestions, all_conflicts
 
 
 def get_slot_name(start_time, end_time):
