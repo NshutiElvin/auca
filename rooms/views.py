@@ -463,6 +463,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 "exam__date",
                 "exam__start_time",
                 "exam__end_time",
+                "exam__slot_name",
                 # Instructor
                 "instructor__id",
                 "instructor__first_name",
@@ -482,6 +483,13 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "room_name": item["room__name"],
                     "room_capacity": item["room__capacity"],
                     "schedules": [],
+                      "instructor": {
+                        "id": item["instructor__id"],
+                        "first_name": item["instructor__first_name"],
+                        "last_name": item["instructor__last_name"],
+                        "email": item["instructor__email"],
+                    } if item["instructor__id"] else None,
+                    "slot_name": item["exam__slot_name"],
                 }
 
             # find or create this slot
@@ -515,12 +523,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "course_group": item["exam__group__group_name"],  
                     "course_semester": item["exam__group__course__semester__name"],
                     "student_count": item["student_count"],
-                    "instructor": {
-                        "id": item["instructor__id"],
-                        "first_name": item["instructor__first_name"],
-                        "last_name": item["instructor__last_name"],
-                        "email": item["instructor__email"],
-                    } if item["instructor__id"] else None,
+                  
                 }
             )
 
