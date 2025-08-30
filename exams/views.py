@@ -1901,7 +1901,8 @@ class StudentExamViewSet(viewsets.ModelViewSet):
         except StudentExam.DoesNotExist:
             return Response(
                 {
-                    "success": False,
+                    "success": True,
+                    "data":[],
                     "message": " No student exam found for this instructor today.",
                 },
                 status=status.HTTP_200_OK,
