@@ -711,7 +711,7 @@ def verify_groups_compatibility(groups):
         placeholders = ','.join(['%s'] * len(groups))
         cursor.execute(f"""
             SELECT course_id, group_id, student_id 
-            FROM your_app_enrollment 
+            FROM enrollments_enrollment 
             WHERE group_id IN ({placeholders})
             ORDER BY student_id, course_id, group_id
         """, groups)
@@ -741,6 +741,8 @@ def verify_groups_compatibility(groups):
                     course1, group1 = student_groups_list[i]
                     course2, group2 = student_groups_list[j]
                     
+
+
                     pair = tuple(sorted([(course1, group1), (course2, group2)]))
                     
                     if pair not in processed_pairs:
