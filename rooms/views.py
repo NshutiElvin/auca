@@ -712,7 +712,7 @@ class RoomViewSet(viewsets.ModelViewSet):
         
             
             already_assigned = StudentExam.objects.filter(
-                room__id= int(room_id), exam__date=date, exam__slot_name=slot_name, instructor=instructor
+                 exam__date=date, exam__slot_name=slot_name, instructor=instructor
             ).exists()
             if already_assigned:
                 return Response({
