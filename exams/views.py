@@ -712,27 +712,28 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
             
-            # Build response directly - no serializer overhead
+            # Use your existing serializer to maintain exact same format
+            serializer = UnscheduledExamSerializer(exams, many=True)
+            
+            # Build response with groups just like your original code
+            # But now groups are already prefetched (no extra DB queries!)
             converted_data = []
-            for exam in exams:
-                # Groups are already loaded in memory (no DB queries here!)
-                exam_groups = []
-                for group in exam.groups.all():  # Uses prefetched data
-                    exam_groups.append({
-                        'id': group.id,
-                        'name': getattr(group, 'name', ''),  # Adjust based on your UnscheduledExamGroup fields
-                        # Add other group fields you need
-                    })
+            for exam_data in serializer.data:
+                # Get the actual exam object to access prefetched groups
+                exam_obj = next(exam for exam in exams if exam.id == exam_data['id'])
                 
+                # Build groups from prefetched data (no DB queries here!)
+                exam_groups = []
+                for group in exam_obj.groups.all():  # Uses prefetched data
+                    # Use your existing group serializer for consistent format
+                    group_data = UnscheduledExamGroupSerializer(group).data
+                    exam_groups.append(group_data)
+                
+                # Keep your exact same response structure
                 converted_exam = {
-                    'id': exam.id,
-                    'course_id': exam.course.id,
-                    'course_name': exam.course.title,  # Available via select_related
-                    'course_code': exam.course.code,  # Available via select_related
-                    'reason': exam.reason,
-                    'groups': exam_groups,
-                    'created_at': exam.created_at,
-                    'updated_at': exam.updated_at,
+                    **exam_data,  # All your existing exam fields
+                    "groups": exam_groups,
+                    "group_id": None,  # Remove group_id as in your original
                 }
                 converted_data.append(converted_exam)
             
@@ -741,7 +742,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 "message": "Unscheduled exams retrieved successfully.",
                 "data": converted_data,
             })
-        
+            
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
