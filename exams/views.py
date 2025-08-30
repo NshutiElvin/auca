@@ -599,69 +599,81 @@ class ExamViewSet(viewsets.ModelViewSet):
     def unscheduled_exams(self, request):
         try:
             location = request.GET.get("location")
-            recent_timetable=None
-            exams = UnscheduledExam.objects.all()
-            if location:
-                recent_timetable = MasterTimetable.objects.filter(
-                    location_id=location
-                ).order_by("-created_at").first()
-            else:
-                recent_timetable = MasterTimetable.objects.order_by("-created_at").first()
-                
-            if recent_timetable:
-                exams = UnscheduledExam.objects.filter(
-                    master_timetable_id=recent_timetable.id
-                )
-            else:
-                exams = UnscheduledExam.objects.none()
             
+            # Get recent timetable more efficiently
+            timetable_filter = {"location_id": location} if location else {}
+            recent_timetable = MasterTimetable.objects.filter(
+                **timetable_filter
+            ).order_by("-created_at").first()
+            
+            if not recent_timetable:
+                return Response({
+                    "success": True,
+                    "message": "No timetable found.",
+                    "data": [],
+                })
+            
+            # Get exams with optimized query
+            exams = UnscheduledExam.objects.filter(
+                master_timetable_id=recent_timetable.id
+            ).select_related('master_timetable')  # Optimize if you need timetable data
+            
+            if not exams.exists():
+                return Response({
+                    "success": True,
+                    "message": "No unscheduled exams found.",
+                    "data": [],
+                })
+            
+            # Serialize exams once
             serializer = UnscheduledExamSerializer(exams, many=True)
             
-            # Fixed the variable naming conflict and added error handling
+            # Collect all unique group IDs from all exams
+            all_group_ids = set()
+            for exam_data in serializer.data:
+                if exam_data.get("group_id"):
+                    all_group_ids.update(exam_data["group_id"])
+            
+            # Fetch all groups in ONE database query
+            groups_dict = {}
+            if all_group_ids:
+                groups = UnscheduledExamGroup.objects.filter(id__in=all_group_ids)
+                groups_serializer = UnscheduledExamGroupSerializer(groups, many=True)
+                groups_dict = {group_data["id"]: group_data for group_data in groups_serializer.data}
+            
+            # Build response data efficiently
             converted_data = []
             for exam_data in serializer.data:
-                try:
-                    groups = []
-                    # Check if group_id exists and is not None
-                    if exam_data.get("group_id"):
-                        for group_id in exam_data["group_id"]:
-                            try:
-                                group = UnscheduledExamGroup.objects.get(id=group_id)
-                                group_serializer = UnscheduledExamGroupSerializer(group)
-                                groups.append(group_serializer.data)
-                            except UnscheduledExamGroup.DoesNotExist:
-                                # Skip non-existent groups or log the error
-                                continue
-                    
-                    converted_exam = {
-                        **exam_data,
-                        "groups": groups,
-                        "group_id": None,  # Remove the original group_id field
-                    }
-                    converted_data.append(converted_exam)
-                    
-                except Exception as inner_e:
-                    # Log the error but continue processing other exams
-                    # You might want to use proper logging here
-                    print(f"Error processing exam {exam_data.get('id', 'unknown')}: {str(inner_e)}")
-                    continue
-            
-            return Response(
-                {
-                    "success": True,
-                    "message": "Unscheduled exams retrieved successfully.",
-                    "data": converted_data,
+                # Get groups for this exam using dictionary lookup (O(1) instead of database query)
+                exam_groups = []
+                if exam_data.get("group_id"):
+                    for group_id in exam_data["group_id"]:
+                        if group_id in groups_dict:
+                            exam_groups.append(groups_dict[group_id])
+                
+                converted_exam = {
+                    **exam_data,
+                    "groups": exam_groups,
+                    "group_id": None,  # Remove the original group_id field
                 }
-            )
+                converted_data.append(converted_exam)
+            
+            return Response({
+                "success": True,
+                "message": "Unscheduled exams retrieved successfully.",
+                "data": converted_data,
+            })
             
         except Exception as e:
-            return Response(
-                {
-                    "success": False,
-                    "message": f"Error getting unscheduled exams: {str(e)}",
-                },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            # Use proper logging in production
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error in unscheduled_exams: {str(e)}", exc_info=True)
+            
+            return Response({
+                "success": False,
+                "message": "Error retrieving unscheduled exams.",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     @action(detail=False, methods=["post"], url_path="cancel-exam")
     def cancel_exam_view(self, request):
         try:
