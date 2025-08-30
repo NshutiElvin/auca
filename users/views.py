@@ -158,7 +158,7 @@ class UserViewSet(viewsets.ModelViewSet):
             'message': 'Password changed successfully'
         })
     
-    @action(detail=False, methods=['instructors'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def instructors(self, request):
         Instructors = User.objects.filter(role='instructor')
         serializer = self.get_serializer(Instructors, many=True)

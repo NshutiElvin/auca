@@ -21,12 +21,12 @@ class ExamSerializer(serializers.ModelSerializer):
           queryset=Room.objects.all(), source='room', write_only=True
 
     )
-    instructor= UserSerializer(read_only=True)
+    
 
     class Meta:
         model = Exam
         fields = [
-            "id", "group", "start_time", "end_time","date", "slot_name" ,"instructor",
+            "id", "group", "start_time", "end_time","date", "slot_name"  ,
             "room","status", "room_id", "group_id"
         ]
 
@@ -47,10 +47,11 @@ class StudentExamSerializer(serializers.ModelSerializer):
           queryset=Exam.objects.all(), source='exam', write_only=True
 
     )
+    instructor= UserSerializer(read_only=True)
     class Meta:
         model = StudentExam
         fields = (
-            "id", "student", "student_id", "exam","exam_id" ,"signin_attendance","signout_attendance",
+            "id", "student", "student_id", "exam","exam_id" ,"signin_attendance","signout_attendance","instructor",
             "status", "room_id"
         )
 

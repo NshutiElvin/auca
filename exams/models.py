@@ -25,7 +25,7 @@ class Exam(TimeStampedModel):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='SCHEDULED')
     group= models.ForeignKey("courses.CourseGroup", on_delete=models.DO_NOTHING, null=True)
     slot_name=  models.CharField(max_length=10, default='Morning')
-    instructor=models.ForeignKey("users.user", on_delete=models.SET_NULL, null=True, blank=True)
+    
 
      
     def __str__(self):
@@ -57,7 +57,7 @@ class StudentExam(TimeStampedModel):
     exam = models.ForeignKey(Exam, on_delete=models.CASCADE)
     room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='PENDING')
-    
+    instructor=models.ForeignKey("users.user", on_delete=models.SET_NULL, null=True, blank=True)
     signin_attendance= models.BooleanField(default=False)
     signout_attendance= models.BooleanField(default=False)
 

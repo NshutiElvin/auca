@@ -21,6 +21,7 @@ from collections import defaultdict
 from django.db import transaction
 from django.utils import timezone
 from django.db.models import Sum
+from django.utils.dateparse import parse_date
 from pytz import timezone as pytz_timezone
 
 User = get_user_model()
@@ -463,10 +464,10 @@ class RoomViewSet(viewsets.ModelViewSet):
                 "exam__start_time",
                 "exam__end_time",
                 # Instructor
-                "exam__instructor__id",
-                "exam__instructor__first_name",
-                "exam__instructor__last_name",
-                "exam__instructor__email",
+                "instructor__id",
+                "instructor__first_name",
+                "instructor__last_name",
+                "instructor__email",
             )
             .annotate(student_count=Count("id"))
             .order_by("room__name", "exam__date", "exam__start_time")
@@ -515,11 +516,11 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "course_semester": item["exam__group__course__semester__name"],
                     "student_count": item["student_count"],
                     "instructor": {
-                        "id": item["exam__instructor__id"],
-                        "first_name": item["exam__instructor__first_name"],
-                        "last_name": item["exam__instructor__last_name"],
-                        "email": item["exam__instructor__email"],
-                    } if item["exam__instructor__id"] else None,
+                        "id": item["instructor__id"],
+                        "first_name": item["instructor__first_name"],
+                        "last_name": item["instructor__last_name"],
+                        "email": item["instructor__email"],
+                    } if item["instructor__id"] else None,
                 }
             )
 
@@ -681,18 +682,21 @@ class RoomViewSet(viewsets.ModelViewSet):
     @permission_classes([])
     def assign_instructor(self, request, *args, **kwargs):
         try:
-            
+            # Extract and validate required fields
             instructor_id = request.data.get("instructor_id")
-            exam_id = request.data.get("exam_id")
+            room_id = request.data.get("room_id")
+            date= request.data.get("date")
             slot_name= request.data.get("slot_name")
+            date = parse_date(date) if date else None
+
             
-            if not instructor_id or not exam_id:
+            if not instructor_id or not room_id or not date or not slot_name:
                 return Response({
                     "success": False,
-                    "message": "Instructor and exam id are required",
+                    "message": "Instructor ID, Room ID, Date, and Slot Name are required",
                 }, status=status.HTTP_400_BAD_REQUEST)
 
- 
+            # Use select_related to optimize database queries and check existence
             try:
                 instructor = User.objects.get(id=instructor_id)
             except User.DoesNotExist:
@@ -700,29 +704,25 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "success": False,
                     "message": "Invalid instructor",
                 }, status=status.HTTP_404_NOT_FOUND)
+        
             
-            try:
-                is_already_assigned = Exam.objects.filter(instructor_id=instructor_id, slot_name=slot_name).exists()
-                if is_already_assigned:
-                    return Response({
-                        "success": False,
-                        "message": "This instructor is already assigned to another exam in the same slot",
-                    }, status=status.HTTP_400_BAD_REQUEST)
-                exam = Exam.objects.get(id=exam_id, slot_name=slot_name)
-            except Exam.DoesNotExist:
+           
+
+            # Check if student exams exist and update in bulk
+            student_exams_count = StudentExam.objects.filter(room__id= room_id, exam__date=date, exam__slot_name=slot_name).update(
+                instructor=instructor
+            )
+            
+            if student_exams_count == 0:
                 return Response({
                     "success": False,
-                    "message": "Invalid exam",
+                    "message": "No student exams found for the specified exam",
                 }, status=status.HTTP_404_NOT_FOUND)
-
-            exam.instructor = instructor
-            exam.save()
-             
 
             return Response({
                 "success": True,
-                "message": f"Successfully assigned instructor",
-                 
+                "message": f"Successfully assigned instructor to {student_exams_count} student exam(s)",
+                "updated_count": student_exams_count,
             }, status=status.HTTP_200_OK)
 
         except Exception as e:

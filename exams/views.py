@@ -778,12 +778,18 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             exam_id = request.data.get("exam_id")
             student_id= request.data.get("student_id")
+            instructor= request.user
+            if instructor.role != "instructor":
+                return Response(
+                    {"success": False, "message": "Only instructors can sign in students"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             if not exam_id or not student_id:
                 return Response(
                     {"success": False, "message": "Missing exam_id and student_id"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            student_exam= StudentExam.objects.get(exam_id=exam_id, student_id=student_id)
+            student_exam= StudentExam.objects.get(exam_id=exam_id, student_id=student_id, instructor=instructor)
             student_exam.signin_attendance=True if not student_exam.signin_attendance else False
             student_exam.save()
             return Response(
