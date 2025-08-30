@@ -1870,7 +1870,12 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            instructor= User.objects.get(id=instructor_id)
+            instructor= request.user
+            if instructor.role != "instructor":
+                return Response(
+                    {"success": False, "message": "Only instructors can access this."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             now = timezone.now().astimezone(tz)
             today = now.date()
        
@@ -1880,7 +1885,7 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                 exam__instructor=instructor,
                 exam__start_time__lte=now.time(),
             )
-            serializer = StudentExamSerializer(student_exam)
+            serializer = StudentExamSerializer(student_exam, many=True)
            
 
             return Response(
@@ -1906,7 +1911,7 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     "success": False,
-                    "message": "An error occurred while changing room occupancy",
+                    "message": "An error occurred while fetching student exams for this instructor.",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
