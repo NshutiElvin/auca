@@ -224,7 +224,7 @@ SIMPLE_JWT = {
     "TOKEN_BLACKLIST_ENABLED": True,
 }
 
-# Celery Settings
+# Celery Settings - continues to use Redis
 CELERY_BROKER_URL = os.getenv('REDIS_URL', 'redis://default:ZW1Eu9awebxbZQqePrLvPQ8yMrOfJsPD@redis-19670.c12.us-east-1-4.ec2.redns.redis-cloud.com:19670/0')
 CELERY_RESULT_BACKEND = os.getenv('REDIS_URL', 'redis://default:ZW1Eu9awebxbZQqePrLvPQ8yMrOfJsPD@redis-19670.c12.us-east-1-4.ec2.redns.redis-cloud.com:19670/0')
 CELERY_ACCEPT_CONTENT = ['json']
@@ -244,15 +244,10 @@ DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 # Redis configuration
 REDIS_URL = os.getenv('REDIS_URL', 'redis://default:ZW1Eu9awebxbZQqePrLvPQ8yMrOfJsPD@redis-19670.c12.us-east-1-4.ec2.redns.redis-cloud.com:19670/0')
 
-# For Django Channels
+# For Django Channels - using in-memory backend
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [REDIS_URL],  
-            "capacity": 1500, 
-            "expiry": 10,
-        },
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
     },
 }
 
