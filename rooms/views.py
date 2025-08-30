@@ -709,7 +709,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 }, status=status.HTTP_404_NOT_FOUND)
         
             
-           
+            print(room_id, type(room_id), date, type(date), slot_name, type(slot_name))
 
             # Check if student exams exist and update in bulk
             student_exams_count = StudentExam.objects.filter(room__id= int(room_id), exam__date=date, exam__slot_name=slot_name).update(
