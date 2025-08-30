@@ -63,9 +63,14 @@ class MasterTimetable( TimeStampedModel):
         related_name='timetables'
     )
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['-created_at', 'location_id']),
+        ]
 
     def __str__(self):
         return f"{self.academic_year} - {self.generated_at}"
+    
 
 
 

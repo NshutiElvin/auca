@@ -66,7 +66,13 @@ class UnscheduledExam(models.Model):
     reason= models.CharField(max_length=255, null=True, blank=True)
     master_timetable = models.ForeignKey(MasterTimetable, on_delete=models.CASCADE, null=True)
     created_at = models.DateTimeField(auto_now_add=True)   
-    updated_at = models.DateTimeField(auto_now=True)       
+    updated_at = models.DateTimeField(auto_now=True)      
+    class Meta:
+        indexes = [
+            models.Index(fields=['master_timetable_id']),
+            models.Index(fields=['created_at']),
+        ]
+ 
 
 
 
