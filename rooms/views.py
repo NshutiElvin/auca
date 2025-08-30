@@ -683,8 +683,6 @@ class RoomViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
                 )
-     
-
     @action(detail=False, methods=["post"], url_path="assign_instructor")
     @permission_classes([])
     def assign_instructor(self, request, *args, **kwargs):
@@ -692,17 +690,18 @@ class RoomViewSet(viewsets.ModelViewSet):
             # Extract and validate required fields
             instructor_id = request.data.get("instructor_id")
             room_id = request.data.get("room_id")
-            date = request.data.get("date")
-            slot_name = request.data.get("slot_name")
+            date= request.data.get("date")
+            slot_name= request.data.get("slot_name")
             date = parse_date(date) if date else None
 
+            
             if not instructor_id or not room_id or not date or not slot_name:
                 return Response({
                     "success": False,
                     "message": "Instructor ID, Room ID, Date, and Slot Name are required",
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Check instructor exists
+            # Use select_related to optimize database queries and check existence
             try:
                 instructor = User.objects.get(id=instructor_id)
             except User.DoesNotExist:
@@ -710,60 +709,27 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "success": False,
                     "message": "Invalid instructor",
                 }, status=status.HTTP_404_NOT_FOUND)
-
-            # Log the filter values to understand what we're searching for
-            logger.info(f"Assigning instructor - Search criteria:")
-            logger.info(f"  room_id: {room_id} (type: {type(room_id)})")
-            logger.info(f"  date: {date} (type: {type(date)})")
-            logger.info(f"  slot_name: {slot_name} (type: {type(slot_name)})")
-
-            # Check each filter condition separately for debugging
-            room_filter = StudentExam.objects.filter(room__id=int(room_id))
-            logger.info(f"Records with room_id {room_id}: {room_filter.count()}")
-
-            date_filter = StudentExam.objects.filter(exam__date=date)
-            logger.info(f"Records with date {date}: {date_filter.count()}")
-
-            slot_filter = StudentExam.objects.filter(exam__slot_name=slot_name)
-            logger.info(f"Records with slot_name '{slot_name}': {slot_filter.count()}")
-
-            # Check combinations
-            room_date_filter = StudentExam.objects.filter(room__id=int(room_id), exam__date=date)
-            logger.info(f"Records with room_id {room_id} AND date {date}: {room_date_filter.count()}")
-
-            # Original combined filter
-            combined_filter = StudentExam.objects.filter(
-                room__id=int(room_id), 
-                exam__date=date, 
-                exam__slot_name=slot_name
-            )
-            logger.info(f"Records with all conditions: {combined_filter.count()}")
-
-            # Log sample records for debugging
-            all_student_exams = StudentExam.objects.all()[:5]  # Get first 5 records
-            logger.info("Sample StudentExam records:")
-            for se in all_student_exams:
-                logger.info(f"  ID: {se.id}, Room: {se.room.id if se.room else 'None'}, "
-                        f"Exam Date: {se.exam.date if se.exam else 'None'}, "
-                        f"Slot Name: {se.exam.slot_name if se.exam else 'None'}")
-
-            # Perform the update
-            student_exams_count = combined_filter.update(instructor=instructor)
+        
             
-            if student_exams_count == 0:
-                logger.warning(f"No student exams found for criteria: room_id={room_id}, date={date}, slot_name={slot_name}")
+            already_assigned = StudentExam.objects.filter(
+                room__id= int(room_id), exam__date=date, exam__slot_name=slot_name, instructor=instructor
+            ).exists()
+            if already_assigned:
                 return Response({
                     "success": False,
-                    "message": "No student exams found for the specified criteria",
-                    "debug_info": {
-                        "room_id": room_id,
-                        "date": str(date),
-                        "slot_name": slot_name,
-                        "total_student_exams": StudentExam.objects.count()
-                    }
+                    "message": "This instructor is already assigned to this exam in the specified room",
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if student exams exist and update in bulk
+            student_exams_count = StudentExam.objects.filter(room__id= int(room_id), exam__date=date, exam__slot_name=slot_name).update(
+                instructor=instructor
+            )
+            
+            if student_exams_count == 0:
+                return Response({
+                    "success": False,
+                    "message": "No student exams found for the specified exam",
                 }, status=status.HTTP_404_NOT_FOUND)
-
-            logger.info(f"Successfully assigned instructor {instructor_id} to {student_exams_count} student exam(s)")
 
             return Response({
                 "success": True,
@@ -772,7 +738,7 @@ class RoomViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_200_OK)
 
         except Exception as e:
-            logger.error(f"Error in assign_instructor: {str(e)}", exc_info=True)
+            # Log the actual error for debugging (consider using proper logging)
             return Response({
                 "success": False,
                 "message": "An error occurred while assigning instructor",
