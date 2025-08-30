@@ -1883,7 +1883,7 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             
                 exam__date=today,
                 instructor=instructor,
-                exam__start_time__lte=now.time(),
+                
             )
             serializer = StudentExamSerializer(student_exam, many=True)
            
