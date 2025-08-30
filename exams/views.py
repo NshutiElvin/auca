@@ -1856,11 +1856,11 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                 },
                 status=500,
             )
-    @action(detail=False, methods=["post"], url_path="instructor_student_exams")
+    @action(detail=False, methods=["get"], url_path="instructor_student_exams")
     def instructor_students(self, request, *args, **kwargs):
         try:
             tz = pytz_timezone(settings.TIME_ZONE)
-            instructor_id= request.GET.get("instructor_id")
+            instructor_id= request.user.id
              
             if not instructor_id:
                 return Response(
