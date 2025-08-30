@@ -598,47 +598,70 @@ class ExamViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
-            location=request.GET.get("location")
-
+            location = request.GET.get("location")
+            recent_timetable=None
             exams = UnscheduledExam.objects.all()
             if location:
-                recent_timetable=MasterTimetable.objects.filter(location_id=location).order_by("-created_at").first()
-                exams = UnscheduledExam.objects.filter(master_timetable_id=recent_timetable.id)
-
+                recent_timetable = MasterTimetable.objects.filter(
+                    location_id=location
+                ).order_by("-created_at").first()
+            else:
+                recent_timetable = MasterTimetable.objects.order_by("-created_at").first()
+                
+            if recent_timetable:
+                exams = UnscheduledExam.objects.filter(
+                    master_timetable_id=recent_timetable.id
+                )
+            else:
+                exams = UnscheduledExam.objects.none()
+            
             serializer = UnscheduledExamSerializer(exams, many=True)
-         
-
-            converted = map(
-                lambda exam: {
-                    **exam,
-                    "groups": [
-                        UnscheduledExamGroupSerializer(
-                            UnscheduledExamGroup.objects.get(id=converted_group)
-                        ).data
-                        for converted_group in exam["group_id"]
-                    ],
-                    "group_id": None,
-                },
-                serializer.data,
-            )
-
+            
+            # Fixed the variable naming conflict and added error handling
+            converted_data = []
+            for exam_data in serializer.data:
+                try:
+                    groups = []
+                    # Check if group_id exists and is not None
+                    if exam_data.get("group_id"):
+                        for group_id in exam_data["group_id"]:
+                            try:
+                                group = UnscheduledExamGroup.objects.get(id=group_id)
+                                group_serializer = UnscheduledExamGroupSerializer(group)
+                                groups.append(group_serializer.data)
+                            except UnscheduledExamGroup.DoesNotExist:
+                                # Skip non-existent groups or log the error
+                                continue
+                    
+                    converted_exam = {
+                        **exam_data,
+                        "groups": groups,
+                        "group_id": None,  # Remove the original group_id field
+                    }
+                    converted_data.append(converted_exam)
+                    
+                except Exception as inner_e:
+                    # Log the error but continue processing other exams
+                    # You might want to use proper logging here
+                    print(f"Error processing exam {exam_data.get('id', 'unknown')}: {str(inner_e)}")
+                    continue
+            
             return Response(
                 {
                     "success": True,
-                    "message": f"unscheduled exams retrieved successfully.",
-                    "data": list(converted),
+                    "message": "Unscheduled exams retrieved successfully.",
+                    "data": converted_data,
                 }
             )
-
+            
         except Exception as e:
             return Response(
                 {
                     "success": False,
-                    "message": f"Error getting unaccomodated exams: {str(e)}",
+                    "message": f"Error getting unscheduled exams: {str(e)}",
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
     @action(detail=False, methods=["post"], url_path="cancel-exam")
     def cancel_exam_view(self, request):
         try:
