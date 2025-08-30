@@ -385,7 +385,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 course_ids=course_ids, 
                 master_timetable=master_timetable, 
                 location=int(location), 
-                user_id=request.user.id
+                
             )
 
             # Prepare response data
