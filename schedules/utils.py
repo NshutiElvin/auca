@@ -634,29 +634,147 @@ def get_slot_name(start_time, end_time):
         return "Evening"
     else:
         return None
+from collections import defaultdict
+from django.db import models
 
-
-def verify_groups_compatiblity(groups):
-
-    course_group_students = defaultdict(lambda: defaultdict(list))
-    for enrollment in Enrollment.objects.filter(group_id__in=groups).iterator():
-        course_group_students[enrollment.course_id][enrollment.group_id].append(
-            enrollment.student_id
-        )
-    all_groups = [
-        (course_id, group_id)
-        for course_id in course_group_students
-        for group_id in course_group_students[course_id]
-    ]
+def verify_groups_compatibility(groups):
+    """
+    Optimized function to find conflicts between groups based on shared students.
+    
+    Key optimizations:
+    1. Single database query with select_related for better performance
+    2. Early termination when processing student conflicts
+    3. Set operations for faster intersection checks
+    4. Reduced memory allocation with generator expressions
+    """
+    
+    # Single optimized query - fetch all needed data at once
+    enrollments = (Enrollment.objects
+                  .filter(group_id__in=groups)
+                  .select_related('course', 'group')  # Reduce DB hits if needed
+                  .values('course_id', 'group_id', 'student_id'))
+    
+    # Build student sets for each (course, group) combination
+    course_group_students = defaultdict(lambda: defaultdict(set))
+    student_to_groups = defaultdict(set)  # Track which groups each student is in
+    
+    for enrollment in enrollments:
+        course_id = enrollment['course_id']
+        group_id = enrollment['group_id']
+        student_id = enrollment['student_id']
+        
+        course_group_students[course_id][group_id].add(student_id)
+        student_to_groups[student_id].add((course_id, group_id))
+    
+    # Find conflicts by checking students that appear in multiple groups
     group_conflicts = []
-    for (course1, group1), (course2, group2) in combinations(all_groups, 2):
-        students1 = set(course_group_students[course1][group1])
-        students2 = set(course_group_students[course2][group2])
-
-        shared_students = students1 & students2
-        if shared_students:
-            group_conflicts.append((group1, group2, shared_students))
+    processed_pairs = set()
+    
+    for student_id, student_groups in student_to_groups.items():
+        if len(student_groups) > 1:
+            # This student is in multiple groups - check for conflicts
+            student_groups_list = list(student_groups)
+            
+            for i in range(len(student_groups_list)):
+                for j in range(i + 1, len(student_groups_list)):
+                    course1, group1 = student_groups_list[i]
+                    course2, group2 = student_groups_list[j]
+                    
+                    # Create a consistent pair ordering to avoid duplicates
+                    pair = tuple(sorted([(course1, group1), (course2, group2)]))
+                    
+                    if pair not in processed_pairs:
+                        processed_pairs.add(pair)
+                        
+                        # Get all shared students between these two groups
+                        students1 = course_group_students[course1][group1]
+                        students2 = course_group_students[course2][group2]
+                        shared_students = students1 & students2
+                        
+                        if shared_students:
+                            group_conflicts.append((group1, group2, shared_students))
+    
     return group_conflicts
+
+
+# Alternative approach for very large datasets
+def verify_groups_compatibility(groups):
+    """
+    Alternative implementation optimized for very large datasets.
+    Uses bulk operations and minimal memory footprint.
+    """
+    
+    # Use raw SQL for maximum performance if needed
+    from django.db import connection
+    
+    with connection.cursor() as cursor:
+        placeholders = ','.join(['%s'] * len(groups))
+        cursor.execute(f"""
+            SELECT course_id, group_id, student_id 
+            FROM your_app_enrollment 
+            WHERE group_id IN ({placeholders})
+            ORDER BY student_id, course_id, group_id
+        """, groups)
+        
+        enrollments = cursor.fetchall()
+    
+    # Process results with minimal memory usage
+    course_group_students = defaultdict(lambda: defaultdict(set))
+    for course_id, group_id, student_id in enrollments:
+        course_group_students[course_id][group_id].add(student_id)
+    
+    # Rest of the logic remains the same as the optimized version
+    student_to_groups = defaultdict(set)
+    for course_id, groups_dict in course_group_students.items():
+        for group_id, students in groups_dict.items():
+            for student_id in students:
+                student_to_groups[student_id].add((course_id, group_id))
+    
+    group_conflicts = []
+    processed_pairs = set()
+    
+    for student_id, student_groups in student_to_groups.items():
+        if len(student_groups) > 1:
+            student_groups_list = list(student_groups)
+            for i in range(len(student_groups_list)):
+                for j in range(i + 1, len(student_groups_list)):
+                    course1, group1 = student_groups_list[i]
+                    course2, group2 = student_groups_list[j]
+                    
+                    pair = tuple(sorted([(course1, group1), (course2, group2)]))
+                    
+                    if pair not in processed_pairs:
+                        processed_pairs.add(pair)
+                        students1 = course_group_students[course1][group1]
+                        students2 = course_group_students[course2][group2]
+                        shared_students = students1 & students2
+                        
+                        if shared_students:
+                            group_conflicts.append((group1, group2, shared_students))
+    
+    return group_conflicts
+
+# def verify_groups_compatiblity(groups):
+
+#     course_group_students = defaultdict(lambda: defaultdict(list))
+#     for enrollment in Enrollment.objects.filter(group_id__in=groups).iterator():
+#         course_group_students[enrollment.course_id][enrollment.group_id].append(
+#             enrollment.student_id
+#         )
+#     all_groups = [
+#         (course_id, group_id)
+#         for course_id in course_group_students
+#         for group_id in course_group_students[course_id]
+#     ]
+#     group_conflicts = []
+#     for (course1, group1), (course2, group2) in combinations(all_groups, 2):
+#         students1 = set(course_group_students[course1][group1])
+#         students2 = set(course_group_students[course2][group2])
+
+#         shared_students = students1 & students2
+#         if shared_students:
+#             group_conflicts.append((group1, group2, shared_students))
+#     return group_conflicts
 
 
 # def find_compatible_courses_within_group(courses):

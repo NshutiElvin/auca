@@ -11,7 +11,7 @@ from schedules.utils import (
     allocate_shared_rooms_updated,
     generate_exam_schedule,
     get_slot_name,
-    verify_groups_compatiblity,
+    verify_groups_compatibility,
     which_suitable_slot_to_schedule_course_group,
     schedule_unscheduled_group
 )
@@ -782,8 +782,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 {"success": False, "message": f"Error truncating data: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
-
+ 
 
     @action(
         detail=False,
@@ -796,71 +795,62 @@ class ExamViewSet(viewsets.ModelViewSet):
             with transaction.atomic():
                 existing_slot = request.data.get("slot")
                 date = request.data.get("day")
-
                 new_group_to_add = request.data.get("course_group")
+
+                # Extract group IDs more efficiently
                 existing_groups = [
                     group["group"]["id"] for group in existing_slot["exams"]
                 ]
-                new_groups = []
-                if new_group_to_add.get("groups") != None:
+                
+                # Simplified group extraction
+                if new_group_to_add.get("groups"):
                     new_groups = [
-                        group["group"]["id"] for group in new_group_to_add.get("groups")
+                        group["group"]["id"] for group in new_group_to_add["groups"]
                     ]
                 else:
-                    new_groups = [new_group_to_add.get("group").get("id")]
+                    new_groups = [new_group_to_add["group"]["id"]]
 
-                merged_groups = [*existing_groups, *new_groups]
+                # Get scheduled groups for the date with a single query
                 date_formatted = parse_date(date)
-                scheduled_date_groups = Exam.objects.filter(date=date_formatted)
-                scheduled_date_groups = [
-                    ex_group.group.id for ex_group in scheduled_date_groups
-                ]
-                merged_groups.extend(scheduled_date_groups)
-                merged_groups = list(set(merged_groups))
-                conflicts = verify_groups_compatiblity(merged_groups)
-                conflict_matrix = []
-
-                for conf in conflicts:
-
-                    if conf[0] in new_groups:
-                        g1 = CourseGroupSerializer(
-                            CourseGroup.objects.get(id=conf[0])
-                        ).data
-                        g2 = CourseGroupSerializer(
-                            CourseGroup.objects.get(id=conf[1])
-                        ).data
-                        g1_slot = Exam.objects.filter(group__id=conf[0]).first()
-                        g2_slot = Exam.objects.filter(group__id=conf[1]).first()
-                        if g1_slot:
-
-                            g1["slot"] = g1_slot.slot_name
-                        if g2_slot:
-                            g2["slot"] = g2_slot.slot_name
-                        conflicted_students= Student.objects.filter(id__in=conf[2])
-                        serializer=StudentSerializer(conflicted_students, many=True)
-                        conflict_matrix.append((g1, g2,  serializer.data))
-                    if conf[1] in new_groups:
-                        g1 = CourseGroupSerializer(
-                            CourseGroup.objects.get(id=conf[1])
-                        ).data
-                        g2 = CourseGroupSerializer(
-                            CourseGroup.objects.get(id=conf[0])
-                        ).data
-                        g1_slot = Exam.objects.filter(group__id=conf[0]).first()
-                        g2_slot = Exam.objects.filter(group__id=conf[1]).first()
-                        if g1_slot:
-
-                            g1["slot"] = g1_slot.slot_name
-                        if g2_slot:
-                            g2["slot"] = g2_slot.slot_name
-                        conflicted_students= Student.objects.filter(id__in=conf[2])
-                        serializer=StudentSerializer(conflicted_students, many=True)
-                        conflict_matrix.append((g1, g2,  serializer.data))
+                scheduled_date_groups = list(
+                    Exam.objects.filter(date=date_formatted)
+                    .values_list('group_id', flat=True)
+                )
+                
+                # Merge and deduplicate groups
+                merged_groups = list(set(existing_groups + new_groups + scheduled_date_groups))
+                
+                # Check for conflicts
+                conflicts = verify_groups_compatibility(merged_groups)
+                
+                if not conflicts:
+                    # No conflicts - can proceed with scheduling
+                    new_group, best_suggestion, all_suggestions, all_conflicts = (
+                        which_suitable_slot_to_schedule_course_group(
+                            date_formatted, new_groups, existing_slot.get("name")
+                        )
+                    )
+                    return Response(
+                        {
+                            "success": True,
+                            "conflict": False,
+                            "data": [],
+                            "all_suggestions": all_suggestions,
+                            "best_suggestion": best_suggestion,
+                            "message": "No conflicts found. Ready to schedule.",
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+                
+                # Process conflicts efficiently with bulk operations
+                conflict_matrix = self._build_conflict_matrix_optimized(conflicts, new_groups)
+                
                 new_group, best_suggestion, all_suggestions, all_conflicts = (
                     which_suitable_slot_to_schedule_course_group(
                         date_formatted, new_groups, existing_slot.get("name")
                     )
                 )
+                
                 return Response(
                     {
                         "success": True,
@@ -868,16 +858,208 @@ class ExamViewSet(viewsets.ModelViewSet):
                         "data": conflict_matrix,
                         "all_suggestions": all_suggestions,
                         "best_suggestion": best_suggestion,
-                        "message": "Processcing finished with the following conflict.",
+                        "message": "Processing finished with the following conflicts.",
                     },
                     status=status.HTTP_200_OK,
                 )
+                
         except Exception as e:
-            print(e)
-
+            # Better error handling
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error in add_new_exam: {str(e)}", exc_info=True)
+            
             return Response(
-                status=status.HTTP_200_OK,
+                {
+                    "success": False,
+                    "error": "An error occurred while processing the request.",
+                    "message": "Please try again or contact support if the issue persists."
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+    def _build_conflict_matrix_optimized(self, conflicts, new_groups):
+        """
+        Optimized conflict matrix building with bulk database operations.
+        """
+        # Collect all unique group IDs that need data
+        all_conflict_group_ids = set()
+        all_student_ids = set()
+        
+        for group1_id, group2_id, shared_students in conflicts:
+            if group1_id in new_groups or group2_id in new_groups:
+                all_conflict_group_ids.update([group1_id, group2_id])
+                all_student_ids.update(shared_students)
+        
+        if not all_conflict_group_ids:
+            return []
+        
+        # Bulk fetch all needed data in single queries
+        course_groups = {
+            cg.id: CourseGroupSerializer(cg).data 
+            for cg in CourseGroup.objects.filter(id__in=all_conflict_group_ids)
+        }
+        
+        # Bulk fetch exam slots
+        exam_slots = dict(
+            Exam.objects.filter(group_id__in=all_conflict_group_ids)
+            .values_list('group_id', 'slot_name')
+        )
+        
+        # Bulk fetch students
+        students_data = {
+            student.id: student
+            for student in Student.objects.filter(id__in=all_student_ids)
+        }
+        
+        # Build conflict matrix efficiently
+        conflict_matrix = []
+        processed_conflicts = set()
+        
+        for group1_id, group2_id, shared_students in conflicts:
+            # Only process conflicts involving new groups
+            if not (group1_id in new_groups or group2_id in new_groups):
+                continue
+                
+            # Avoid duplicate conflicts
+            conflict_key = tuple(sorted([group1_id, group2_id]))
+            if conflict_key in processed_conflicts:
+                continue
+            processed_conflicts.add(conflict_key)
+            
+            # Get group data
+            g1_data = course_groups[group1_id].copy()
+            g2_data = course_groups[group2_id].copy()
+            
+            # Add slot information if available
+            if group1_id in exam_slots:
+                g1_data["slot"] = exam_slots[group1_id]
+            if group2_id in exam_slots:
+                g2_data["slot"] = exam_slots[group2_id]
+            
+            # Serialize conflicted students
+            conflicted_students = [students_data[sid] for sid in shared_students if sid in students_data]
+            serializer = StudentSerializer(conflicted_students, many=True)
+            
+            conflict_matrix.append((g1_data, g2_data, serializer.data))
+        
+        return conflict_matrix
+
+
+    # Additional utility function for even better performance with caching
+    def _get_cached_course_group_data(self, group_ids):
+        """
+        Cache course group data to avoid repeated serialization.
+        Consider using Django's cache framework for production use.
+        """
+        # This could be enhanced with Redis/Memcached in production
+        if not hasattr(self, '_course_group_cache'):
+            self._course_group_cache = {}
+        
+        uncached_ids = [gid for gid in group_ids if gid not in self._course_group_cache]
+        
+        if uncached_ids:
+            course_groups = CourseGroup.objects.filter(id__in=uncached_ids)
+            for cg in course_groups:
+                self._course_group_cache[cg.id] = CourseGroupSerializer(cg).data
+        
+        return {gid: self._course_group_cache[gid] for gid in group_ids if gid in self._course_group_cache}
+
+
+    # @action(
+    #     detail=False,
+    #     methods=["post"],
+    #     url_path="add-exam-to-slot",
+    #     permission_classes=[permissions.IsAuthenticated],
+    # )
+    # def add_new_exam(self, request):
+    #     try:
+    #         with transaction.atomic():
+    #             existing_slot = request.data.get("slot")
+    #             date = request.data.get("day")
+
+    #             new_group_to_add = request.data.get("course_group")
+    #             existing_groups = [
+    #                 group["group"]["id"] for group in existing_slot["exams"]
+    #             ]
+    #             new_groups = []
+    #             if new_group_to_add.get("groups") != None:
+    #                 new_groups = [
+    #                     group["group"]["id"] for group in new_group_to_add.get("groups")
+    #                 ]
+    #             else:
+    #                 new_groups = [new_group_to_add.get("group").get("id")]
+
+    #             merged_groups = [*existing_groups, *new_groups]
+    #             date_formatted = parse_date(date)
+    #             scheduled_date_groups = Exam.objects.filter(date=date_formatted)
+    #             scheduled_date_groups = [
+    #                 ex_group.group.id for ex_group in scheduled_date_groups
+    #             ]
+    #             merged_groups.extend(scheduled_date_groups)
+    #             merged_groups = list(set(merged_groups))
+    #             conflicts = verify_groups_compatiblity(merged_groups)
+    #             conflict_matrix = []
+
+    #             for conf in conflicts:
+
+    #                 if conf[0] in new_groups:
+    #                     g1 = CourseGroupSerializer(
+    #                         CourseGroup.objects.get(id=conf[0])
+    #                     ).data
+    #                     g2 = CourseGroupSerializer(
+    #                         CourseGroup.objects.get(id=conf[1])
+    #                     ).data
+    #                     g1_slot = Exam.objects.filter(group__id=conf[0]).first()
+    #                     g2_slot = Exam.objects.filter(group__id=conf[1]).first()
+    #                     if g1_slot:
+
+    #                         g1["slot"] = g1_slot.slot_name
+    #                     if g2_slot:
+    #                         g2["slot"] = g2_slot.slot_name
+    #                     conflicted_students= Student.objects.filter(id__in=conf[2])
+    #                     serializer=StudentSerializer(conflicted_students, many=True)
+    #                     conflict_matrix.append((g1, g2,  serializer.data))
+    #                 if conf[1] in new_groups:
+    #                     g1 = CourseGroupSerializer(
+    #                         CourseGroup.objects.get(id=conf[1])
+    #                     ).data
+    #                     g2 = CourseGroupSerializer(
+    #                         CourseGroup.objects.get(id=conf[0])
+    #                     ).data
+    #                     g1_slot = Exam.objects.filter(group__id=conf[0]).first()
+    #                     g2_slot = Exam.objects.filter(group__id=conf[1]).first()
+    #                     if g1_slot:
+
+    #                         g1["slot"] = g1_slot.slot_name
+    #                     if g2_slot:
+    #                         g2["slot"] = g2_slot.slot_name
+    #                     conflicted_students= Student.objects.filter(id__in=conf[2])
+    #                     serializer=StudentSerializer(conflicted_students, many=True)
+    #                     conflict_matrix.append((g1, g2,  serializer.data))
+    #             new_group, best_suggestion, all_suggestions, all_conflicts = (
+    #                 which_suitable_slot_to_schedule_course_group(
+    #                     date_formatted, new_groups, existing_slot.get("name")
+    #                 )
+    #             )
+    #             return Response(
+    #                 {
+    #                     "success": True,
+    #                     "conflict": True,
+    #                     "data": conflict_matrix,
+    #                     "all_suggestions": all_suggestions,
+    #                     "best_suggestion": best_suggestion,
+    #                     "message": "Processcing finished with the following conflict.",
+    #                 },
+    #                 status=status.HTTP_200_OK,
+    #             )
+    #     except Exception as e:
+    #         print(e)
+
+    #         return Response(
+    #             status=status.HTTP_200_OK,
+    #         )
 
 
     @action(
