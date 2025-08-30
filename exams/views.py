@@ -676,7 +676,7 @@ class ExamViewSet(viewsets.ModelViewSet):
     #             "success": False,
     #             "message": "Error retrieving unscheduled exams.",
             # }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    @action(detail=False, methods=["GET"], url_path="unscheduled_exams_sql")
+     
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
