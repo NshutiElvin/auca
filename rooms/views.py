@@ -712,7 +712,7 @@ class RoomViewSet(viewsets.ModelViewSet):
            
 
             # Check if student exams exist and update in bulk
-            student_exams_count = StudentExam.objects.filter(room__id= room_id, exam__date=date, exam__slot_name=slot_name).update(
+            student_exams_count = StudentExam.objects.filter(room__id= int(room_id), exam__date=date, exam__slot_name=slot_name).update(
                 instructor=instructor
             )
             
