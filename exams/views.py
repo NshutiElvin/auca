@@ -676,16 +676,14 @@ class ExamViewSet(viewsets.ModelViewSet):
     #             "success": False,
     #             "message": "Error retrieving unscheduled exams.",
             # }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-     
+        
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
             location = request.GET.get("location")
             
-            # Option 1: Single Optimized Query with Prefetch
+            # Get recent timetable efficiently
             timetable_filter = {"location_id": location} if location else {}
-            
-            # Get the recent timetable with a single query
             recent_timetable = MasterTimetable.objects.filter(
                 **timetable_filter
             ).order_by("-created_at").first()
@@ -697,15 +695,15 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
             
-            # Single optimized query with prefetch_related
+            # SINGLE OPTIMIZED QUERY - This is the key optimization
             exams = UnscheduledExam.objects.filter(
                 master_timetable_id=recent_timetable.id
             ).prefetch_related(
-                Prefetch(
-                    'unscheduledexamgroup_set',  # Adjust based on your model relationship
-                    queryset=UnscheduledExamGroup.objects.all()
-                )
-            ).select_related('master_timetable')
+                'groups'  # This loads all groups in ONE query
+            ).select_related(
+                'course',  # Load course data efficiently
+                'master_timetable'  # Load timetable data if needed
+            )
             
             if not exams.exists():
                 return Response({
@@ -714,24 +712,27 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
             
-            # Build response directly without double serialization
+            # Build response directly - no serializer overhead
             converted_data = []
             for exam in exams:
-                # Access related groups directly (already prefetched)
+                # Groups are already loaded in memory (no DB queries here!)
                 exam_groups = []
-                for group in exam.unscheduledexamgroup_set.all():
+                for group in exam.groups.all():  # Uses prefetched data
                     exam_groups.append({
                         'id': group.id,
-                        'name': group.name,
-                        # Add other group fields as needed
+                        'name': getattr(group, 'name', ''),  # Adjust based on your UnscheduledExamGroup fields
+                        # Add other group fields you need
                     })
                 
                 converted_exam = {
                     'id': exam.id,
-                    'name': exam.name,
-                    'date': exam.date,
-                    # Add other exam fields as needed
+                    'course_id': exam.course.id,
+                    'course_name': exam.course.name,  # Available via select_related
+                    'course_code': exam.course.code,  # Available via select_related
+                    'reason': exam.reason,
                     'groups': exam_groups,
+                    'created_at': exam.created_at,
+                    'updated_at': exam.updated_at,
                 }
                 converted_data.append(converted_exam)
             
@@ -740,7 +741,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 "message": "Unscheduled exams retrieved successfully.",
                 "data": converted_data,
             })
-
+        
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
@@ -751,7 +752,6 @@ class ExamViewSet(viewsets.ModelViewSet):
                 "message": "Error retrieving unscheduled exams.",
                 "data": [],
             })
-
     @action(detail=False, methods=["post"], url_path="cancel-exam")
     def cancel_exam_view(self, request):
         try:
