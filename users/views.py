@@ -143,7 +143,7 @@ class UserViewSet(viewsets.ModelViewSet):
         })
     
     
-    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def change_password(self, request):
         """
         Change user password
@@ -156,6 +156,18 @@ class UserViewSet(viewsets.ModelViewSet):
             'success': True,
             'data': {'password_strength': serializer.data.get('password_strength')},
             'message': 'Password changed successfully'
+        })
+    
+    @action(detail=False, methods=['instructors'], permission_classes=[permissions.IsAuthenticated])
+    def instructors(self, request):
+        Instructors = User.objects.filter(role='instructor')
+        serializer = self.get_serializer(Instructors, many=True)
+
+        
+        return Response({
+            'success': True,
+            'data': serializer.data,
+            'message': 'Instructors fetched successfully'
         })
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def logout(self, request):

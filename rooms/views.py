@@ -665,7 +665,61 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "message": "An error occurred while changing room occupancy",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
-            )
+                )
+    @action(detail=False, methods=["post"], url_path="assign_instructor")
+    @permission_classes([])
+    def assign_instructor(self, request, *args, **kwargs):
+        try:
+            
+            instructor_id = request.data.get("instructor_id")
+            exam_id = request.data.get("exam_id")
+            slot_name= request.data.get("slot_name")
+            
+            if not instructor_id or not exam_id:
+                return Response({
+                    "success": False,
+                    "message": "Instructor and exam id are required",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+ 
+            try:
+                instructor = User.objects.get(id=instructor_id)
+            except User.DoesNotExist:
+                return Response({
+                    "success": False,
+                    "message": "Invalid instructor",
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            try:
+                is_already_assigned = Exam.objects.filter(instructor_id=instructor_id, slot_name=slot_name).exists()
+                if is_already_assigned:
+                    return Response({
+                        "success": False,
+                        "message": "This instructor is already assigned to another exam in the same slot",
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                exam = Exam.objects.get(id=exam_id, slot_name=slot_name)
+            except Exam.DoesNotExist:
+                return Response({
+                    "success": False,
+                    "message": "Invalid exam",
+                }, status=status.HTTP_404_NOT_FOUND)
+
+            exam.instructor = instructor
+            exam.save()
+             
+
+            return Response({
+                "success": True,
+                "message": f"Successfully assigned instructor",
+                 
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            # Log the actual error for debugging (consider using proper logging)
+            return Response({
+                "success": False,
+                "message": "An error occurred while assigning instructor",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=["post"], url_path="instructor_check_qr")
     @permission_classes([])

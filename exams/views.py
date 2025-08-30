@@ -30,6 +30,7 @@ from sharedapp.serializers import UnscheduledExamGroupSerializer
 from sharedapp.shared_exams_serializers import UnscheduledExamSerializer
 from django.utils.dateparse import parse_date
 from django.conf import settings
+from users.models import User
 import json
 from .utils import decrypt_message
 from pytz import timezone as pytz_timezone
@@ -772,6 +773,50 @@ class ExamViewSet(viewsets.ModelViewSet):
                 {"success": False, "message": f"Error cancelling exam: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+    @action(detail=False, methods=["patch"], url_path="student_signin")
+    def signin_student(self, request):
+        try:
+            exam_id = request.data.get("exam_id")
+            student_id= request.data.get("student_id")
+            if not exam_id or not student_id:
+                return Response(
+                    {"success": False, "message": "Missing exam_id and student_id"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            student_exam= StudentExam.objects.get(exam_id=exam_id, student_id=student_id)
+            student_exam.signin_attendance=True if not student_exam.signin_attendance else False
+            student_exam.save()
+            return Response(
+                {"success": True, "message": f"Exam {exam_id} cancelled successfully"}
+            )
+        except Exception as e:
+            return Response(
+                {"success": False, "message": f"Error cancelling exam: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+    @action(detail=False, methods=["patch"], url_path="student_signout")
+    def signout_student(self, request):
+        try:
+            exam_id = request.data.get("exam_id")
+            student_id= request.data.get("student_id")
+            if not exam_id or not student_id:
+                return Response(
+                    {"success": False, "message": "Missing exam_id and student_id"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            student_exam= StudentExam.objects.get(exam__id=exam_id, student__id=student_id)
+            student_exam.signout_attendance=True if not student_exam.signout_attendance else False
+            student_exam.save()
+            return Response(
+                {"success": True, "message": f"Exam {exam_id} cancelled successfully"}
+            )
+        except Exception as e:
+            return Response(
+                {"success": False, "message": f"Error cancelling exam: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
 
     @action(detail=False, methods=["post"], url_path="reschedule-exam")
     def reschedule_exam_view(self, request):
@@ -1541,7 +1586,30 @@ class ExamViewSet(viewsets.ModelViewSet):
                 {"success": False, "message": f"Error truncating data: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+    @action(detail=False, methods=["get"], url_path="attendance")
+    def exam_attendance(self, request, *args, **kwargs):
+        try:
+            exam_id= request.GET.get("exam_id")
+            if not exam_id:
+                return Response({
+                    "success": False,
+                    "message": "exam_id query parameter is required",
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            students_exams= StudentExam.objects.filter(exam__id=exam_id).select_related("student", "exam", "room")
+            serializer= StudentExamSerializer(students_exams, many=True)
+            return Response({
+                "success": True,
+                "data": serializer.data,
+                "message": "Fetched successfully",
+            })
 
+        except Exception as e:
+            # Log the actual error for debugging (consider using proper logging)
+            return Response({
+                "success": False,
+                "message": "An error occurred while getting exam attendance",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class StudentExamViewSet(viewsets.ModelViewSet):
     queryset = StudentExam.objects.select_related("student", "exam", "room").all()
@@ -1782,6 +1850,60 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                 },
                 status=500,
             )
+    @action(detail=False, methods=["post"], url_path="instructor_student_exams")
+    def instructor_students(self, request, *args, **kwargs):
+        try:
+            tz = pytz_timezone(settings.TIME_ZONE)
+            instructor_id= request.GET.get("instructor_id")
+             
+            if not instructor_id:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Instructor ID is required",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            instructor= User.objects.get(id=instructor_id)
+            now = timezone.now().astimezone(tz)
+            today = now.date()
+       
+            student_exam = StudentExam.objects.get(
+            
+                exam__date=today,
+                exam__instructor=instructor,
+                exam__start_time__lte=now.time(),
+            )
+            serializer = StudentExamSerializer(student_exam)
+           
+
+            return Response(
+                {
+                    "success": True,
+                    "students": serializer.data,
+                     
+                    "message": "Fetched successfully",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except StudentExam.DoesNotExist:
+            return Response(
+                {
+                    "success": False,
+                    "message": " No student exam found for this instructor today.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except:
+            return Response(
+                {
+                    "success": False,
+                    "message": "An error occurred while changing room occupancy",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 
-import random
+ 

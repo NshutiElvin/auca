@@ -7,6 +7,7 @@ from rooms.serializers import RoomSerializer
 from rooms.models import Room
 from student.models import Student
 from student.serializers import StudentSerializer
+from users.serializers import UserSerializer
 
 User = get_user_model()
 class ExamSerializer(serializers.ModelSerializer):
@@ -20,11 +21,12 @@ class ExamSerializer(serializers.ModelSerializer):
           queryset=Room.objects.all(), source='room', write_only=True
 
     )
+    instructor= UserSerializer(read_only=True)
 
     class Meta:
         model = Exam
         fields = [
-            "id", "group", "start_time", "end_time","date", "slot_name" ,
+            "id", "group", "start_time", "end_time","date", "slot_name" ,"instructor",
             "room","status", "room_id", "group_id"
         ]
 
@@ -48,7 +50,7 @@ class StudentExamSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentExam
         fields = (
-            "id", "student", "student_id", "exam","exam_id" ,
+            "id", "student", "student_id", "exam","exam_id" ,"signin_attendance","signout_attendance",
             "status", "room_id"
         )
 
