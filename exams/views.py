@@ -727,7 +727,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 converted_exam = {
                     'id': exam.id,
                     'course_id': exam.course.id,
-                    'course_name': exam.course.name,  # Available via select_related
+                    'course_name': exam.course.title,  # Available via select_related
                     'course_code': exam.course.code,  # Available via select_related
                     'reason': exam.reason,
                     'groups': exam_groups,
