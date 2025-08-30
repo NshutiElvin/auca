@@ -462,6 +462,11 @@ class RoomViewSet(viewsets.ModelViewSet):
                 "exam__date",
                 "exam__start_time",
                 "exam__end_time",
+                # Instructor
+                "exam__instructor__id",
+                "exam__instructor__first_name",
+                "exam__instructor__last_name",
+                "exam__instructor__email",
             )
             .annotate(student_count=Count("id"))
             .order_by("room__name", "exam__date", "exam__start_time")
@@ -506,9 +511,15 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "course_code": item["exam__group__course__code"],
                     "course_title": item["exam__group__course__title"],
                     "course_department": item["exam__group__course__department__name"],
-                    "course_group": item["exam__group__group_name"],  # ← corrected
+                    "course_group": item["exam__group__group_name"],  
                     "course_semester": item["exam__group__course__semester__name"],
                     "student_count": item["student_count"],
+                    "instructor": {
+                        "id": item["exam__instructor__id"],
+                        "first_name": item["exam__instructor__first_name"],
+                        "last_name": item["exam__instructor__last_name"],
+                        "email": item["exam__instructor__email"],
+                    } if item["exam__instructor__id"] else None,
                 }
             )
 
