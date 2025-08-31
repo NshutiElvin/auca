@@ -789,7 +789,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                     {"success": False, "message": "Missing exam_id and student_id"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            student_exam= StudentExam.objects.get(exam_id=exam_id, student_id=student_id, instructor=instructor)
+            student_exam= StudentExam.objects.get(exam__id=exam_id, student__id=student_id, instructor=instructor)
             student_exam.signin_attendance=True if not student_exam.signin_attendance else False
             student_exam.save()
             return Response(
