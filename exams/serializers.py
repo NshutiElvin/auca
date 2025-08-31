@@ -37,7 +37,7 @@ class StudentExamSerializer(serializers.ModelSerializer):
           queryset=Student.objects.all(), source='student', write_only=True
 
     )
-#     room=RoomSerializer(read_only=True)
+    room=RoomSerializer(read_only=True)
     room_id= serializers.PrimaryKeyRelatedField(
           queryset=Room.objects.all(), source='room', write_only=True
 
@@ -52,7 +52,7 @@ class StudentExamSerializer(serializers.ModelSerializer):
         model = StudentExam
         fields = (
             "id", "student", "student_id", "exam","exam_id" ,"signin_attendance","signout_attendance","instructor",
-            "status", "room_id"
+            "status", "room_id", "room"
         )
 
 

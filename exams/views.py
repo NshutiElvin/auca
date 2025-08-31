@@ -815,11 +815,11 @@ class ExamViewSet(viewsets.ModelViewSet):
             student_exam.signout_attendance=True if not student_exam.signout_attendance else False
             student_exam.save()
             return Response(
-                {"success": True, "message": f"Exam {exam_id} cancelled successfully"}
+                {"success": True, "message": f"attendance marked for exam {exam_id} successfully"}
             )
         except Exception as e:
             return Response(
-                {"success": False, "message": f"Error cancelling exam: {str(e)}"},
+                {"success": False, "message": f"Error marking attendance: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
