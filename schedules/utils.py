@@ -2826,7 +2826,7 @@ def allocate_shared_rooms_updated(student_exams):
 def allocate_shared_rooms(location_id):
     # Get all unassigned student exams with related data
     student_exams = (
-        StudentExam.objects.filter(room__isnull=True)
+        StudentExam.objects.filter(room__isnull=True, exam__group__course__department__location__id= location_id)
         .select_related("exam", "exam__group__course__semester", "student")
         .order_by("exam__date", "exam__start_time")
     )
