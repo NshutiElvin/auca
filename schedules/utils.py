@@ -1018,6 +1018,7 @@ def get_exam_time_for_group(
     weekday, available_slots, available_seats=None, 
     slots_usage=None, needed_seats=None, group_name=None
 ):
+    logger.debug(group_name)
     # No exams on Saturday
     if weekday == "Saturday":
         return None
