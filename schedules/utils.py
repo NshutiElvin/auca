@@ -1012,82 +1012,16 @@ def clean_empty_courses_from_group(course_group):
         course for course in course_group["courses"] if course["groups"]
     ]
     return len(course_group["courses"]) > 0
-import random
 
-def get_exam_time_for_group(
-    weekday, available_slots, available_seats=None, 
-    slots_usage=None, needed_seats=None, group_name=None
-):
-    # No exams on Saturday
+
+def get_exam_time_for_group(weekday, available_slots, available_seats=None, slots_usage=None, needed_seats=None, group_name=None):
     if weekday == "Saturday":
         return None
     
-    # Remove evening slot on Friday
-    if weekday == "Friday":
-        available_slots = [slot for slot in available_slots if slot != "Evening"]
-    
-    # Map groups A–Z to slots cyclically: Morning → Afternoon → Evening
-    slot_cycle = ["Morning", "Afternoon", "Evening"]
-    preferred_slot = None
-    
-    if group_name and group_name.isalpha() and len(group_name) == 1:
-        group_upper = group_name.upper()
-        if 'A' <= group_upper <= 'Z':
-            index = ord(group_upper) - ord('A')
-            preferred_slot = slot_cycle[index % len(slot_cycle)]
-    
-    # If no valid group → pick a random slot
-    if preferred_slot is None:
-        preferred_slot = random.choice(available_slots)
-    
-    # Check seat capacity & slot usage
-    for slot in available_slots:
-        if slot != preferred_slot:
-            continue
-        
-        if slots_usage and available_seats and needed_seats:
-            if slots_usage.get(slot, 0) + needed_seats <= available_seats:
-                return slot
-        else:
+    for slot, number in slots_usage.items():
+        if number + needed_seats <= available_seats:
             return slot
-    
     return None
-
-
-# def get_exam_time_for_group(
-#     weekday, available_slots, available_seats=None, 
-#     slots_usage=None, needed_seats=None, group_name=None
-# ):
-#     logger.debug(group_name)
-#     # No exams on Saturday
-#     if weekday == "Saturday":
-#         return None
-    
-#     # Remove evening slot on Friday
-#     if weekday == "Friday":
-#         available_slots = [slot for slot in available_slots if slot != "Evening"]
-    
-#     # Map groups A–Z to slots cyclically: Morning → Afternoon → Evening
-#     slot_cycle = ["Morning", "Afternoon", "Evening"]
-#     preferred_slot = None
-#     if group_name:
-#         index = ord(group_name.upper()) - ord('A')
-#         preferred_slot = slot_cycle[index % len(slot_cycle)]
-    
-#     # Check seat capacity & slot usage
-#     for slot in available_slots:
-#         # Prioritize the mapped slot
-#         if preferred_slot and slot != preferred_slot:
-#             continue
-        
-#         if slots_usage and available_seats and needed_seats:
-#             if slots_usage.get(slot, 0) + needed_seats <= available_seats:
-#                 return slot
-#         else:
-#             return slot
-    
-#     return None
-
     
 
 
@@ -1172,7 +1106,7 @@ def schedule_group_exams(
                 continue
             needed_seats = len(student_ids)
             slot_name = get_exam_time_for_group( weekday, all_slots, all_available_seats,slot_seats_usage, needed_seats, group.group_name )
-            logger.debug(slot_name)
+            # print(slot_name)
             # if slot_name not in slot_map:
             #     reason = f"No valid time slot for group {group.group_name} on {weekday}"
             #     logger.info(reason)
