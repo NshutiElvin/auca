@@ -1132,7 +1132,7 @@ def schedule_group_exams(
                 continue
             needed_seats = len(student_ids)
             slot_name = get_exam_time_for_group( weekday, all_slots, all_available_seats,slot_seats_usage, needed_seats, group.group_name )
-            print(slot_name)
+            logger.debug(slot_name)
             # if slot_name not in slot_map:
             #     reason = f"No valid time slot for group {group.group_name} on {weekday}"
             #     logger.info(reason)
