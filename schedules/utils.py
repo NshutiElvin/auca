@@ -1133,12 +1133,12 @@ def schedule_group_exams(
             needed_seats = len(student_ids)
             slot_name = get_exam_time_for_group( weekday, all_slots, all_available_seats,slot_seats_usage, needed_seats, group.group_name )
             print(slot_name)
-            if slot_name not in slot_map:
-                reason = f"No valid time slot for group {group.group_name} on {weekday}"
-                logger.info(reason)
-                unscheduled_reasons[group_id] = reason
-                partially_scheduled = True
-                continue
+            # if slot_name not in slot_map:
+            #     reason = f"No valid time slot for group {group.group_name} on {weekday}"
+            #     logger.info(reason)
+            #     unscheduled_reasons[group_id] = reason
+            #     partially_scheduled = True
+            #     continue
 
             wanted_slot = slot_map[slot_name]
             start_time = time(*map(int, wanted_slot["start"].split(":")))
