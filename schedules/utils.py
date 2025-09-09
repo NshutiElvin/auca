@@ -590,372 +590,319 @@ def verify_groups_compatibility(groups):
     
     return group_conflicts
 
-def  find_compatible_courses_within_group(courses):
+ 
+
+def find_compatible_courses_within_group(courses):
     if not courses:
-        return {"compatible_courses": [], "course_conflicts": defaultdict(list)}
-
-    # Data structure: {course_id: set(student_ids)}
+        return {"compatible_groups": [], "group_conflicts": defaultdict(list)}
+    
+    # Get location and total capacity
+    location = Course.objects.filter(id=courses[0]).first().department.location.id
+    total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
+    max_students_per_timeslot = total_seats * 3
+    
+    # Get all enrollments and organize data
     course_students = defaultdict(set)
-
-    # Populate enrollment data (aggregate all students across all groups for each course)
+    course_group_details = defaultdict(lambda: defaultdict(list))
+    course_group_students = defaultdict(lambda: defaultdict(set))
+    course_group_sizes = defaultdict(lambda: defaultdict(int))
+    
     for enrollment in Enrollment.objects.filter(course_id__in=courses).iterator():
         course_students[enrollment.course_id].add(enrollment.student_id)
-
-    # Build course-level conflict graph
+        course_group_details[enrollment.course_id][enrollment.group_id].append(enrollment.student_id)
+        course_group_students[enrollment.course_id][enrollment.group_id].add(enrollment.student_id)
+        course_group_sizes[enrollment.course_id][enrollment.group_id] += 1
+    
+    # Find course conflicts (students taking multiple courses)
     course_conflicts = defaultdict(list)
-    for course1, course2 in combinations(courses, 2):
+    for course1, course2 in combinations(course_students.keys(), 2):
         students1 = course_students[course1]
         students2 = course_students[course2]
-
-        if students1 & students2:  # Shared students exist
+        
+        if students1 & students2:
             course_conflicts[course1].append(course2)
             course_conflicts[course2].append(course1)
-
-    # Greedy graph coloring for courses
+    
+    # First attempt: try to schedule each course with all its groups together
     color_courses = defaultdict(list)
+    color_student_counts = defaultdict(int)
+    color_course_groups = defaultdict(lambda: defaultdict(list))
     colored = {}
-    course_list = sorted(courses, key=lambda x: -len(course_conflicts[x]))
-
+    
+    course_list = sorted(course_students.keys(), key=lambda x: (-len(course_students[x]), -len(course_conflicts[x])))
+    
     for course in course_list:
-        # Find used colors in conflicting courses
-        used_colors = {
-            colored[conflict]
-            for conflict in course_conflicts[course]
-            if conflict in colored
-        }
-
-        # Assign first available color
-        for color in range(len(courses)):
-            if color not in used_colors:
-                colored[course] = color
-                color_courses[color].append(course)
-                break
-
-    # Convert to compatible courses format
-    compatible_courses = []
-    for color, course_ids in color_courses.items():
-        compatible_courses.append(
-            {
-                "timeslot": color + 1,
-                "courses": course_ids,
-                "student_count": sum(len(course_students[course_id]) for course_id in course_ids),
-            }
-        )
-
-    compatible_courses.sort(key=lambda x: -x["student_count"])
-    return compatible_courses, course_conflicts
-
-# def find_compatible_courses_within_group(courses):
-#     if not courses:
-#         return {"compatible_groups": [], "group_conflicts": defaultdict(list)}
-    
-#     # Get location and total capacity
-#     location = Course.objects.filter(id=courses[0]).first().department.location.id
-#     total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
-#     max_students_per_timeslot = total_seats * 3
-    
-#     # Get all enrollments and organize data
-#     course_students = defaultdict(set)
-#     course_group_details = defaultdict(lambda: defaultdict(list))
-#     course_group_students = defaultdict(lambda: defaultdict(set))
-#     course_group_sizes = defaultdict(lambda: defaultdict(int))
-    
-#     for enrollment in Enrollment.objects.filter(course_id__in=courses).iterator():
-#         course_students[enrollment.course_id].add(enrollment.student_id)
-#         course_group_details[enrollment.course_id][enrollment.group_id].append(enrollment.student_id)
-#         course_group_students[enrollment.course_id][enrollment.group_id].add(enrollment.student_id)
-#         course_group_sizes[enrollment.course_id][enrollment.group_id] += 1
-    
-#     # Find course conflicts (students taking multiple courses)
-#     course_conflicts = defaultdict(list)
-#     for course1, course2 in combinations(course_students.keys(), 2):
-#         students1 = course_students[course1]
-#         students2 = course_students[course2]
+        course_student_count = len(course_students[course])
+        course_groups = list(course_group_students[course].keys())
         
-#         if students1 & students2:
-#             course_conflicts[course1].append(course2)
-#             course_conflicts[course2].append(course1)
-    
-#     # First attempt: try to schedule each course with all its groups together
-#     color_courses = defaultdict(list)
-#     color_student_counts = defaultdict(int)
-#     color_course_groups = defaultdict(lambda: defaultdict(list))
-#     colored = {}
-    
-#     course_list = sorted(course_students.keys(), key=lambda x: (-len(course_students[x]), -len(course_conflicts[x])))
-    
-#     for course in course_list:
-#         course_student_count = len(course_students[course])
-#         course_groups = list(course_group_students[course].keys())
+        available_colors = []
+        for color in range(len(course_students)):
+            # Check for conflicts
+            is_conflict_free = all(
+                colored.get(conflict) != color
+                for conflict in course_conflicts[course]
+                if conflict in colored
+            )
+            
+            # Check capacity
+            has_capacity = (color_student_counts[color] + course_student_count) <= max_students_per_timeslot
+            
+            if is_conflict_free and has_capacity:
+                available_colors.append(color)
         
-#         available_colors = []
-#         for color in range(len(course_students)):
-#             # Check for conflicts
-#             is_conflict_free = all(
-#                 colored.get(conflict) != color
-#                 for conflict in course_conflicts[course]
-#                 if conflict in colored
-#             )
+        if available_colors:
+            # Place entire course in the best color
+            chosen_color = min(available_colors, key=lambda c: color_student_counts[c])
+            colored[course] = chosen_color
+            color_courses[chosen_color].append(course)
+            color_student_counts[chosen_color] += course_student_count
             
-#             # Check capacity
-#             has_capacity = (color_student_counts[color] + course_student_count) <= max_students_per_timeslot
+            # Record all groups for this course
+            for group_id in course_groups:
+                color_course_groups[chosen_color][course].append(group_id)
+        else:
+            # Course doesn't fit entirely - need to split groups
+            # Sort groups by size (largest first) to optimize placement
+            sorted_groups = sorted(course_groups, key=lambda g: -course_group_sizes[course][g])
+            remaining_groups = sorted_groups.copy()
             
-#             if is_conflict_free and has_capacity:
-#                 available_colors.append(color)
-        
-#         if available_colors:
-#             # Place entire course in the best color
-#             chosen_color = min(available_colors, key=lambda c: color_student_counts[c])
-#             colored[course] = chosen_color
-#             color_courses[chosen_color].append(course)
-#             color_student_counts[chosen_color] += course_student_count
+            # Try to place as many groups as possible in adjacent timeslots
+            adjacent_colors = set()
+            placed_groups = []
             
-#             # Record all groups for this course
-#             for group_id in course_groups:
-#                 color_course_groups[chosen_color][course].append(group_id)
-#         else:
-#             # Course doesn't fit entirely - need to split groups
-#             # Sort groups by size (largest first) to optimize placement
-#             sorted_groups = sorted(course_groups, key=lambda g: -course_group_sizes[course][g])
-#             remaining_groups = sorted_groups.copy()
-            
-#             # Try to place as many groups as possible in adjacent timeslots
-#             adjacent_colors = set()
-#             placed_groups = []
-            
-#             # First pass: try to place groups in existing colors
-#             for group_id in remaining_groups[:]:
-#                 group_size = course_group_sizes[course][group_id]
-#                 best_color = None
-#                 min_remaining_capacity = float('inf')
+            # First pass: try to place groups in existing colors
+            for group_id in remaining_groups[:]:
+                group_size = course_group_sizes[course][group_id]
+                best_color = None
+                min_remaining_capacity = float('inf')
                 
-#                 # Find the best color for this group
-#                 for color in range(len(color_student_counts)):
-#                     if any(colored.get(conflict) == color for conflict in course_conflicts[course] if conflict in colored):
-#                         continue
+                # Find the best color for this group
+                for color in range(len(color_student_counts)):
+                    if any(colored.get(conflict) == color for conflict in course_conflicts[course] if conflict in colored):
+                        continue
                     
-#                     remaining_capacity = max_students_per_timeslot - color_student_counts[color]
-#                     if group_size <= remaining_capacity:
-#                         if best_color is None or remaining_capacity < min_remaining_capacity:
-#                             best_color = color
-#                             min_remaining_capacity = remaining_capacity
+                    remaining_capacity = max_students_per_timeslot - color_student_counts[color]
+                    if group_size <= remaining_capacity:
+                        if best_color is None or remaining_capacity < min_remaining_capacity:
+                            best_color = color
+                            min_remaining_capacity = remaining_capacity
                 
-#                 if best_color is not None:
-#                     # Place group in best color
-#                     color_course_groups[best_color][course].append(group_id)
-#                     color_student_counts[best_color] += group_size
-#                     placed_groups.append((group_id, best_color))
-#                     adjacent_colors.add(best_color)
-#                     remaining_groups.remove(group_id)
+                if best_color is not None:
+                    # Place group in best color
+                    color_course_groups[best_color][course].append(group_id)
+                    color_student_counts[best_color] += group_size
+                    placed_groups.append((group_id, best_color))
+                    adjacent_colors.add(best_color)
+                    remaining_groups.remove(group_id)
             
-#             # Second pass: for remaining groups, try to place them adjacent to already placed groups
-#             for group_id in remaining_groups[:]:
-#                 group_size = course_group_sizes[course][group_id]
+            # Second pass: for remaining groups, try to place them adjacent to already placed groups
+            for group_id in remaining_groups[:]:
+                group_size = course_group_sizes[course][group_id]
                 
-#                 # Try to place near existing groups of the same course
-#                 if adjacent_colors:
-#                     best_adjacent_color = None
-#                     min_remaining_capacity = float('inf')
+                # Try to place near existing groups of the same course
+                if adjacent_colors:
+                    best_adjacent_color = None
+                    min_remaining_capacity = float('inf')
                     
-#                     for color in adjacent_colors:
-#                         if any(colored.get(conflict) == color for conflict in course_conflicts[course] if conflict in colored):
-#                             continue
+                    for color in adjacent_colors:
+                        if any(colored.get(conflict) == color for conflict in course_conflicts[course] if conflict in colored):
+                            continue
                         
-#                         remaining_capacity = max_students_per_timeslot - color_student_counts[color]
-#                         if group_size <= remaining_capacity:
-#                             if best_adjacent_color is None or remaining_capacity < min_remaining_capacity:
-#                                 best_adjacent_color = color
-#                                 min_remaining_capacity = remaining_capacity
+                        remaining_capacity = max_students_per_timeslot - color_student_counts[color]
+                        if group_size <= remaining_capacity:
+                            if best_adjacent_color is None or remaining_capacity < min_remaining_capacity:
+                                best_adjacent_color = color
+                                min_remaining_capacity = remaining_capacity
                     
-#                     if best_adjacent_color is not None:
-#                         color_course_groups[best_adjacent_color][course].append(group_id)
-#                         color_student_counts[best_adjacent_color] += group_size
-#                         placed_groups.append((group_id, best_adjacent_color))
-#                         remaining_groups.remove(group_id)
-#                         continue
+                    if best_adjacent_color is not None:
+                        color_course_groups[best_adjacent_color][course].append(group_id)
+                        color_student_counts[best_adjacent_color] += group_size
+                        placed_groups.append((group_id, best_adjacent_color))
+                        remaining_groups.remove(group_id)
+                        continue
                 
-#                 # If no adjacent slot available, create new color near existing ones
-#                 if adjacent_colors:
-#                     # Create new color with minimal distance from existing ones
-#                     new_color = max(adjacent_colors) + 1 if max(adjacent_colors) + 1 not in adjacent_colors else min(adjacent_colors) - 1
-#                     if new_color < 0:
-#                         new_color = max(adjacent_colors) + 1
-#                 else:
-#                     # No groups placed yet, create new color
-#                     new_color = len(color_student_counts)
+                # If no adjacent slot available, create new color near existing ones
+                if adjacent_colors:
+                    # Create new color with minimal distance from existing ones
+                    new_color = max(adjacent_colors) + 1 if max(adjacent_colors) + 1 not in adjacent_colors else min(adjacent_colors) - 1
+                    if new_color < 0:
+                        new_color = max(adjacent_colors) + 1
+                else:
+                    # No groups placed yet, create new color
+                    new_color = len(color_student_counts)
                 
-#                 # Initialize new color if needed
-#                 if new_color not in color_student_counts:
-#                     color_student_counts[new_color] = 0
+                # Initialize new color if needed
+                if new_color not in color_student_counts:
+                    color_student_counts[new_color] = 0
                 
-#                 color_course_groups[new_color][course].append(group_id)
-#                 color_student_counts[new_color] += group_size
-#                 placed_groups.append((group_id, new_color))
-#                 adjacent_colors.add(new_color)
-#                 remaining_groups.remove(group_id)
+                color_course_groups[new_color][course].append(group_id)
+                color_student_counts[new_color] += group_size
+                placed_groups.append((group_id, new_color))
+                adjacent_colors.add(new_color)
+                remaining_groups.remove(group_id)
     
-#     # Optimize timeslot adjacency for split courses
-#     optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_students_per_timeslot)
+    # Optimize timeslot adjacency for split courses
+    optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_students_per_timeslot)
     
-#     # Convert to compatible groups format
-#     compatible_groups = []
-#     for color in sorted(color_course_groups.keys()):
-#         courses_in_slot = []
-#         total_students = 0
+    # Convert to compatible groups format
+    compatible_groups = []
+    for color in sorted(color_course_groups.keys()):
+        courses_in_slot = []
+        total_students = 0
         
-#         for course_id, group_ids in color_course_groups[color].items():
-#             course_student_count = sum(course_group_sizes[course_id][group_id] for group_id in group_ids)
-#             total_students += course_student_count
+        for course_id, group_ids in color_course_groups[color].items():
+            course_student_count = sum(course_group_sizes[course_id][group_id] for group_id in group_ids)
+            total_students += course_student_count
             
-#             courses_in_slot.append({
-#                 "course_id": course_id,
-#                 "groups": group_ids,
-#                 "student_count": course_student_count,
-#                 "all_groups_scheduled_together": len(group_ids) == len(course_group_students[course_id]),
-#                 "split_course": len(group_ids) < len(course_group_students[course_id])
-#             })
+            courses_in_slot.append({
+                "course_id": course_id,
+                "groups": group_ids,
+                "student_count": course_student_count,
+                "all_groups_scheduled_together": len(group_ids) == len(course_group_students[course_id]),
+                "split_course": len(group_ids) < len(course_group_students[course_id])
+            })
         
-#         compatible_groups.append({
-#             "timeslot": color + 1,
-#             "courses": courses_in_slot,
-#             "student_count": total_students,
-#             "within_capacity": total_students <= max_students_per_timeslot
-#         })
+        compatible_groups.append({
+            "timeslot": color + 1,
+            "courses": courses_in_slot,
+            "student_count": total_students,
+            "within_capacity": total_students <= max_students_per_timeslot
+        })
     
-#     # Sort by timeslot number to maintain adjacency
-#     compatible_groups.sort(key=lambda x: x["timeslot"])
+    # Sort by timeslot number to maintain adjacency
+    compatible_groups.sort(key=lambda x: x["timeslot"])
     
-#     return compatible_groups, course_conflicts
-# def optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_capacity):
-#     """Optimize timeslot arrangement to keep split courses adjacent"""
-#     # Find courses that are split across multiple timeslots
-#     split_courses = defaultdict(set)
-#     for color, courses in color_course_groups.items():
-#         for course_id in courses:
-#             split_courses[course_id].add(color)
+    return compatible_groups, course_conflicts
+def optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_capacity):
+    """Optimize timeslot arrangement to keep split courses adjacent"""
+    # Find courses that are split across multiple timeslots
+    split_courses = defaultdict(set)
+    for color, courses in color_course_groups.items():
+        for course_id in courses:
+            split_courses[course_id].add(color)
     
-#     # Only consider courses split across multiple timeslots
-#     split_courses = {course: colors for course, colors in split_courses.items() if len(colors) > 1}
+    # Only consider courses split across multiple timeslots
+    split_courses = {course: colors for course, colors in split_courses.items() if len(colors) > 1}
     
-#     if not split_courses:
-#         return
+    if not split_courses:
+        return
     
-#     # Create a list of all timeslots sorted by their current number
-#     all_colors = sorted(color_course_groups.keys())
+    # Create a list of all timeslots sorted by their current number
+    all_colors = sorted(color_course_groups.keys())
     
-#     # For each split course, try to minimize the spread of its groups
-#     for course_id, original_colors in split_courses.items():
-#         if len(original_colors) <= 1:
-#             continue
+    # For each split course, try to minimize the spread of its groups
+    for course_id, original_colors in split_courses.items():
+        if len(original_colors) <= 1:
+            continue
             
-#         current_min = min(original_colors)
-#         current_max = max(original_colors)
-#         current_spread = current_max - current_min
+        current_min = min(original_colors)
+        current_max = max(original_colors)
+        current_spread = current_max - current_min
         
-#         # Get all groups for this course across timeslots
-#         course_groups_by_color = {}
-#         total_course_students = 0
-#         for color in original_colors:
-#             groups = color_course_groups[color][course_id]
-#             group_size = sum(len(group_students) for group_students in groups)  # Assuming group_students is a list
-#             course_groups_by_color[color] = (groups, group_size)
-#             total_course_students += group_size
+        # Get all groups for this course across timeslots
+        course_groups_by_color = {}
+        total_course_students = 0
+        for color in original_colors:
+            groups = color_course_groups[color][course_id]
+            group_size = sum(len(group_students) for group_students in groups)  # Assuming group_students is a list
+            course_groups_by_color[color] = (groups, group_size)
+            total_course_students += group_size
         
-#         # Try to find a contiguous range of timeslots that can accommodate all groups
-#         best_range = None
-#         best_spread = float('inf')
+        # Try to find a contiguous range of timeslots that can accommodate all groups
+        best_range = None
+        best_spread = float('inf')
         
-#         # Try different window sizes and positions
-#         for window_size in range(len(original_colors), len(all_colors) + 1):
-#             for start_idx in range(len(all_colors) - window_size + 1):
-#                 candidate_colors = all_colors[start_idx:start_idx + window_size]
+        # Try different window sizes and positions
+        for window_size in range(len(original_colors), len(all_colors) + 1):
+            for start_idx in range(len(all_colors) - window_size + 1):
+                candidate_colors = all_colors[start_idx:start_idx + window_size]
                 
-#                 # Check if this range can accommodate all course groups
-#                 feasible = True
-#                 temp_capacity_check = {color: color_student_counts[color] for color in candidate_colors}
+                # Check if this range can accommodate all course groups
+                feasible = True
+                temp_capacity_check = {color: color_student_counts[color] for color in candidate_colors}
                 
-#                 # Remove current course groups from capacity check
-#                 for color in original_colors:
-#                     if color in candidate_colors:
-#                         _, group_size = course_groups_by_color[color]
-#                         temp_capacity_check[color] -= group_size
+                # Remove current course groups from capacity check
+                for color in original_colors:
+                    if color in candidate_colors:
+                        _, group_size = course_groups_by_color[color]
+                        temp_capacity_check[color] -= group_size
                 
-#                 # Distribute remaining groups to candidate timeslots
-#                 remaining_groups = []
-#                 remaining_sizes = []
-#                 for color in original_colors:
-#                     if color not in candidate_colors:
-#                         groups, size = course_groups_by_color[color]
-#                         remaining_groups.extend(groups)
-#                         remaining_sizes.append(size)
+                # Distribute remaining groups to candidate timeslots
+                remaining_groups = []
+                remaining_sizes = []
+                for color in original_colors:
+                    if color not in candidate_colors:
+                        groups, size = course_groups_by_color[color]
+                        remaining_groups.extend(groups)
+                        remaining_sizes.append(size)
                 
-#                 # Try to place remaining groups in candidate timeslots
-#                 for group_size in remaining_sizes:
-#                     placed = False
-#                     for color in candidate_colors:
-#                         if temp_capacity_check[color] + group_size <= max_capacity:
-#                             temp_capacity_check[color] += group_size
-#                             placed = True
-#                             break
-#                     if not placed:
-#                         feasible = False
-#                         break
+                # Try to place remaining groups in candidate timeslots
+                for group_size in remaining_sizes:
+                    placed = False
+                    for color in candidate_colors:
+                        if temp_capacity_check[color] + group_size <= max_capacity:
+                            temp_capacity_check[color] += group_size
+                            placed = True
+                            break
+                    if not placed:
+                        feasible = False
+                        break
                 
-#                 if feasible and window_size < best_spread:
-#                     best_spread = window_size
-#                     best_range = candidate_colors
-#                     if best_spread <= current_spread:
-#                         break
+                if feasible and window_size < best_spread:
+                    best_spread = window_size
+                    best_range = candidate_colors
+                    if best_spread <= current_spread:
+                        break
             
-#             if best_spread <= current_spread:
-#                 break
+            if best_spread <= current_spread:
+                break
         
-#         # Apply the best arrangement if found
-#         if best_range and best_spread < current_spread:
-#             # Remove course groups from original timeslots
-#             for color in original_colors:
-#                 if course_id in color_course_groups[color]:
-#                     groups, group_size = course_groups_by_color[color]
-#                     del color_course_groups[color][course_id]
-#                     color_student_counts[color] -= group_size
-#                     # Remove empty timeslots
-#                     if not color_course_groups[color]:
-#                         del color_course_groups[color]
-#                         del color_student_counts[color]
+        # Apply the best arrangement if found
+        if best_range and best_spread < current_spread:
+            # Remove course groups from original timeslots
+            for color in original_colors:
+                if course_id in color_course_groups[color]:
+                    groups, group_size = course_groups_by_color[color]
+                    del color_course_groups[color][course_id]
+                    color_student_counts[color] -= group_size
+                    # Remove empty timeslots
+                    if not color_course_groups[color]:
+                        del color_course_groups[color]
+                        del color_student_counts[color]
             
-#             # Add course groups to best range timeslots
-#             # Distribute groups evenly across the best range
-#             groups_to_distribute = []
-#             group_sizes_to_distribute = []
-#             for color in original_colors:
-#                 groups, size = course_groups_by_color[color]
-#                 groups_to_distribute.extend(groups)
-#                 group_sizes_to_distribute.extend([size] * len(groups))
+            # Add course groups to best range timeslots
+            # Distribute groups evenly across the best range
+            groups_to_distribute = []
+            group_sizes_to_distribute = []
+            for color in original_colors:
+                groups, size = course_groups_by_color[color]
+                groups_to_distribute.extend(groups)
+                group_sizes_to_distribute.extend([size] * len(groups))
             
-#             # Sort groups by size (largest first) for better packing
-#             sorted_groups = sorted(zip(groups_to_distribute, group_sizes_to_distribute), 
-#                                  key=lambda x: -x[1])
+            # Sort groups by size (largest first) for better packing
+            sorted_groups = sorted(zip(groups_to_distribute, group_sizes_to_distribute), 
+                                 key=lambda x: -x[1])
             
-#             for group, group_size in sorted_groups:
-#                 # Find the timeslot with most available capacity
-#                 best_slot = None
-#                 max_available = -1
+            for group, group_size in sorted_groups:
+                # Find the timeslot with most available capacity
+                best_slot = None
+                max_available = -1
                 
-#                 for color in best_range:
-#                     current_capacity = color_student_counts.get(color, 0)
-#                     available = max_capacity - current_capacity
-#                     if available >= group_size and available > max_available:
-#                         best_slot = color
-#                         max_available = available
+                for color in best_range:
+                    current_capacity = color_student_counts.get(color, 0)
+                    available = max_capacity - current_capacity
+                    if available >= group_size and available > max_available:
+                        best_slot = color
+                        max_available = available
                 
-#                 if best_slot is not None:
-#                     if best_slot not in color_course_groups:
-#                         color_course_groups[best_slot] = defaultdict(list)
-#                     if best_slot not in color_student_counts:
-#                         color_student_counts[best_slot] = 0
+                if best_slot is not None:
+                    if best_slot not in color_course_groups:
+                        color_course_groups[best_slot] = defaultdict(list)
+                    if best_slot not in color_student_counts:
+                        color_student_counts[best_slot] = 0
                     
-#                     color_course_groups[best_slot][course_id].append(group)
-#                     color_student_counts[best_slot] += group_size
+                    color_course_groups[best_slot][course_id].append(group)
+                    color_student_counts[best_slot] += group_size
 
 # def optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_capacity):
 #     """Optimize timeslot arrangement to keep split courses adjacent"""
@@ -1015,6 +962,61 @@ def  find_compatible_courses_within_group(courses):
 #             # student conflicts and capacity constraints more carefully
 #             pass
 
+
+def  find_compatible_courses_within_group(courses):
+    if not courses:
+        return {"compatible_courses": [], "course_conflicts": defaultdict(list)}
+
+    # Data structure: {course_id: set(student_ids)}
+    course_students = defaultdict(set)
+
+    # Populate enrollment data (aggregate all students across all groups for each course)
+    for enrollment in Enrollment.objects.filter(course_id__in=courses).iterator():
+        course_students[enrollment.course_id].add(enrollment.student_id)
+
+    # Build course-level conflict graph
+    course_conflicts = defaultdict(list)
+    for course1, course2 in combinations(courses, 2):
+        students1 = course_students[course1]
+        students2 = course_students[course2]
+
+        if students1 & students2:  # Shared students exist
+            course_conflicts[course1].append(course2)
+            course_conflicts[course2].append(course1)
+
+    # Greedy graph coloring for courses
+    color_courses = defaultdict(list)
+    colored = {}
+    course_list = sorted(courses, key=lambda x: -len(course_conflicts[x]))
+
+    for course in course_list:
+        # Find used colors in conflicting courses
+        used_colors = {
+            colored[conflict]
+            for conflict in course_conflicts[course]
+            if conflict in colored
+        }
+
+        # Assign first available color
+        for color in range(len(courses)):
+            if color not in used_colors:
+                colored[course] = color
+                color_courses[color].append(course)
+                break
+
+    # Convert to compatible courses format
+    compatible_courses = []
+    for color, course_ids in color_courses.items():
+        compatible_courses.append(
+            {
+                "timeslot": color + 1,
+                "courses": course_ids,
+                "student_count": sum(len(course_students[course_id]) for course_id in course_ids),
+            }
+        )
+
+    compatible_courses.sort(key=lambda x: -x["student_count"])
+    return compatible_courses, course_conflicts
 
 def find_compatible_courses_with_group_optimization(courses):
     """
@@ -1129,13 +1131,7 @@ def find_compatible_courses_with_group_optimization(courses):
     
     return compatible_groups, combination_conflicts
  
-def remove_scheduled_course(remaining_courses, course_id):
-    """Remove a scheduled course from the remaining courses list"""
-    for group in remaining_courses:
-        if group:
-            if course_id in group["courses"]:
-                group["courses"].remove(course_id)
-                break
+
 
 def has_sufficient_gap(student_exam_dates, proposed_date, min_gap_days=2):
     """
@@ -1356,338 +1352,121 @@ def schedule_group_exams(
     
 
     return exams_created, partially_scheduled, unscheduled_reasons
+
+
 def generate_exam_schedule(slots=None, course_ids=None, master_timetable: MasterTimetable = None, location=None):
-    # try:
-        if course_ids:
-            enrolled_courses = course_ids
-        else:
-            enrolled_courses = Course.objects.annotate(
-                enrollment_count=Count("enrollments")
-            ).filter(enrollment_count__gt=0).values_list('id', flat=True)
+    try:
+        courses_dict = fetch_courses(course_ids)
 
-        # Find compatible courses (course-level instead of group-level)
-        compatible_courses, _ = find_compatible_courses_within_group(enrolled_courses)
-        print("Compatible courses:", compatible_courses)
-        
+        enrolled_course_ids = list(courses_dict.keys())
+        compatible_groups, _ = find_compatible_courses_within_group(enrolled_course_ids)
+        pprint(compatible_groups)
         unscheduled_reasons = {}
-        if not compatible_courses:
-            print("No compatible course groups found")
-            return [], "No compatible course groups found", []
 
-        slots_by_date = {
-            datetime.strptime(date_str, "%Y-%m-%d").date(): value
-            for date_str, value in slots.items()
-        }
+        if not compatible_groups:
+            logger.info("No compatible course groups found")
+            return [], "No compatible course groups found", [], {}
 
-        # Initialize tracking variables
-        remaining_courses = copy.deepcopy(compatible_courses)
-        unscheduled_courses = []
+        slots_by_date = get_slots_by_date(slots)
+        dates = sorted(date for date in slots_by_date if date.strftime("%A") != "Saturday")
+
+        if not dates:
+            logger.info("No available dates (excluding Saturdays)")
+            # populate unscheduled reasons for all groups
+            for group in compatible_groups:
+                for course in group["courses"]:
+                    for group_id in course["groups"]:
+                        unscheduled_reasons[group_id] = "No available dates (excluding Saturdays)"
+            return [], [], compatible_groups, unscheduled_reasons
+
+        total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
+        logger.info(f"Total compatible groups to schedule: {len(compatible_groups)}")
+        logger.info(f"Available seats: {total_seats}")
+
+        enrollments_by_group = prefetch_enrollments(compatible_groups)
+ 
+        all_group_ids = set()
+        for group in compatible_groups:
+            for course in group["courses"]:
+                all_group_ids.update(course["groups"])
+        groups_dict = fetch_course_groups(all_group_ids)
+
         exams_created = []
-        student_exam_dates = defaultdict(list)
-        scheduled_exams_per_date = defaultdict(list)
-        
-        # Get total available seats
-        all_available_seats = (
-            Room.objects.filter(location_id=location).order_by("-capacity").aggregate(total=Sum("capacity"))["total"]
-            or 0
-        )
-
-        print(f"Total compatible course groups to schedule: {len(compatible_courses)}")
-        print(f"Available seats: {all_available_seats}")
+        unscheduled_groups = []
 
         with transaction.atomic():
-            dates = sorted(slots_by_date.keys())
-            date_index = 0
-
-            # Process each compatible course group on its own day
-            for group_idx, course_group in enumerate(compatible_courses):
-                # Find next available date (skip Saturdays)
-                while date_index < len(dates):
-                    current_date = dates[date_index]
-                    weekday = current_date.strftime("%A")
-
-                    if weekday != "Saturday":
-                        break
-                    date_index += 1
-
-                # Check if we have available dates
-                if date_index >= len(dates):
-                    print(f"No more available dates. Remaining groups will be unscheduled.")
-                    unscheduled_courses.extend(remaining_courses[group_idx:])
-                    for g in remaining_courses[group_idx:]:
-                        for course_id in g["courses"]:
-                            unscheduled_reasons[course_id] = f"No more available dates."
-                    break
-
-                current_date = dates[date_index]
-                weekday = current_date.strftime("%A")
-
-                print(f"Scheduling course group {group_idx + 1} on {current_date} ({weekday})")
-
-                # Track slot usage for this date
-                slot_seats_usage = {"Morning": 0, "Evening": 0, "Afternoon": 0}
-                group_fully_scheduled = True
-                current_group = remaining_courses[group_idx]
-
-                # Process all courses in this compatible group
-                for course_id in current_group["courses"][:]:  # Create copy to iterate
-                    try:
-                        course = Course.objects.get(id=course_id)
-                    except Course.DoesNotExist:
-                        print(f"Course with id {course_id} not found")
-                        continue
-
-                    # Get all students for this course (across all groups)
-                    student_ids = list(
-                        Enrollment.objects.filter(course=course)
-                        .values_list("student_id", flat=True)
-                        .distinct()
-                    )
-
-                    if not student_ids:
-                        # Remove empty courses
-                        remove_scheduled_course(remaining_courses, course_id)
-                        continue
-                    
-                    all_slots = set()
-                    for slot in slots_by_date[current_date]:
-                        all_slots.add(slot["name"])
-                    
-                    # Determine exam time based on course and day
-                    # You might want to modify get_exam_time_for_group or create a new function
-                    # For now, using a default slot or the first available
-                    slot_name = "Morning"  # Default, or implement course-based logic
-                    # Determine exam time based on course and day
-                    if all_slots:
-                        slot_name = list(all_slots)[0]  # Use first available slot
-                    
-                    wanted_slot = list(
-                        filter(
-                            lambda x: x["name"] == slot_name,
-                            slots_by_date[current_date],
-                        )
-                    )[0]
-                    start_time = time(*map(int, wanted_slot["start"].split(":")))
-                    end_time = time(*map(int, wanted_slot["end"].split(":")))
-
-                    if not start_time or not end_time:
-                        print(f"No valid time slot for course {course.code} on {weekday}")
-                        group_fully_scheduled = False
-                        continue
-
-                    # Check if we have enough seats for this slot
-                    if (
-                        slot_seats_usage[slot_name] + len(student_ids)
-                        <= all_available_seats
-                    ):
-                        # try:
-                            # Create the exam (no group association now)
-                            group= CourseGroup.objects.filter(course=course).first()
-                            exam = Exam.objects.create(
-                                date=current_date,
-                                start_time=start_time,
-                                end_time=end_time,
-                                group=group,   
-                                slot_name=slot_name,
-                            )
-                            master_timetable.exams.add(exam)
-                            exams_created.append(exam)
-
-                            # Create student exams for all students in the course
-                            for student_id in student_ids:
-                                student_exam = StudentExam.objects.create(
-                                    student_id=student_id, exam=exam
-                                )
-                                scheduled_exams_per_date[current_date].append(
-                                    student_exam
-                                )
-                                student_exam_dates[student_id].append(current_date)
-                           
-
-                            # Update slot usage
-                            slot_seats_usage[slot_name] += len(student_ids)
-
-                            # Remove this course from remaining courses
-                            remove_scheduled_course(remaining_courses, course_id)
-
-                            print(f"  ✓ Scheduled course {course.code} at {start_time}-{end_time}")
-
-                        # except Exception as e:
-                        #     print(f"  ✗ Failed to create exam for course {course.code}: {str(e)}")
-                        #     logger.error(f"Failed to create exam: {str(e)}")
-                        #     group_fully_scheduled = False
-                    else:
-                        unscheduled_reasons[course_id] = (
-                            f"  ✗ Not enough seats for course {course.code} in {slot_name} slot"
-                        )
-                        print(f"  ✗ Not enough seats for course {course.code} in {slot_name} slot")
-                        print(f"    Required: {len(student_ids)}, Available: {all_available_seats - slot_seats_usage[slot_name]}")
-                        group_fully_scheduled = False
-
-                # Clean up empty courses from this group
-                if not current_group["courses"]:
-                    remaining_courses[group_idx] = None
-
-                # Check if group was fully scheduled
-                if not group_fully_scheduled or (current_group["courses"] and any(current_group["courses"])):
-                    # Some courses couldn't be scheduled
-                    if current_group["courses"]:
-                        unscheduled_courses.append(current_group)
-                        for course_id in current_group["courses"]:
-                            unscheduled_reasons[course_id] = (
-                                f"  ! Course group {group_idx + 1} partially scheduled - some courses remain"
-                            )
-                        print(f"  ! Course group {group_idx + 1} partially scheduled - some courses remain")
-                    else:
-                        print(f"  ! Course group {group_idx + 1} had scheduling issues but no courses remain")
-                else:
-                    print(f"  ✓ Course group {group_idx + 1} fully scheduled")
-
-                # Move to next date for next group
-                date_index += 1
-
-            # Remove None entries from remaining_courses
-            remaining_courses = [group for group in remaining_courses if group is not None]
-
-            # Allocate rooms (assuming this function exists)
-            try:
-                unaccommodated_students = allocate_shared_rooms(
-                    master_timetable.location.id
-                )
-            except Exception as e:
-                print(f"Error in room allocation: {str(e)}")
-                unaccommodated_students = []
-
-        print(f"\nScheduling Summary:")
-        print(f"  Total exams created: {len(exams_created)}")
-        print(f"  Unscheduled course groups: {len(unscheduled_courses)}")
-        print("Course groups: ", compatible_courses)
-        pprint(unscheduled_reasons)
-        return (
-            exams_created,
-            unaccommodated_students,
-            unscheduled_courses,
-            unscheduled_reasons,
-        )
-
-    # except Exception as e:
-    #     print(f"Error generating schedule: {str(e)}")
-    #     logger.error(f"Error generating schedule: {str(e)}")
-    #     return [], f"Error generating schedule: {str(e)}", []
-
-# def generate_exam_schedule(slots=None, course_ids=None, master_timetable: MasterTimetable = None, location=None):
-#     try:
-#         courses_dict = fetch_courses(course_ids)
-
-#         enrolled_course_ids = list(courses_dict.keys())
-#         compatible_groups, _ = find_compatible_courses_within_group(enrolled_course_ids)
-#         pprint(compatible_groups)
-#         unscheduled_reasons = {}
-
-#         if not compatible_groups:
-#             logger.info("No compatible course groups found")
-#             return [], "No compatible course groups found", [], {}
-
-#         slots_by_date = get_slots_by_date(slots)
-#         dates = sorted(date for date in slots_by_date if date.strftime("%A") != "Saturday")
-
-#         if not dates:
-#             logger.info("No available dates (excluding Saturdays)")
-#             # populate unscheduled reasons for all groups
-#             for group in compatible_groups:
-#                 for course in group["courses"]:
-#                     for group_id in course["groups"]:
-#                         unscheduled_reasons[group_id] = "No available dates (excluding Saturdays)"
-#             return [], [], compatible_groups, unscheduled_reasons
-
-#         total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
-#         logger.info(f"Total compatible groups to schedule: {len(compatible_groups)}")
-#         logger.info(f"Available seats: {total_seats}")
-
-#         enrollments_by_group = prefetch_enrollments(compatible_groups)
- 
-#         all_group_ids = set()
-#         for group in compatible_groups:
-#             for course in group["courses"]:
-#                 all_group_ids.update(course["groups"])
-#         groups_dict = fetch_course_groups(all_group_ids)
-
-#         exams_created = []
-#         unscheduled_groups = []
-
-#         with transaction.atomic():
-#             slot_cache = {}
+            slot_cache = {}
          
-#             for date in dates:
-#                 slot_cache[date] = {slot["name"]: slot for slot in slots_by_date[date]}
+            for date in dates:
+                slot_cache[date] = {slot["name"]: slot for slot in slots_by_date[date]}
 
-#             for idx, course_group in enumerate(compatible_groups):
-#                 if idx >= len(dates):
-#                     unscheduled_groups.extend(compatible_groups[idx:])
-#                     for g in compatible_groups[idx:]:
-#                         for course in g["courses"]:
-#                             for group_id in course["groups"]:
-#                                 unscheduled_reasons[group_id] = "No more available dates."
-#                     break
-#                 slot_usage = {"Morning": 0, "Evening": 0, "Afternoon": 0}
-#                 current_date = dates[idx]
-#                 weekday = current_date.strftime("%A")
-#                 slot_map = slot_cache[current_date]
-#                 all_slots = set(slot_map.keys())
+            for idx, course_group in enumerate(compatible_groups):
+                if idx >= len(dates):
+                    unscheduled_groups.extend(compatible_groups[idx:])
+                    for g in compatible_groups[idx:]:
+                        for course in g["courses"]:
+                            for group_id in course["groups"]:
+                                unscheduled_reasons[group_id] = "No more available dates."
+                    break
+                slot_usage = {"Morning": 0, "Evening": 0, "Afternoon": 0}
+                current_date = dates[idx]
+                weekday = current_date.strftime("%A")
+                slot_map = slot_cache[current_date]
+                all_slots = set(slot_map.keys())
 
                  
 
-#                 group_exams, partially_scheduled, reasons = schedule_group_exams(
-#                     idx,
-#                     course_group,
-#                     current_date,
-#                     weekday,
-#                     slot_map,
-#                     all_slots,
-#                     total_seats,
-#                     courses_dict,
-#                     groups_dict,
-#                     enrollments_by_group,
-#                     master_timetable,
-#                     slot_usage
-#                 )
+                group_exams, partially_scheduled, reasons = schedule_group_exams(
+                    idx,
+                    course_group,
+                    current_date,
+                    weekday,
+                    slot_map,
+                    all_slots,
+                    total_seats,
+                    courses_dict,
+                    groups_dict,
+                    enrollments_by_group,
+                    master_timetable,
+                    slot_usage
+                )
 
-#                 exams_created.extend(group_exams)
+                exams_created.extend(group_exams)
 
-#                 if partially_scheduled or course_group["courses"]:
-#                     unscheduled_groups.append(course_group)
+                if partially_scheduled or course_group["courses"]:
+                    unscheduled_groups.append(course_group)
                   
-#                     for k, v in reasons.items():
-#                         if k not in unscheduled_reasons:
-#                             unscheduled_reasons[k] = v
-#                     logger.info(f"Group {idx + 1} partially scheduled")
-#                 else:
-#                     logger.info(f"Group {idx + 1} fully scheduled")
+                    for k, v in reasons.items():
+                        if k not in unscheduled_reasons:
+                            unscheduled_reasons[k] = v
+                    logger.info(f"Group {idx + 1} partially scheduled")
+                else:
+                    logger.info(f"Group {idx + 1} fully scheduled")
 
            
-#             try:
-#                 unaccommodated_students = allocate_shared_rooms(location)
-#             except Exception as e:
-#                 logger.error(f"Error in room allocation: {e}")
-#                 unaccommodated_students = []
+            try:
+                unaccommodated_students = allocate_shared_rooms(location)
+            except Exception as e:
+                logger.error(f"Error in room allocation: {e}")
+                unaccommodated_students = []
 
  
-#         if exams_created:
-#             send_exam_data.delay(
-#                 {
-#                     "scheduled": len(compatible_groups),
-#                     "all_exams": len(compatible_groups),
-#                 },
-#                 user_id=1,
-#                 broadcast=True,
-#             )
+        if exams_created:
+            send_exam_data.delay(
+                {
+                    "scheduled": len(compatible_groups),
+                    "all_exams": len(compatible_groups),
+                },
+                user_id=1,
+                broadcast=True,
+            )
 
-#         logger.info(f"Scheduling Summary: Created {len(exams_created)} exams, {len(unscheduled_groups)} groups unscheduled.")
-#         return exams_created, unaccommodated_students, unscheduled_groups, unscheduled_reasons
+        logger.info(f"Scheduling Summary: Created {len(exams_created)} exams, {len(unscheduled_groups)} groups unscheduled.")
+        return exams_created, unaccommodated_students, unscheduled_groups, unscheduled_reasons
 
-#     except Exception as e:
-#         logger.error(f"Error generating schedule: {e}")
-#         return [], f"Error generating schedule: {e}", [], {}
+    except Exception as e:
+        logger.error(f"Error generating schedule: {e}")
+        return [], f"Error generating schedule: {e}", [], {}
 
 
 def schedule_unscheduled_group(course_id, group_id):
