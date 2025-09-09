@@ -114,16 +114,17 @@ class ExamViewSet(viewsets.ModelViewSet):
                     })
             else:
                 recent_timetable= MasterTimetable.objects.order_by("-created_at").first()
-                queryset = queryset.filter(
+                if recent_timetable:
+                    queryset = queryset.filter(
                             mastertimetableexam__master_timetable_id=recent_timetable.id
                         ).distinct()  
-                serializer = self.get_serializer(queryset, many=True)
-                return Response({
-                    "success": True,
-                    "data": serializer.data,
-                    "masterTimetable":recent_timetable.id,
-                    "message": "Exams fetched successfully",
-                })
+                    serializer = self.get_serializer(queryset, many=True)
+                    return Response({
+                        "success": True,
+                        "data": serializer.data,
+                        "masterTimetable":recent_timetable.id,
+                        "message": "Exams fetched successfully",
+                    })
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
