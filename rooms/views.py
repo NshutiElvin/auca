@@ -9,7 +9,7 @@ from courses.serializers import CourseSerializer, SemesterSerializer
 from enrollments.models import Enrollment
 from exams.serializers import StudentExamSerializer
 from schedules.models import MasterTimetable
-from schedules.utils import get_occupied_seats_by_time_slot
+ 
 from semesters.models import Semester
 from .models import Location, Room, RoomAllocationSwitch
 from rest_framework.decorators import action, permission_classes

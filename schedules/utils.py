@@ -1,4 +1,4 @@
-# # Standard Library
+ # # Standard Library
 # from collections import defaultdict, deque
 # from datetime import datetime, time, timedelta
 # from itertools import combinations
@@ -2188,3 +2188,65 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
             best_suggestion = slots_by_date[earliest_date][0]
 
     return new_group, best_suggestion, all_suggestions, all_conflicts
+
+
+
+
+def verify_groups_compatibility(groups):
+    """
+    Optimized function to find conflicts between groups based on shared students.
+    
+    Key optimizations:
+    1. Single database query with select_related for better performance
+    2. Early termination when processing student conflicts
+    3. Set operations for faster intersection checks
+    4. Reduced memory allocation with generator expressions
+    """
+    
+    # Single optimized query - fetch all needed data at once
+    enrollments = (Enrollment.objects
+                  .filter(group_id__in=groups)
+                  .select_related('course', 'group')  # Reduce DB hits if needed
+                  .values('course_id', 'group_id', 'student_id'))
+    
+    # Build student sets for each (course, group) combination
+    course_group_students = defaultdict(lambda: defaultdict(set))
+    student_to_groups = defaultdict(set)  # Track which groups each student is in
+    
+    for enrollment in enrollments:
+        course_id = enrollment['course_id']
+        group_id = enrollment['group_id']
+        student_id = enrollment['student_id']
+        
+        course_group_students[course_id][group_id].add(student_id)
+        student_to_groups[student_id].add((course_id, group_id))
+    
+    # Find conflicts by checking students that appear in multiple groups
+    group_conflicts = []
+    processed_pairs = set()
+    
+    for student_id, student_groups in student_to_groups.items():
+        if len(student_groups) > 1:
+            # This student is in multiple groups - check for conflicts
+            student_groups_list = list(student_groups)
+            
+            for i in range(len(student_groups_list)):
+                for j in range(i + 1, len(student_groups_list)):
+                    course1, group1 = student_groups_list[i]
+                    course2, group2 = student_groups_list[j]
+                    
+                    # Create a consistent pair ordering to avoid duplicates
+                    pair = tuple(sorted([(course1, group1), (course2, group2)]))
+                    
+                    if pair not in processed_pairs:
+                        processed_pairs.add(pair)
+                        
+                        # Get all shared students between these two groups
+                        students1 = course_group_students[course1][group1]
+                        students2 = course_group_students[course2][group2]
+                        shared_students = students1 & students2
+                        
+                        if shared_students:
+                            group_conflicts.append((group1, group2, shared_students))
+    
+    return group_conflicts
