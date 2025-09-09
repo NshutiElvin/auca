@@ -10,10 +10,10 @@ from .serializers import ExamSerializer, StudentExamSerializer
 from schedules.utils import (
     allocate_shared_rooms_updated,
     generate_exam_schedule,
-    get_slot_name,
+    
     verify_groups_compatibility,
     which_suitable_slot_to_schedule_course_group,
-    schedule_unscheduled_group
+    
 )
 
 from django.db.models import Prefetch
