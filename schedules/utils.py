@@ -599,7 +599,7 @@ def find_compatible_courses_within_group(courses):
     # Get location and total capacity
     location = Course.objects.filter(id=courses[0]).first().department.location.id
     total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
-    max_students_per_timeslot = total_seats 
+    max_students_per_timeslot = total_seats * 3
     
     # Get all enrollments and organize data
     course_students = defaultdict(set)
@@ -1025,8 +1025,8 @@ def get_exam_time_for_group(weekday, available_slots, available_seats=None, slot
     
     for slot, number in slots_usage.items():
         logger.info(f"Slot: {slot}, Used Seats: {number}, Needed Seats: {needed_steats}, Available Seats: {available_seats}")
-        if number+needed_steats<= available_seats  :
-            return slot
+        # if number+needed_steats<= available_seats  :
+        return random.choice(list(available_slots.keys()))
     return None
     
 
