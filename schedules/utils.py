@@ -599,7 +599,7 @@ def find_compatible_courses_within_group(courses):
     # Get location and total capacity
     location = Course.objects.filter(id=courses[0]).first().department.location.id
     total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
-    max_students_per_timeslot = total_seats * 3
+    max_students_per_timeslot = total_seats 
     
     # Get all enrollments and organize data
     course_students = defaultdict(set)
