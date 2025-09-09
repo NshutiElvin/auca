@@ -1022,12 +1022,13 @@ def get_exam_time_for_group(weekday, available_slots, available_seats=None, slot
     
     if weekday== "Saturday":
         return None
+    return random.choice(list(available_slots ))
     
-    for slot, number in slots_usage.items():
-        logger.info(f"Slot: {slot}, Used Seats: {number}, Needed Seats: {needed_steats}, Available Seats: {available_seats}")
-        # if number+needed_steats<= available_seats  :
-        return random.choice(list(available_slots.keys()))
-    return None
+    # for slot, number in slots_usage.items():
+    #     logger.info(f"Slot: {slot}, Used Seats: {number}, Needed Seats: {needed_steats}, Available Seats: {available_seats}")
+    #     if number+needed_steats<= available_seats  :
+    #         return slot
+    # return None
     
 
 
