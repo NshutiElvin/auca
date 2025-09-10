@@ -509,7 +509,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 "data": serializer.data,
                 "unaccomodated": [],
                 "unscheduled": unScheduled,
-            })
+            }, status = status.HTTP_200_OK)
 
     # @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
     # def generate_exam_schedule_view(self, request):
