@@ -356,12 +356,12 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
             for student_id in conflicting_students:
                 # Find the exam this student is enrolled in
                 for exam in slot_exams:
-                    if exam:
+                    if exam.group:
                         exam_student_ids = {se.student_id for se in exam.studentexam_set.all()}
                         if student_id in exam_student_ids:
                             conflicts.append({
                                 "student": student_id,
-                                "group": exam.group.group_name if exam.group else None,
+                                "group": exam.group.group_name,
                                 "course": exam.group.course.title,
                                 "date": check_date,
                                 "slot": slot,
