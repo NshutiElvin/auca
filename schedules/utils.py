@@ -361,7 +361,7 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
                         if student_id in exam_student_ids:
                             conflicts.append({
                                 "student": student_id,
-                                "group": exam.group.group_name,
+                                "group": exam.group.group_name if exam.group else None,
                                 "course": exam.group.course.title,
                                 "date": check_date,
                                 "slot": slot,
