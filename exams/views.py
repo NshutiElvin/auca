@@ -36,6 +36,7 @@ from .utils import decrypt_message
 from pytz import timezone as pytz_timezone
 from django.utils import timezone
 from datetime import timedelta
+import logging
 
 
 class ExamViewSet(viewsets.ModelViewSet):
@@ -1105,9 +1106,9 @@ class ExamViewSet(viewsets.ModelViewSet):
         # Bulk fetch exam slots - FIXED: Use 'slot_name' (database field) but map to 'slot' (frontend property)
         exam_slots = dict(
             Exam.objects.filter(group_id__in=all_conflict_group_ids)
-            .values_list('group_id', 'slot_name')  # Keep the actual database field name
+            .values_list('group_id', 'slot_name')  
         )
-        
+        logging.Logger.debug(exam_slots)
         # Bulk fetch students
         students_data = {
             student.id: student
@@ -1137,7 +1138,8 @@ class ExamViewSet(viewsets.ModelViewSet):
             # Ensure both groups have the 'slot' property for consistent frontend data
             g1_data["slot"] = exam_slots.get(group1_id)  # This maps database 'slot_name' to frontend 'slot'
             g2_data["slot"] = exam_slots.get(group2_id)  # This maps database 'slot_name' to frontend 'slot'
-            
+            logging.Logger.debug(exam_slots.get(group1_id) )
+            logging.Logger.debug(exam_slots.get(group2_id) )
             # Serialize conflicted students
             conflicted_students = [students_data[sid] for sid in shared_students if sid in students_data]
             serializer = StudentSerializer(conflicted_students, many=True)
