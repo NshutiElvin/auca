@@ -1044,7 +1044,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                     )
                 
                 # Process conflicts efficiently with bulk operations
-                conflict_matrix = self._build_conflict_matrix_optimized(conflicts, new_groups, existing_slot)
+                conflict_matrix = self._build_conflict_matrix_optimized(conflicts, new_groups, existing_slot.get("name"))
                 
                 new_group, best_suggestion, all_suggestions, all_conflicts = (
                     which_suitable_slot_to_schedule_course_group(
