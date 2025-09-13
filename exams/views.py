@@ -36,7 +36,6 @@ from .utils import decrypt_message
 from pytz import timezone as pytz_timezone
 from django.utils import timezone
 from datetime import timedelta
-import logging
 
 
 class ExamViewSet(viewsets.ModelViewSet):
@@ -1085,7 +1084,6 @@ class ExamViewSet(viewsets.ModelViewSet):
         """
         Optimized conflict matrix building with bulk database operations.
         """
-        logger = logging.getLogger(__name__)
         # Collect all unique group IDs that need data
         all_conflict_group_ids = set()
         all_student_ids = set()
@@ -1104,12 +1102,12 @@ class ExamViewSet(viewsets.ModelViewSet):
             for cg in CourseGroup.objects.filter(id__in=all_conflict_group_ids)
         }
         
-        # Bulk fetch exam slots - FIXED: Use 'slot_name' (database field) but map to 'slot' (frontend property)
+        # Bulk fetch exam slots
         exam_slots = dict(
             Exam.objects.filter(group_id__in=all_conflict_group_ids)
-            .values_list('group_id', 'slot_name')  
+            .values_list('group_id', 'slot_name')
         )
-        logger.debug(exam_slots)
+        
         # Bulk fetch students
         students_data = {
             student.id: student
@@ -1134,13 +1132,14 @@ class ExamViewSet(viewsets.ModelViewSet):
             # Get group data
             g1_data = course_groups[group1_id].copy()
             g2_data = course_groups[group2_id].copy()
+            print(exam_slots)
+            print(group1_id, group2_id, sep="\n")
+            # Add slot information if available
+            if group1_id in exam_slots:
+                g1_data["slot"] = exam_slots[group1_id]
+            if group2_id in exam_slots:
+                g2_data["slot"] = exam_slots[group2_id]
             
-            # Add slot information if available - FIXED: Map 'slot_name' to 'slot'
-            # Ensure both groups have the 'slot' property for consistent frontend data
-            g1_data["slot"] = exam_slots.get(group1_id)  # This maps database 'slot_name' to frontend 'slot'
-            g2_data["slot"] = exam_slots.get(group2_id)  # This maps database 'slot_name' to frontend 'slot'
-            logger.debug(exam_slots.get(group1_id) )
-            logger.debug(exam_slots.get(group2_id) )
             # Serialize conflicted students
             conflicted_students = [students_data[sid] for sid in shared_students if sid in students_data]
             serializer = StudentSerializer(conflicted_students, many=True)
