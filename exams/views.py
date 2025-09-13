@@ -1102,10 +1102,10 @@ class ExamViewSet(viewsets.ModelViewSet):
             for cg in CourseGroup.objects.filter(id__in=all_conflict_group_ids)
         }
         
-        # Bulk fetch exam slots
+        # Bulk fetch exam slots - FIXED: Use 'slot_name' (database field) but map to 'slot' (frontend property)
         exam_slots = dict(
             Exam.objects.filter(group_id__in=all_conflict_group_ids)
-            .values_list('group_id', 'slot_name')
+            .values_list('group_id', 'slot_name')  # Keep the actual database field name
         )
         
         # Bulk fetch students
@@ -1133,11 +1133,10 @@ class ExamViewSet(viewsets.ModelViewSet):
             g1_data = course_groups[group1_id].copy()
             g2_data = course_groups[group2_id].copy()
             
-            # Add slot information if available
-            if group1_id in exam_slots:
-                g1_data["slot"] = exam_slots[group1_id]
-            if group2_id in exam_slots:
-                g2_data["slot"] = exam_slots[group2_id]
+            # Add slot information if available - FIXED: Map 'slot_name' to 'slot'
+            # Ensure both groups have the 'slot' property for consistent frontend data
+            g1_data["slot"] = exam_slots.get(group1_id)  # This maps database 'slot_name' to frontend 'slot'
+            g2_data["slot"] = exam_slots.get(group2_id)  # This maps database 'slot_name' to frontend 'slot'
             
             # Serialize conflicted students
             conflicted_students = [students_data[sid] for sid in shared_students if sid in students_data]
