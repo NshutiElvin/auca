@@ -1085,6 +1085,7 @@ class ExamViewSet(viewsets.ModelViewSet):
         """
         Optimized conflict matrix building with bulk database operations.
         """
+        logger = logging.getLogger(__name__)
         # Collect all unique group IDs that need data
         all_conflict_group_ids = set()
         all_student_ids = set()
@@ -1108,7 +1109,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             Exam.objects.filter(group_id__in=all_conflict_group_ids)
             .values_list('group_id', 'slot_name')  
         )
-        logging.Logger.debug(exam_slots)
+        logger.debug(exam_slots)
         # Bulk fetch students
         students_data = {
             student.id: student
@@ -1138,8 +1139,8 @@ class ExamViewSet(viewsets.ModelViewSet):
             # Ensure both groups have the 'slot' property for consistent frontend data
             g1_data["slot"] = exam_slots.get(group1_id)  # This maps database 'slot_name' to frontend 'slot'
             g2_data["slot"] = exam_slots.get(group2_id)  # This maps database 'slot_name' to frontend 'slot'
-            logging.Logger.debug(exam_slots.get(group1_id) )
-            logging.Logger.debug(exam_slots.get(group2_id) )
+            logger.debug(exam_slots.get(group1_id) )
+            logger.debug(exam_slots.get(group2_id) )
             # Serialize conflicted students
             conflicted_students = [students_data[sid] for sid in shared_students if sid in students_data]
             serializer = StudentSerializer(conflicted_students, many=True)
