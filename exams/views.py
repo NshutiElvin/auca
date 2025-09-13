@@ -679,95 +679,78 @@ class ExamViewSet(viewsets.ModelViewSet):
     #             "message": "Error retrieving unscheduled exams.",
             # }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
+    @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
             location = request.GET.get("location")
-            
-            # Get recent timetable ID only (no need for full object)
+
+            # Get most recent timetable
             timetable_filter = {"location_id": location} if location else {}
-            recent_timetable_id = MasterTimetable.objects.filter(
-                **timetable_filter
-            ).order_by("-created_at").values_list('id', flat=True).first()
-            
-            if not recent_timetable_id:
+            recent_timetable = (
+                MasterTimetable.objects
+                .filter(**timetable_filter)
+                .only("id")                # Only fetch id for speed
+                .order_by("-created_at")
+                .first()
+            )
+
+            if not recent_timetable:
                 return Response({
                     "success": True,
                     "message": "No timetable found.",
                     "data": [],
                 })
-            
-            # Single optimized query with proper prefetching
-            exams = UnscheduledExam.objects.filter(
-                master_timetable_id=recent_timetable_id
-            ).prefetch_related(
-                Prefetch('groups', 
-                        queryset=UnscheduledExamGroup.objects.select_related('group'),
-                        to_attr='prefetched_groups')
-            ).select_related(
-                'course', 'master_timetable'
-            ).only(
-                'id', 'course_id', 'master_timetable_id', 'duration', 'name', 
-                'number_of_students', 'created_at', 'updated_at'
+
+            # Fetch all exams with their groups in one go
+            exam_qs = (
+                UnscheduledExam.objects
+                .filter(master_timetable_id=recent_timetable.id)
+                .select_related("course", "master_timetable")
+                .prefetch_related(
+                    Prefetch(
+                        "groups",
+                        queryset=UnscheduledExamGroup.objects.all().only(
+                            "id", "name", "unscheduled_exam_id"  # adjust fields for serializer needs
+                        )
+                    )
+                )
             )
-            
-            if not exams.exists():
+
+            exams = list(exam_qs)
+            if not exams:
                 return Response({
                     "success": True,
                     "message": "No unscheduled exams found.",
                     "data": [],
                 })
-            
-            # Use list comprehension for faster iteration
+
+            # Serialize exams
+            exam_serializer = UnscheduledExamSerializer(exams, many=True)
+            serialized_exams = exam_serializer.data
+
+            # Map groups by exam id to avoid serializer calls inside loop
             converted_data = []
-            for exam in exams:
-                # Serialize exam data efficiently
-                exam_data = {
-                    "id": exam.id,
-                    "course": {
-                        "id": exam.course.id,
-                        "name": exam.course.name,
-                        "code": exam.course.code
-                    } if exam.course else None,
-                    "master_timetable_id": exam.master_timetable_id,
-                    "duration": exam.duration,
-                    "name": exam.name,
-                    "number_of_students": exam.number_of_students,
-                    "created_at": exam.created_at,
-                    "updated_at": exam.updated_at
-                }
-                
-                # Build groups from prefetched data
-                exam_groups = []
-                for group in exam.prefetched_groups:  # Uses prefetched data with to_attr
-                    group_data = {
-                        "id": group.id,
-                        "unscheduled_exam_id": group.unscheduled_exam_id,
-                        "group_id": group.group_id,
-                        "group": {
-                            "id": group.group.id,
-                            "name": group.group.name
-                        } if group.group else None
-                    }
-                    exam_groups.append(group_data)
-                
-                converted_exam = {
+            for exam_obj, exam_data in zip(exams, serialized_exams):
+                groups = list(exam_obj.groups.all())  # from prefetched cache
+                groups_data = UnscheduledExamGroupSerializer(groups, many=True).data
+
+                converted_data.append({
                     **exam_data,
-                    "groups": exam_groups,
+                    "groups": groups_data,
                     "group_id": None,
-                }
-                converted_data.append(converted_exam)
-            
+                })
+
             return Response({
                 "success": True,
                 "message": "Unscheduled exams retrieved successfully.",
                 "data": converted_data,
             })
-            
+
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Error in unscheduled_exams: {str(e)}", exc_info=True)
-            
+
             return Response({
                 "success": False,
                 "message": "Error retrieving unscheduled exams.",
