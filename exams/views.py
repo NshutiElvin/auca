@@ -1044,7 +1044,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                     )
                 
                 # Process conflicts efficiently with bulk operations
-                conflict_matrix = self._build_conflict_matrix_optimized(conflicts, new_groups)
+                conflict_matrix = self._build_conflict_matrix_optimized(conflicts, new_groups, existing_slot)
                 
                 new_group, best_suggestion, all_suggestions, all_conflicts = (
                     which_suitable_slot_to_schedule_course_group(
@@ -1080,7 +1080,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             )
 
 
-    def _build_conflict_matrix_optimized(self, conflicts, new_groups):
+    def _build_conflict_matrix_optimized(self, conflicts, new_groups, existing_slot):
         """
         Optimized conflict matrix building with bulk database operations.
         """
@@ -1136,9 +1136,13 @@ class ExamViewSet(viewsets.ModelViewSet):
             print(group1_id, group2_id, sep="\n")
             # Add slot information if available
             if group1_id in exam_slots:
-                g1_data["slot"] = exam_slots[group1_id]
+                g1_data["slot"] = exam_slots[group1_id] 
+            else:
+                g1_data["slot"] = existing_slot
             if group2_id in exam_slots:
                 g2_data["slot"] = exam_slots[group2_id]
+            else:
+                g2_data["slot"] = existing_slot
             
             # Serialize conflicted students
             conflicted_students = [students_data[sid] for sid in shared_students if sid in students_data]
