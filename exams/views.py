@@ -17,7 +17,7 @@ from schedules.utils import (
 )
 
 from django.db.models import Prefetch
-from django.db import transaction
+from django.db import connection, transaction
 from enrollments.models import Enrollment
 from student.models import Student
 from courses.serializers import CourseSerializer
@@ -200,175 +200,9 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "message": f"Error updating the timetable status: {str(e)}",
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
- 
- 
-
-    @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
-    def generate_exam_schedule_view(self, request):
-        import datetime
-        from django.db import transaction
-        from collections import defaultdict
-
-        with transaction.atomic():
-            # Extract and parse request data
-            start_date_str = request.data.get("start_date")
-            end_date_str = request.data.get("end_date")
-            course_ids = request.data.get("course_ids", None)
-            slots = request.data.get("slots")
-            client_config = request.data.get("configurations")
-            term = client_config.get("term")
-            location = client_config.get("location")
-            academic_year = client_config.get("academicYear")
-
-            # Parse dates more efficiently
-            if start_date_str and "T" in start_date_str:
-                start_date_str = start_date_str.split("T")[0]
-            if end_date_str and "T" in end_date_str:
-                end_date_str = end_date_str.split("T")[0]
-
-            start_date = parse_date(start_date_str) if start_date_str else None
-            end_date = parse_date(end_date_str) if end_date_str else None
-
-            # Create master timetable
-            master_timetable = MasterTimetable.objects.create(
-                academic_year=academic_year,
-                generated_by=request.user,
-                start_date=start_date,
-                end_date=end_date,
-                location_id=int(location),
-                semester_id=int(term)
-            )
-
-            # Generate exam schedule
-            exams, _, unscheduled, reasons = generate_exam_schedule(
-                slots=slots, 
-                course_ids=course_ids, 
-                master_timetable=master_timetable, 
-                location=int(location), 
-                
-            )
-
-            # Prepare response data
-            queryset = self.filter_queryset(self.get_queryset())
-            serializer = self.get_serializer(queryset, many=True)
-
-            # Process unscheduled exams efficiently
-            unScheduled = []
-            unscheduled_courses = [course["courses"] for course in unscheduled]
-            
-            if unscheduled_courses:
-                # Flatten and collect all unique course IDs and group IDs
-                all_course_ids = set()
-                all_group_ids = set()
-                course_group_mapping = defaultdict(list)
-                
-                for unscheduleds_ in unscheduled_courses:
-                    for unscheduled_ in unscheduleds_:
-                        course_id = unscheduled_["course_id"]
-                        groups = unscheduled_["groups"]
-                        all_course_ids.add(course_id)
-                        course_group_mapping[course_id].extend(groups)
-                        all_group_ids.update(filter(None, groups))
-
-                # Bulk fetch courses and enrollments
-                courses_dict = {
-                    course.id: course 
-                    for course in Course.objects.filter(id__in=all_course_ids)
-                }
-                
-                # Bulk fetch enrollments with related groups
-                enrollments_dict = {}
-                if all_group_ids:
-                    enrollments = Enrollment.objects.filter(
-                        course_id__in=all_course_ids,
-                        group_id__in=all_group_ids
-                    ).select_related('group', 'course')
-                    
-                    for enrollment in enrollments:
-                        key = (enrollment.course_id, enrollment.group_id)
-                        enrollments_dict[key] = enrollment
-
-                # Process unscheduled exams in batches
-                unscheduled_exams_to_create = []
-                unscheduled_groups_to_create = []
-                
-                for unscheduleds_ in unscheduled_courses:
-                    for unscheduled_ in unscheduleds_:
-                        course_id = unscheduled_["course_id"]
-                        groups = unscheduled_["groups"]
-                        
-                        course = courses_dict.get(course_id)
-                        if not course:
-                            continue
-                        
-                        # Filter out None/empty groups
-                        valid_groups = [g for g in groups if g]
-                        if not valid_groups:
-                            continue
-                        
-                        # Get reason for first valid group
-                        reason = reasons.get(valid_groups[0], "Unknown reason")
-                        
-                        # Prepare course data structure
-                        c = {
-                            "course": CourseSerializer(course).data,
-                            "groups": [],
-                            "reason": reason
-                        }
-                        
-                        # Create unscheduled exam object (will be bulk created later)
-                        unscheduled_exam_data = {
-                            'course': course,
-                            'master_timetable': master_timetable,
-                            'reason': reason,
-                            'groups_data': []
-                        }
-                        
-                        # Process groups for this course
-                        for group_id in valid_groups:
-                            enrollment = enrollments_dict.get((course_id, group_id))
-                            if enrollment:
-                                c["groups"].append(CourseGroupSerializer(enrollment.group).data)
-                                unscheduled_exam_data['groups_data'].append(enrollment.group)
-                        
-                        if c["groups"]:  # Only add if we have valid groups
-                            unScheduled.append(c)
-                            unscheduled_exams_to_create.append(unscheduled_exam_data)
-                
-                # Bulk create unscheduled exams
-                if unscheduled_exams_to_create:
-                    unscheduled_exam_objects = []
-                    for exam_data in unscheduled_exams_to_create:
-                        unscheduled_exam = UnscheduledExam.objects.create(
-                            course=exam_data['course'],
-                            master_timetable=exam_data['master_timetable'],
-                            reason=exam_data['reason']
-                        )
-                        unscheduled_exam_objects.append(unscheduled_exam)
-                        
-                        # Bulk create groups for this exam
-                        groups_to_create = [
-                            UnscheduledExamGroup(exam=unscheduled_exam, group=group)
-                            for group in exam_data['groups_data']
-                        ]
-                        
-                        if groups_to_create:
-                            UnscheduledExamGroup.objects.bulk_create(groups_to_create)
-                            
-                            # Add groups to the exam (using add with the created objects)
-                            unscheduled_exam.groups.add(*[ug.id for ug in 
-                                UnscheduledExamGroup.objects.filter(exam=unscheduled_exam)])
-
-            return Response({
-                "success": True,
-                "message": f"{len(exams)} exams scheduled successfully.",
-                "data": serializer.data,
-                "unaccomodated": [],
-                "unscheduled": unScheduled,
-            }, status = status.HTTP_200_OK)
-
- 
+                )
+    
+    
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
@@ -387,48 +221,91 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # OPTIMIZED QUERY: Prefetch groups into a custom attribute, avoid .all() calls
-            exams = UnscheduledExam.objects.filter(
-                master_timetable_id=recent_timetable.id
-            ).select_related(
-                'course', 'master_timetable'
-            ).prefetch_related(
-                Prefetch(
-                    'groups',
-                    queryset=UnscheduledExamGroup.objects.all(),
-                    to_attr='prefetched_groups'  # <-- Store prefetched groups here
-                )
-            )
+            # RAW SQL QUERY: Fetch exams with their groups in a single query
+            query = """
+                SELECT 
+                    ue.id,
+                    ue.master_timetable_id,
+                    ue.course_id,
+                    ue.exam_type,
+                    ue.duration,
+                    ue.extra_info,
+                    ue.created_at,
+                    ue.updated_at,
+                    c.code as course_code,
+                    c.name as course_name,
+                    ueg.id as group_id,
+                    ueg.group_name,
+                    ueg.student_count,
+                    ueg.extra_info as group_extra_info,
+                    ueg.created_at as group_created_at,
+                    ueg.updated_at as group_updated_at
+                FROM unscheduled_exam ue
+                INNER JOIN course c ON ue.course_id = c.id
+                LEFT JOIN unscheduled_exam_group ueg ON ue.id = ueg.unscheduled_exam_id
+                WHERE ue.master_timetable_id = %s
+                ORDER BY ue.id, ueg.id
+            """
 
-            if not exams.exists():
+            with connection.cursor() as cursor:
+                cursor.execute(query, [recent_timetable.id])
+                rows = cursor.fetchall()
+                columns = [col[0] for col in cursor.description]
+
+            if not rows:
                 return Response({
                     "success": True,
                     "message": "No unscheduled exams found.",
                     "data": [],
                 })
 
-            # ✅ FAST SERIALIZATION: Serialize exams in bulk, use prefetched groups
-            # We'll manually build the response structure without N+1 serializer calls
+            # Process the raw data into structured format
             converted_data = []
-            exam_serializer = UnscheduledExamSerializer()  # Just for field schema, not per-instance
+            current_exam_id = None
+            current_exam_data = None
 
-            for exam in exams:
-                # Get base exam data as dict (this is fast because fields are cached)
-                exam_data = UnscheduledExamSerializer(exam).data  # Still needed, but only once per exam
-
-                # ✅ NO LOOP OVER .groups.all() — use prefetched list directly
-                exam_groups = [
-                    UnscheduledExamGroupSerializer(group).data
-                    for group in exam.prefetched_groups  # <-- No DB hit here!
-                ]
-
-                # Build final structure — exactly as before
-                converted_exam = {
-                    **exam_data,
-                    "groups": exam_groups,
-                    "group_id": None,  # Preserved from your original logic
-                }
-                converted_data.append(converted_exam)
+            for row in rows:
+                row_dict = dict(zip(columns, row))
+                
+                # If this is a new exam, create the base structure
+                if row_dict['id'] != current_exam_id:
+                    if current_exam_data:
+                        converted_data.append(current_exam_data)
+                    
+                    current_exam_id = row_dict['id']
+                    current_exam_data = {
+                        "id": row_dict['id'],
+                        "master_timetable": row_dict['master_timetable_id'],
+                        "course": {
+                            "id": row_dict['course_id'],
+                            "code": row_dict['course_code'],
+                            "name": row_dict['course_name']
+                        },
+                        "exam_type": row_dict['exam_type'],
+                        "duration": row_dict['duration'],
+                        "extra_info": row_dict['extra_info'],
+                        "created_at": row_dict['created_at'],
+                        "updated_at": row_dict['updated_at'],
+                        "groups": [],
+                        "group_id": None
+                    }
+                
+                # Add group data if it exists (LEFT JOIN might return NULL group_id)
+                if row_dict['group_id']:
+                    group_data = {
+                        "id": row_dict['group_id'],
+                        "unscheduled_exam": row_dict['id'],
+                        "group_name": row_dict['group_name'],
+                        "student_count": row_dict['student_count'],
+                        "extra_info": row_dict['group_extra_info'],
+                        "created_at": row_dict['group_created_at'],
+                        "updated_at": row_dict['group_updated_at']
+                    }
+                    current_exam_data['groups'].append(group_data)
+            
+            # Add the last exam
+            if current_exam_data:
+                converted_data.append(current_exam_data)
 
             return Response({
                 "success": True,
@@ -445,6 +322,172 @@ class ExamViewSet(viewsets.ModelViewSet):
                 "message": "Error retrieving unscheduled exams.",
                 "data": [],
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    # @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
+    # def generate_exam_schedule_view(self, request):
+    #     import datetime
+    #     from django.db import transaction
+    #     from collections import defaultdict
+
+    #     with transaction.atomic():
+    #         # Extract and parse request data
+    #         start_date_str = request.data.get("start_date")
+    #         end_date_str = request.data.get("end_date")
+    #         course_ids = request.data.get("course_ids", None)
+    #         slots = request.data.get("slots")
+    #         client_config = request.data.get("configurations")
+    #         term = client_config.get("term")
+    #         location = client_config.get("location")
+    #         academic_year = client_config.get("academicYear")
+
+    #         # Parse dates more efficiently
+    #         if start_date_str and "T" in start_date_str:
+    #             start_date_str = start_date_str.split("T")[0]
+    #         if end_date_str and "T" in end_date_str:
+    #             end_date_str = end_date_str.split("T")[0]
+
+    #         start_date = parse_date(start_date_str) if start_date_str else None
+    #         end_date = parse_date(end_date_str) if end_date_str else None
+
+    #         # Create master timetable
+    #         master_timetable = MasterTimetable.objects.create(
+    #             academic_year=academic_year,
+    #             generated_by=request.user,
+    #             start_date=start_date,
+    #             end_date=end_date,
+    #             location_id=int(location),
+    #             semester_id=int(term)
+    #         )
+
+    #         # Generate exam schedule
+    #         exams, _, unscheduled, reasons = generate_exam_schedule(
+    #             slots=slots, 
+    #             course_ids=course_ids, 
+    #             master_timetable=master_timetable, 
+    #             location=int(location), 
+                
+    #         )
+
+    #         # Prepare response data
+    #         queryset = self.filter_queryset(self.get_queryset())
+    #         serializer = self.get_serializer(queryset, many=True)
+
+    #         # Process unscheduled exams efficiently
+    #         unScheduled = []
+    #         unscheduled_courses = [course["courses"] for course in unscheduled]
+            
+    #         if unscheduled_courses:
+    #             # Flatten and collect all unique course IDs and group IDs
+    #             all_course_ids = set()
+    #             all_group_ids = set()
+    #             course_group_mapping = defaultdict(list)
+                
+    #             for unscheduleds_ in unscheduled_courses:
+    #                 for unscheduled_ in unscheduleds_:
+    #                     course_id = unscheduled_["course_id"]
+    #                     groups = unscheduled_["groups"]
+    #                     all_course_ids.add(course_id)
+    #                     course_group_mapping[course_id].extend(groups)
+    #                     all_group_ids.update(filter(None, groups))
+
+    #             # Bulk fetch courses and enrollments
+    #             courses_dict = {
+    #                 course.id: course 
+    #                 for course in Course.objects.filter(id__in=all_course_ids)
+    #             }
+                
+    #             # Bulk fetch enrollments with related groups
+    #             enrollments_dict = {}
+    #             if all_group_ids:
+    #                 enrollments = Enrollment.objects.filter(
+    #                     course_id__in=all_course_ids,
+    #                     group_id__in=all_group_ids
+    #                 ).select_related('group', 'course')
+                    
+    #                 for enrollment in enrollments:
+    #                     key = (enrollment.course_id, enrollment.group_id)
+    #                     enrollments_dict[key] = enrollment
+
+    #             # Process unscheduled exams in batches
+    #             unscheduled_exams_to_create = []
+    #             unscheduled_groups_to_create = []
+                
+    #             for unscheduleds_ in unscheduled_courses:
+    #                 for unscheduled_ in unscheduleds_:
+    #                     course_id = unscheduled_["course_id"]
+    #                     groups = unscheduled_["groups"]
+                        
+    #                     course = courses_dict.get(course_id)
+    #                     if not course:
+    #                         continue
+                        
+    #                     # Filter out None/empty groups
+    #                     valid_groups = [g for g in groups if g]
+    #                     if not valid_groups:
+    #                         continue
+                        
+    #                     # Get reason for first valid group
+    #                     reason = reasons.get(valid_groups[0], "Unknown reason")
+                        
+    #                     # Prepare course data structure
+    #                     c = {
+    #                         "course": CourseSerializer(course).data,
+    #                         "groups": [],
+    #                         "reason": reason
+    #                     }
+                        
+    #                     # Create unscheduled exam object (will be bulk created later)
+    #                     unscheduled_exam_data = {
+    #                         'course': course,
+    #                         'master_timetable': master_timetable,
+    #                         'reason': reason,
+    #                         'groups_data': []
+    #                     }
+                        
+    #                     # Process groups for this course
+    #                     for group_id in valid_groups:
+    #                         enrollment = enrollments_dict.get((course_id, group_id))
+    #                         if enrollment:
+    #                             c["groups"].append(CourseGroupSerializer(enrollment.group).data)
+    #                             unscheduled_exam_data['groups_data'].append(enrollment.group)
+                        
+    #                     if c["groups"]:  # Only add if we have valid groups
+    #                         unScheduled.append(c)
+    #                         unscheduled_exams_to_create.append(unscheduled_exam_data)
+                
+    #             # Bulk create unscheduled exams
+    #             if unscheduled_exams_to_create:
+    #                 unscheduled_exam_objects = []
+    #                 for exam_data in unscheduled_exams_to_create:
+    #                     unscheduled_exam = UnscheduledExam.objects.create(
+    #                         course=exam_data['course'],
+    #                         master_timetable=exam_data['master_timetable'],
+    #                         reason=exam_data['reason']
+    #                     )
+    #                     unscheduled_exam_objects.append(unscheduled_exam)
+                        
+    #                     # Bulk create groups for this exam
+    #                     groups_to_create = [
+    #                         UnscheduledExamGroup(exam=unscheduled_exam, group=group)
+    #                         for group in exam_data['groups_data']
+    #                     ]
+                        
+    #                     if groups_to_create:
+    #                         UnscheduledExamGroup.objects.bulk_create(groups_to_create)
+                            
+    #                         # Add groups to the exam (using add with the created objects)
+    #                         unscheduled_exam.groups.add(*[ug.id for ug in 
+    #                             UnscheduledExamGroup.objects.filter(exam=unscheduled_exam)])
+
+    #         return Response({
+    #             "success": True,
+    #             "message": f"{len(exams)} exams scheduled successfully.",
+    #             "data": serializer.data,
+    #             "unaccomodated": [],
+    #             "unscheduled": unScheduled,
+    #         }, status = status.HTTP_200_OK)
+
+ 
+
  
     @action(detail=False, methods=["post"], url_path="cancel-exam")
     def cancel_exam_view(self, request):
