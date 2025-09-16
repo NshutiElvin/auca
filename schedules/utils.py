@@ -3881,6 +3881,7 @@ from exams.models import Exam, StudentExam
 from rooms.models import Room
 from schedules.models import MasterTimetable
 from notifications.tasks import send_exam_data
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -3928,41 +3929,36 @@ def prefetch_enrollments(course_groups):
         enrollments_by_group[enrollment['group_id']].append(enrollment['student_id'])
     return enrollments_by_group
 
-
 def get_slots_by_date(slots):
-    # Assuming slots is a list of dicts with 'date' and 'name'
     slots_by_date = defaultdict(list)
     for slot in slots:
         slots_by_date[slot['date']].append(slot)
     return slots_by_date
 
 def optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_capacity):
-    # Simplified adjacency optimization (can be enhanced if needed)
-    pass
+    pass  # Simplified, can be enhanced if needed
 
 def find_compatible_courses_within_group(courses):
     if not courses:
         return {"compatible_groups": [], "group_conflicts": defaultdict(list)}
 
-    # Fetch courses and location data once
+    # Fetch courses and location data
     course_qs = Course.objects.filter(id__in=courses).select_related('department__location')
     courses_dict = {c.id: c for c in course_qs}
     location_id = courses_dict[courses[0]].department.location.id
     total_seats = Room.objects.filter(location_id=location_id).aggregate(total=Sum("capacity"))["total"] or 0
     max_students_per_timeslot = total_seats
 
-    # Fetch enrollments in bulk
-    enrollments = Enrollment.objects.filter(course_id__in=courses).values(
-        'course_id', 'group_id', 'student_id'
-    ).select_related('group', 'course')
-    
+    # Fetch enrollments with related models
+    enrollments = Enrollment.objects.filter(course_id__in=courses).select_related('group', 'course')
+
     # Organize enrollment data
     course_students = defaultdict(set)
     course_group_students = defaultdict(lambda: defaultdict(set))
     course_group_sizes = defaultdict(lambda: defaultdict(int))
     
     for e in enrollments:
-        course_id, group_id, student_id = e['course_id'], e['group_id'], e['student_id']
+        course_id, group_id, student_id = e.course_id, e.group_id, e.student_id
         course_students[course_id].add(student_id)
         course_group_students[course_id][group_id].add(student_id)
         course_group_sizes[course_id][group_id] += 1
@@ -3990,7 +3986,6 @@ def find_compatible_courses_within_group(courses):
                 )
                 group_splits.append((new_group, student_list[split_idx * max_students_per_timeslot: (split_idx + 1) * max_students_per_timeslot]))
             
-            # Delete original group
             course_group_students[course_id].pop(group_id)
             course_group_sizes[course_id].pop(group_id)
             group.delete()
@@ -4009,11 +4004,11 @@ def find_compatible_courses_within_group(courses):
             ])
         Enrollment.objects.bulk_update(enrollment_updates, ['group_id'])
 
-    # Find course conflicts efficiently
+    # Find course conflicts
     course_conflicts = defaultdict(set)
     student_courses = defaultdict(set)
     for e in enrollments:
-        student_courses[e['student_id']].add(e['course_id'])
+        student_courses[e.student_id].add(e.course_id)
     
     for student_id, student_course_set in student_courses.items():
         for c1, c2 in combinations(student_course_set, 2):
@@ -4032,7 +4027,6 @@ def find_compatible_courses_within_group(courses):
         course_student_count = len(course_students[course_id])
         groups = list(course_group_students[course_id].keys())
         
-        # Try to schedule entire course
         available_colors = []
         for color in range(len(course_list)):
             if (all(colored.get(c) != color for c in course_conflicts[course_id]) and
@@ -4046,7 +4040,6 @@ def find_compatible_courses_within_group(courses):
             color_student_counts[color] += course_student_count
             color_course_groups[color][course_id].extend(groups)
         else:
-            # Split groups
             sorted_groups = sorted(groups, key=lambda g: -course_group_sizes[course_id][g])
             for group_id in sorted_groups:
                 group_size = course_group_sizes[course_id][group_id]
@@ -4199,7 +4192,6 @@ def schedule_group_exams(
                     return True
                 return False
 
-            # Try scheduling in preferred and all slots
             if try_schedule(preferred_slots, False) or try_schedule(available_slots, False) or \
                try_schedule(preferred_slots, True) or try_schedule(available_slots, True):
                 continue
@@ -4208,7 +4200,6 @@ def schedule_group_exams(
             course_dict["groups"].append(group_id)
             partially_scheduled = True
 
-    # Bulk save exams
     if exams_created:
         Exam.objects.bulk_create(exams_created)
         for exam in exams_created:
@@ -4267,7 +4258,6 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable=None, l
                     unscheduled_groups.append(course_group)
                     unscheduled_reasons.update(reasons)
 
-            # Handle unscheduled and overflow groups
             remaining = [(c["course_id"], g_id) for u_group in unscheduled_groups 
                         for c in u_group["courses"] for g_id in c["groups"]]
             
@@ -4317,7 +4307,6 @@ def schedule_unscheduled_group(course_id, group_id, master_timetable=None):
         if not min_exam_date or not max_exam_date:
             return False, None, None
 
-        # Precompute student conflicts
         student_exams = defaultdict(lambda: defaultdict(set))
         for se in StudentExam.objects.filter(student_id__in=enrolled_students).select_related("exam"):
             student_exams[se.student_id][se.exam.date].add(se.exam.slot_name)
