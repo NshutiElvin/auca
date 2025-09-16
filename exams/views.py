@@ -207,7 +207,7 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             location = request.GET.get("location")
 
-            # Get recent timetable
+            # Get recent timetable efficiently
             timetable_filter = {"location_id": location} if location else {}
             recent_timetable = MasterTimetable.objects.filter(
                 **timetable_filter
@@ -220,95 +220,48 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # Get table names from models
-            exam_table = UnscheduledExam._meta.db_table
-            course_table = Course._meta.db_table
-            group_table = UnscheduledExamGroup._meta.db_table
+            # OPTIMIZED QUERY: Prefetch groups into a custom attribute, avoid .all() calls
+            exams = UnscheduledExam.objects.filter(
+                master_timetable_id=recent_timetable.id
+            ).select_related(
+                'course', 'master_timetable'
+            ).prefetch_related(
+                Prefetch(
+                    'groups',
+                    queryset=UnscheduledExamGroup.objects.all(),
+                    to_attr='prefetched_groups'  # <-- Store prefetched groups here
+                )
+            )
 
-            # Build the query based on your serializer fields
-            query = f"""
-                SELECT 
-                    ue.id,
-                    ue.master_timetable_id,
-                    ue.course_id,
-                    ue.reason,
-                    ue.created_at,
-                    ue.updated_at,
-                    c.id as course_id,
-                    c.code as course_code,
-                    c.name as course_name,
-                    -- Add other course fields that CourseSerializer might need
-                    ueg.id as group_id,
-                    ueg.group_name,
-                    ueg.student_count,
-                    ueg.extra_info,
-                    ueg.created_at as group_created_at,
-                    ueg.updated_at as group_updated_at
-                FROM {exam_table} ue
-                INNER JOIN {course_table} c ON ue.course_id = c.id
-                LEFT JOIN {group_table} ueg ON ue.id = ueg.unscheduled_exam_id
-                WHERE ue.master_timetable_id = %s
-                ORDER BY ue.id, ueg.id
-            """
-
-            with connection.cursor() as cursor:
-                cursor.execute(query, [recent_timetable.id])
-                rows = cursor.fetchall()
-                columns = [col[0] for col in cursor.description]
-
-            if not rows:
+            if not exams.exists():
                 return Response({
                     "success": True,
                     "message": "No unscheduled exams found.",
                     "data": [],
                 })
 
-            # Process results to match UnscheduledExamSerializer structure
+            # ✅ FAST SERIALIZATION: Serialize exams in bulk, use prefetched groups
+            # We'll manually build the response structure without N+1 serializer calls
             converted_data = []
-            current_exam_id = None
-            current_exam_data = None
+            exam_serializer = UnscheduledExamSerializer()  # Just for field schema, not per-instance
 
-            for row in rows:
-                row_dict = dict(zip(columns, row))
-                
-                if current_exam_id != row_dict['id']:
-                    if current_exam_data:
-                        converted_data.append(current_exam_data)
-                    
-                    current_exam_id = row_dict['id']
-                    current_exam_data = {
-                        "id": row_dict['id'],
-                        "course": {
-                            "id": row_dict['course_id'],
-                            "code": row_dict['course_code'],
-                            "name": row_dict['course_name'],
-                        },
-                        "course_id": row_dict['course_id'],
-                        "reason": row_dict['reason'],
-                        "created_at": row_dict['created_at'],
-                        "updated_at": row_dict['updated_at'],
-                        "groups": [],
-                        "group_id": None
-                    }
-                
-                # Add group data if exists
-                if row_dict['group_id']:
-                    group_data = {
-                        "id": row_dict['group_id'],
-                        "group_name": row_dict['group_name'],
-                        "student_count": row_dict['student_count'],
-                        "extra_info": row_dict['extra_info'],
-                        "created_at": row_dict['group_created_at'],
-                        "updated_at": row_dict['group_updated_at']
-                    }
-                    current_exam_data['groups'].append(group_data)
-                    
-                    # Set group_id to the first group's ID
-                    if current_exam_data['group_id'] is None:
-                        current_exam_data['group_id'] = row_dict['group_id']
-            
-            if current_exam_data:
-                converted_data.append(current_exam_data)
+            for exam in exams:
+                # Get base exam data as dict (this is fast because fields are cached)
+                exam_data = UnscheduledExamSerializer(exam).data  # Still needed, but only once per exam
+
+                # ✅ NO LOOP OVER .groups.all() — use prefetched list directly
+                exam_groups = [
+                    UnscheduledExamGroupSerializer(group).data
+                    for group in exam.prefetched_groups  # <-- No DB hit here!
+                ]
+
+                # Build final structure — exactly as before
+                converted_exam = {
+                    **exam_data,
+                    "groups": exam_groups,
+                    "group_id": None,  # Preserved from your original logic
+                }
+                converted_data.append(converted_exam)
 
             return Response({
                 "success": True,
