@@ -201,13 +201,12 @@ class ExamViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-    
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
             location = request.GET.get("location")
 
-            # Get recent timetable
+            # Get recent timetable efficiently
             timetable_filter = {"location_id": location} if location else {}
             recent_timetable = MasterTimetable.objects.filter(
                 **timetable_filter
@@ -220,105 +219,48 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # SAFE APPROACH: Use Django's ORM to get table and column names
-            exam_table = UnscheduledExam._meta.db_table
-            course_table = Course._meta.db_table
-            group_table = UnscheduledExamGroup._meta.db_table
-            
-            # Get the actual foreign key column names
-            exam_course_fk = None
-            exam_group_fk = None
-            
-            for f in UnscheduledExamGroup._meta.fields:
-                if f.is_relation and f.related_model == UnscheduledExam:
-                    exam_group_fk = f.column
-                    break
-            
-            for f in UnscheduledExam._meta.fields:
-                if f.is_relation and f.related_model == Course:
-                    exam_course_fk = f.column
-                    break
-            
-            # If we can't find FK relationships, fall back to common patterns
-            if not exam_group_fk:
-                exam_group_fk = "unscheduled_exam_id"  # try common pattern
-            
-            if not exam_course_fk:
-                exam_course_fk = "course_id"  # try common pattern
+            # OPTIMIZED QUERY: Prefetch groups into a custom attribute, avoid .all() calls
+            exams = UnscheduledExam.objects.filter(
+                master_timetable_id=recent_timetable.id
+            ).select_related(
+                'course', 'master_timetable'
+            ).prefetch_related(
+                Prefetch(
+                    'groups',
+                    queryset=UnscheduledExamGroup.objects.all(),
+                    to_attr='prefetched_groups'  # <-- Store prefetched groups here
+                )
+            )
 
-            # Build query with actual table names
-            query = f"""
-                SELECT 
-                    ue.*,
-                    c.*,
-                    ueg.*,
-                    ue.id as exam_id,
-                    c.id as course_id,
-                    ueg.id as group_id
-                FROM {exam_table} ue
-                INNER JOIN {course_table} c ON ue.{exam_course_fk} = c.id
-                LEFT JOIN {group_table} ueg ON ue.id = ueg.{exam_group_fk}
-                WHERE ue.master_timetable_id = %s
-                ORDER BY ue.id, ueg.id
-            """
-
-            with connection.cursor() as cursor:
-                cursor.execute(query, [recent_timetable.id])
-                rows = cursor.fetchall()
-                columns = [col[0] for col in cursor.description]
-
-            if not rows:
+            if not exams.exists():
                 return Response({
                     "success": True,
                     "message": "No unscheduled exams found.",
                     "data": [],
                 })
 
-            # DEBUG: Print the actual columns returned
-            print("Columns returned:", columns)
-            
-            # Process results - this will be generic
+            # ✅ FAST SERIALIZATION: Serialize exams in bulk, use prefetched groups
+            # We'll manually build the response structure without N+1 serializer calls
             converted_data = []
-            current_exam_id = None
-            current_exam_data = None
+            exam_serializer = UnscheduledExamSerializer()  # Just for field schema, not per-instance
 
-            for row in rows:
-                row_dict = dict(zip(columns, row))
-                
-                # Use the actual ID column names from your query
-                exam_id = row_dict.get('exam_id') or row_dict.get('id')
-                
-                if current_exam_id != exam_id:
-                    if current_exam_data:
-                        converted_data.append(current_exam_data)
-                    
-                    current_exam_id = exam_id
-                    current_exam_data = {
-                        "id": exam_id,
-                        "master_timetable": row_dict.get('master_timetable_id'),
-                        "course": {
-                            "id": row_dict.get('course_id'),
-                            # Add other course fields as needed
-                        },
-                        "groups": []
-                    }
-                    
-                    # Add all exam fields (excluding IDs and FKs)
-                    for col in columns:
-                        if col.startswith('ue_') or (not col.endswith('_id') and col not in ['exam_id', 'course_id', 'group_id']):
-                            current_exam_data[col.replace('ue_', '')] = row_dict[col]
-                
-                # Add group data if exists
-                group_id = row_dict.get('group_id')
-                if group_id:
-                    group_data = {"id": group_id}
-                    for col in columns:
-                        if col.startswith('ueg_') or (col not in ['exam_id', 'course_id', 'group_id'] and not col.endswith('_id')):
-                            group_data[col.replace('ueg_', '')] = row_dict[col]
-                    current_exam_data['groups'].append(group_data)
-            
-            if current_exam_data:
-                converted_data.append(current_exam_data)
+            for exam in exams:
+                # Get base exam data as dict (this is fast because fields are cached)
+                exam_data = UnscheduledExamSerializer(exam).data  # Still needed, but only once per exam
+
+                # ✅ NO LOOP OVER .groups.all() — use prefetched list directly
+                exam_groups = [
+                    UnscheduledExamGroupSerializer(group).data
+                    for group in exam.prefetched_groups  # <-- No DB hit here!
+                ]
+
+                # Build final structure — exactly as before
+                converted_exam = {
+                    **exam_data,
+                    "groups": exam_groups,
+                    "group_id": None,  # Preserved from your original logic
+                }
+                converted_data.append(converted_exam)
 
             return Response({
                 "success": True,
