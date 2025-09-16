@@ -533,7 +533,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     if semester and department:
                         courses_to_create.append(Course(
                             code=code,
-                            course_name=row["COURSENAME"],  # Fixed: use course_name instead of title
+                            title=row["COURSENAME"],  # Fixed: use course_name instead of title
                             credits=row["CREDITS"],
                             semester=semester,
                             department=department,
