@@ -2638,8 +2638,10 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         return exams_created, unaccommodated_students, unscheduled_groups, unscheduled_reasons
         
     except Exception as e:
-        logger.error(f"Error generating schedule: {e}")
-        return [], f"Error generating schedule: {e}", [], {}
+        # Log full traceback for easier debugging
+        logger.exception("Error generating schedule")
+        err_text = str(e) if e else "Unknown error"
+        return [], f"Error generating schedule: {err_text}", [], {}
 
 
 def schedule_group_exams(
@@ -2669,8 +2671,12 @@ def schedule_group_exams(
     course_total_students = {}
     for course_dict in course_group["courses"]:
         course_id = course_dict["course_id"]
-        total = sum(len(enrollments_by_group.get(gid, [])) for gid in course_dict["groups"])
-        course_total_students[course_id] = total
+        # Count UNIQUE students per course to avoid double-counting across groups
+        unique_students = set()
+        for gid in course_dict["groups"]:
+            group_students = enrollments_by_group.get(gid, [])
+            unique_students.update(group_students)
+        course_total_students[course_id] = len(unique_students)
     
     # Sort courses by total students (LARGEST first for better consolidation)
     course_group["courses"].sort(key=lambda x: -course_total_students.get(x["course_id"], 0))
