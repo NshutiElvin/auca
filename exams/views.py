@@ -1,4 +1,3 @@
-from collections import defaultdict
 from pprint import pprint
 from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
@@ -16,7 +15,6 @@ from schedules.utils import (
     which_suitable_slot_to_schedule_course_group,
     
 )
-
 
 from django.db.models import Prefetch
 from django.db import connection, transaction
@@ -208,11 +206,14 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             location = request.GET.get("location")
 
-            # Get recent timetable efficiently with only needed fields
+            # Find the latest timetable only with needed fields
             timetable_filter = {"location_id": location} if location else {}
-            recent_timetable = MasterTimetable.objects.filter(
-                **timetable_filter
-            ).only("id").order_by("-created_at").first()
+            recent_timetable = (
+                MasterTimetable.objects.filter(**timetable_filter)
+                .only("id")
+                .order_by("-created_at")
+                .first()
+            )
 
             if not recent_timetable:
                 return Response({
@@ -221,77 +222,47 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # ULTRA-OPTIMIZED QUERY: Bulk fetch all data in single queries
-            exams = UnscheduledExam.objects.filter(
-                master_timetable_id=recent_timetable.id
-            ).select_related('course').only(
-                'id', 'course_id', 'master_timetable_id', 'name', 'duration', 
-                'number_of_students', 'is_rescheduled', 'created_at', 'updated_at'
+            # ⚡ Preload all nested relationships your serializer needs
+            exams_qs = (
+                UnscheduledExam.objects
+                .filter(master_timetable_id=recent_timetable.id)
+                .select_related(
+                    "course",          # Example FK
+                    "master_timetable" # Example FK
+                    # Add all other FK/OneToOne fields your serializer touches
+                )
+                .prefetch_related(
+                    Prefetch(
+                        "groups",
+                        queryset=UnscheduledExamGroup.objects.select_related(
+                            # if group has nested FKs, preload them here too
+                        ),
+                        to_attr="prefetched_groups"
+                    ),
+                    # Add any other M2M or reverse-FK prefetches here if used in nested serializers
+                )
             )
 
-            if not exams.exists():
+            if not exams_qs.exists():
                 return Response({
                     "success": True,
                     "message": "No unscheduled exams found.",
                     "data": [],
                 })
 
-            # Bulk fetch all groups for these exams in one query
-            exam_ids = exams.values_list('id', flat=True)
-            groups_by_exam = defaultdict(list)
-            
-            # Use values() to get raw data without model instantiation
-            groups_data = UnscheduledExamGroup.objects.filter(
-                unscheduled_exam_id__in=exam_ids
-            ).select_related('group').values(
-                'id', 'unscheduled_exam_id', 'group_id', 'group__name', 'created_at'
-            )
-            
-            for group in groups_data:
-                groups_by_exam[group['unscheduled_exam_id']].append({
-                    'id': group['id'],
-                    'group': {'id': group['group_id'], 'name': group['group__name']},
-                    'created_at': group['created_at']
-                })
+            # ⚡ Serialize all at once with many=True
+            # This avoids creating a serializer per exam inside a loop
+            serializer = UnscheduledExamSerializer(exams_qs, many=True, context={"request": request})
+            serialized_data = serializer.data
 
-            # MANUAL SERIALIZATION: Avoid serializer overhead completely
-            converted_data = []
-            course_cache = {}  # Cache course data to avoid repeated access
-            
-            # Prefetch course data in bulk
-            course_ids = exams.values_list('course_id', flat=True).distinct()
-            courses = Course.objects.filter(id__in=course_ids).only('id', 'name', 'code').in_bulk()
-            course_cache.update(courses)
-
-            for exam in exams:
-                # Manual serialization - 5-10x faster than using Serializer
-                exam_data = {
-                    'id': exam.id,
-                    'name': exam.name,
-                    'duration': exam.duration,
-                    'number_of_students': exam.number_of_students,
-                    'is_rescheduled': exam.is_rescheduled,
-                    'created_at': exam.created_at,
-                    'updated_at': exam.updated_at,
-                    'course': {
-                        'id': exam.course_id,
-                        'name': course_cache[exam.course_id].name if exam.course_id in course_cache else '',
-                        'code': course_cache[exam.course_id].code if exam.course_id in course_cache else ''
-                    } if exam.course_id else None,
-                    'master_timetable_id': exam.master_timetable_id
-                }
-
-                converted_exam = {
-                    **exam_data,
-                    "groups": groups_by_exam.get(exam.id, []),
-                    "group_id": None,
-                }
-                converted_data.append(converted_exam)
+            # Optional: inject your custom group_id field if frontend needs it
+            for item in serialized_data:
+                item["group_id"] = None
 
             return Response({
                 "success": True,
                 "message": "Unscheduled exams retrieved successfully.",
-                "data": converted_data,
+                "data": serialized_data,
             })
 
         except Exception as e:
@@ -303,82 +274,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 "message": "Error retrieving unscheduled exams.",
                 "data": [],
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    # @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
-    # def unscheduled_exams(self, request):
-    #     try:
-    #         location = request.GET.get("location")
 
-    #         # Get recent timetable efficiently
-    #         timetable_filter = {"location_id": location} if location else {}
-    #         recent_timetable = MasterTimetable.objects.filter(
-    #             **timetable_filter
-    #         ).order_by("-created_at").first()
-
-    #         if not recent_timetable:
-    #             return Response({
-    #                 "success": True,
-    #                 "message": "No timetable found.",
-    #                 "data": [],
-    #             })
-
-    #         # OPTIMIZED QUERY: Prefetch groups into a custom attribute, avoid .all() calls
-    #         exams = UnscheduledExam.objects.filter(
-    #             master_timetable_id=recent_timetable.id
-    #         ).select_related(
-    #             'course', 'master_timetable'
-    #         ).prefetch_related(
-    #             Prefetch(
-    #                 'groups',
-    #                 queryset=UnscheduledExamGroup.objects.all(),
-    #                 to_attr='prefetched_groups'  # <-- Store prefetched groups here
-    #             )
-    #         )
-
-    #         if not exams.exists():
-    #             return Response({
-    #                 "success": True,
-    #                 "message": "No unscheduled exams found.",
-    #                 "data": [],
-    #             })
-
-    #         # ✅ FAST SERIALIZATION: Serialize exams in bulk, use prefetched groups
-    #         # We'll manually build the response structure without N+1 serializer calls
-    #         converted_data = []
-    #         exam_serializer = UnscheduledExamSerializer()  # Just for field schema, not per-instance
-
-    #         for exam in exams:
-    #             # Get base exam data as dict (this is fast because fields are cached)
-    #             exam_data = UnscheduledExamSerializer(exam).data  # Still needed, but only once per exam
-
-    #             # ✅ NO LOOP OVER .groups.all() — use prefetched list directly
-    #             exam_groups = [
-    #                 UnscheduledExamGroupSerializer(group).data
-    #                 for group in exam.prefetched_groups  # <-- No DB hit here!
-    #             ]
-
-    #             # Build final structure — exactly as before
-    #             converted_exam = {
-    #                 **exam_data,
-    #                 "groups": exam_groups,
-    #                 "group_id": None,  # Preserved from your original logic
-    #             }
-    #             converted_data.append(converted_exam)
-
-    #         return Response({
-    #             "success": True,
-    #             "message": "Unscheduled exams retrieved successfully.",
-    #             "data": converted_data,
-    #         })
-
-    #     except Exception as e:
-    #         import logging
-    #         logger = logging.getLogger(__name__)
-    #         logger.error(f"Error in unscheduled_exams: {str(e)}", exc_info=True)
-    #         return Response({
-    #             "success": False,
-    #             "message": "Error retrieving unscheduled exams.",
-    #             "data": [],
-    #         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     # @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
     # def generate_exam_schedule_view(self, request):
     #     import datetime
