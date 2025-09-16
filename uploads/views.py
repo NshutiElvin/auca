@@ -562,9 +562,10 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     
                     # Check for conflicts: same group name with different courses
                     for existing_key, existing_group_obj in existing_groups.items():
-                        if existing_group_obj.group_name == group_name and existing_key[0] != course_code:
-                            group_conflicts[group_name].add(existing_key[0])
-                            group_conflicts[group_name].add(course_code)
+                        if existing_group_obj:
+                            if existing_group_obj.group_name == group_name and existing_key[0] != course_code:
+                                group_conflicts[group_name].add(existing_key[0])
+                                group_conflicts[group_name].add(course_code)
                     
                     if not existing_group:
                         # Check if group name already exists with different course
