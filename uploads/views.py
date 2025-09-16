@@ -569,7 +569,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     
                     if not existing_group:
                         # Check if group name already exists with different course
-                        conflicting_groups = [g for g in existing_groups.values() if g.group_name == group_name and g.course != course]
+                        conflicting_groups = [g for g in existing_groups.values() if g and g.group_name == group_name and g.course != course]
                         
                         if conflicting_groups:
                             # Create a unique group name to avoid conflicts
