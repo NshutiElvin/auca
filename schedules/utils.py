@@ -2643,198 +2643,198 @@ def verify_room_capacity():
 
 
 
-def allocate_shared_rooms(location_id):
-    """
-    Enhanced room allocation that efficiently packs students into rooms
-    using a best-fit decreasing algorithm to minimize overflow and skipped slots.
-    """
-    # Get all unassigned student exams with related data
-    student_exams = (
-        StudentExam.objects.filter(room__isnull=True)
-        .select_related("exam", "exam__group__course", "student")
-        .order_by("exam__date", "exam__start_time")
-    )
+# def allocate_shared_rooms(location_id):
+#     """
+#     Enhanced room allocation that efficiently packs students into rooms
+#     using a best-fit decreasing algorithm to minimize overflow and skipped slots.
+#     """
+#     # Get all unassigned student exams with related data
+#     student_exams = (
+#         StudentExam.objects.filter(room__isnull=True)
+#         .select_related("exam", "exam__group__course", "student")
+#         .order_by("exam__date", "exam__start_time")
+#     )
     
-    if not student_exams.exists():
-        return []
+#     if not student_exams.exists():
+#         return []
     
-    rooms = list(Room.objects.filter(location_id=location_id).order_by("-capacity"))
-    if not rooms:
-        raise Exception("No rooms available for allocation.")
+#     rooms = list(Room.objects.filter(location_id=location_id).order_by("-capacity"))
+#     if not rooms:
+#         raise Exception("No rooms available for allocation.")
     
-    # Define time slots
-    SLOTS = [
-        ("Morning", time(8, 0), time(11, 0)),
-        ("Afternoon", time(13, 0), time(16, 0)),
-        ("Evening", time(18, 0), time(20, 0)),
-    ]
+#     # Define time slots
+#     SLOTS = [
+#         ("Morning", time(8, 0), time(11, 0)),
+#         ("Afternoon", time(13, 0), time(16, 0)),
+#         ("Evening", time(18, 0), time(20, 0)),
+#     ]
     
-    with transaction.atomic():
-        # Create a comprehensive schedule structure
-        # {date: {slot_name: {room_id: [student_exams]}}}
-        schedule = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-        unaccommodated = []
+#     with transaction.atomic():
+#         # Create a comprehensive schedule structure
+#         # {date: {slot_name: {room_id: [student_exams]}}}
+#         schedule = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+#         unaccommodated = []
         
-        # Organize students by date and slot
-        date_slot_students = defaultdict(lambda: defaultdict(list))
-        for se in student_exams:
-            for slot_name, start, end in SLOTS:
-                if se.exam.slot_name == slot_name:
-                    date_slot_students[se.exam.date][slot_name].append(se)
-                    break
+#         # Organize students by date and slot
+#         date_slot_students = defaultdict(lambda: defaultdict(list))
+#         for se in student_exams:
+#             for slot_name, start, end in SLOTS:
+#                 if se.exam.slot_name == slot_name:
+#                     date_slot_students[se.exam.date][slot_name].append(se)
+#                     break
         
-        # Process each date and slot
-        for date, slots in date_slot_students.items():
-            for slot_name, slot_start, slot_end in SLOTS:
-                slot_students = slots.get(slot_name, [])
-                if not slot_students:
-                    continue
+#         # Process each date and slot
+#         for date, slots in date_slot_students.items():
+#             for slot_name, slot_start, slot_end in SLOTS:
+#                 slot_students = slots.get(slot_name, [])
+#                 if not slot_students:
+#                     continue
                 
-                # Group students by exam (course)
-                exams = defaultdict(list)
-                for se in slot_students:
-                    exams[se.exam].append(se)
+#                 # Group students by exam (course)
+#                 exams = defaultdict(list)
+#                 for se in slot_students:
+#                     exams[se.exam].append(se)
                 
-                # Create list of exams with their student counts
-                exam_list = [(exam, students) for exam, students in exams.items() if students]
+#                 # Create list of exams with their student counts
+#                 exam_list = [(exam, students) for exam, students in exams.items() if students]
                 
-                # Sort exams by number of students (largest first for better packing)
-                exam_list.sort(key=lambda x: len(x[1]), reverse=True)
+#                 # Sort exams by number of students (largest first for better packing)
+#                 exam_list.sort(key=lambda x: len(x[1]), reverse=True)
                 
-                remaining_students = slot_students.copy()
-                total_students = len(remaining_students)
-                total_capacity = sum(room.capacity for room in rooms)
+#                 remaining_students = slot_students.copy()
+#                 total_students = len(remaining_students)
+#                 total_capacity = sum(room.capacity for room in rooms)
                 
-                # If total capacity is insufficient, some students will remain unaccommodated
-                if total_students > total_capacity:
-                    # We'll handle this below by packing as many as possible
-                    pass
+#                 # If total capacity is insufficient, some students will remain unaccommodated
+#                 if total_students > total_capacity:
+#                     # We'll handle this below by packing as many as possible
+#                     pass
                 
-                # Initialize room occupancy for this slot
-                room_occupancy = {room.id: 0 for room in rooms}
+#                 # Initialize room occupancy for this slot
+#                 room_occupancy = {room.id: 0 for room in rooms}
                 
-                # First, try to assign complete exams to rooms using best-fit decreasing
-                for exam, exam_students in exam_list:
-                    exam_size = len(exam_students)
-                    if exam_size == 0:
-                        continue
+#                 # First, try to assign complete exams to rooms using best-fit decreasing
+#                 for exam, exam_students in exam_list:
+#                     exam_size = len(exam_students)
+#                     if exam_size == 0:
+#                         continue
                     
-                    # Find the best room (smallest room that can fit this exam)
-                    best_room = None
-                    best_room_size = float('inf')
+#                     # Find the best room (smallest room that can fit this exam)
+#                     best_room = None
+#                     best_room_size = float('inf')
                     
-                    for room in rooms:
-                        current_occupancy = room_occupancy[room.id]
-                        available_space = room.capacity - current_occupancy
+#                     for room in rooms:
+#                         current_occupancy = room_occupancy[room.id]
+#                         available_space = room.capacity - current_occupancy
                         
-                        if available_space >= exam_size and room.capacity < best_room_size:
-                            best_room = room
-                            best_room_size = room.capacity
+#                         if available_space >= exam_size and room.capacity < best_room_size:
+#                             best_room = room
+#                             best_room_size = room.capacity
                     
-                    # If no single room can fit the entire exam, split it
-                    if best_room is None:
-                        # Split the exam across multiple rooms
-                        students_to_assign = exam_students.copy()
+#                     # If no single room can fit the entire exam, split it
+#                     if best_room is None:
+#                         # Split the exam across multiple rooms
+#                         students_to_assign = exam_students.copy()
                         
-                        # Sort rooms by available space (largest available space first)
-                        sorted_rooms = sorted(
-                            rooms, 
-                            key=lambda r: r.capacity - room_occupancy[r.id], 
-                            reverse=True
-                        )
+#                         # Sort rooms by available space (largest available space first)
+#                         sorted_rooms = sorted(
+#                             rooms, 
+#                             key=lambda r: r.capacity - room_occupancy[r.id], 
+#                             reverse=True
+#                         )
                         
-                        for room in sorted_rooms:
-                            if not students_to_assign:
-                                break
+#                         for room in sorted_rooms:
+#                             if not students_to_assign:
+#                                 break
                             
-                            available_space = room.capacity - room_occupancy[room.id]
-                            if available_space <= 0:
-                                continue
+#                             available_space = room.capacity - room_occupancy[room.id]
+#                             if available_space <= 0:
+#                                 continue
                             
-                            # Assign as many students as possible to this room
-                            assign_count = min(len(students_to_assign), available_space)
-                            assigned_students = students_to_assign[:assign_count]
+#                             # Assign as many students as possible to this room
+#                             assign_count = min(len(students_to_assign), available_space)
+#                             assigned_students = students_to_assign[:assign_count]
                             
-                            # Update schedule and occupancy
-                            schedule[date][slot_name][room.id].extend(assigned_students)
-                            room_occupancy[room.id] += assign_count
+#                             # Update schedule and occupancy
+#                             schedule[date][slot_name][room.id].extend(assigned_students)
+#                             room_occupancy[room.id] += assign_count
                             
-                            # Remove assigned students
-                            for se in assigned_students:
-                                if se in remaining_students:
-                                    remaining_students.remove(se)
+#                             # Remove assigned students
+#                             for se in assigned_students:
+#                                 if se in remaining_students:
+#                                     remaining_students.remove(se)
                             
-                            students_to_assign = students_to_assign[assign_count:]
+#                             students_to_assign = students_to_assign[assign_count:]
                         
-                        # Any remaining students will be handled in the final pass
-                        continue
+#                         # Any remaining students will be handled in the final pass
+#                         continue
                     
-                    # Assign the entire exam to the best room
-                    schedule[date][slot_name][best_room.id].extend(exam_students)
-                    room_occupancy[best_room.id] += exam_size
+#                     # Assign the entire exam to the best room
+#                     schedule[date][slot_name][best_room.id].extend(exam_students)
+#                     room_occupancy[best_room.id] += exam_size
                     
-                    # Remove assigned students from remaining
-                    for se in exam_students:
-                        if se in remaining_students:
-                            remaining_students.remove(se)
+#                     # Remove assigned students from remaining
+#                     for se in exam_students:
+#                         if se in remaining_students:
+#                             remaining_students.remove(se)
                 
-                # Second pass: assign any remaining students (from split exams)
-                # Sort rooms by available space (largest available space first)
-                sorted_rooms = sorted(
-                    rooms, 
-                    key=lambda r: r.capacity - room_occupancy[r.id], 
-                    reverse=True
-                )
+#                 # Second pass: assign any remaining students (from split exams)
+#                 # Sort rooms by available space (largest available space first)
+#                 sorted_rooms = sorted(
+#                     rooms, 
+#                     key=lambda r: r.capacity - room_occupancy[r.id], 
+#                     reverse=True
+#                 )
                 
-                for se in remaining_students.copy():
-                    assigned = False
-                    for room in sorted_rooms:
-                        available_space = room.capacity - room_occupancy[room.id]
-                        if available_space > 0:
-                            schedule[date][slot_name][room.id].append(se)
-                            room_occupancy[room.id] += 1
-                            remaining_students.remove(se)
-                            assigned = True
-                            break
+#                 for se in remaining_students.copy():
+#                     assigned = False
+#                     for room in sorted_rooms:
+#                         available_space = room.capacity - room_occupancy[room.id]
+#                         if available_space > 0:
+#                             schedule[date][slot_name][room.id].append(se)
+#                             room_occupancy[room.id] += 1
+#                             remaining_students.remove(se)
+#                             assigned = True
+#                             break
                     
-                    if not assigned:
-                        unaccommodated.append(se.student)
+#                     if not assigned:
+#                         unaccommodated.append(se.student)
         
-        # Save all assignments to DB
-        for date, slots in schedule.items():
-            for slot_name, room_assignments in slots.items():
-                for room_id, student_exams_list in room_assignments.items():
-                    StudentExam.objects.filter(
-                        id__in=[se.id for se in student_exams_list]
-                    ).update(room_id=room_id)
+#         # Save all assignments to DB
+#         for date, slots in schedule.items():
+#             for slot_name, room_assignments in slots.items():
+#                 for room_id, student_exams_list in room_assignments.items():
+#                     StudentExam.objects.filter(
+#                         id__in=[se.id for se in student_exams_list]
+#                     ).update(room_id=room_id)
         
-        # Final attempt for leftover students
-        if unaccommodated:
-            remaining_exams = StudentExam.objects.filter(
-                student__in=unaccommodated, room__isnull=True
-            ).select_related("exam")
+#         # Final attempt for leftover students
+#         if unaccommodated:
+#             remaining_exams = StudentExam.objects.filter(
+#                 student__in=unaccommodated, room__isnull=True
+#             ).select_related("exam")
             
-            for se in remaining_exams:
-                date = se.exam.date
-                slot_name = se.exam.slot_name
+#             for se in remaining_exams:
+#                 date = se.exam.date
+#                 slot_name = se.exam.slot_name
                 
-                # Try to find any room with available capacity
-                for room in rooms:
-                    # Count current occupancy in this room for this slot
-                    current_occupancy = StudentExam.objects.filter(
-                        room_id=room.id,
-                        exam__date=date,
-                        exam__slot_name=slot_name
-                    ).count()
+#                 # Try to find any room with available capacity
+#                 for room in rooms:
+#                     # Count current occupancy in this room for this slot
+#                     current_occupancy = StudentExam.objects.filter(
+#                         room_id=room.id,
+#                         exam__date=date,
+#                         exam__slot_name=slot_name
+#                     ).count()
                     
-                    if current_occupancy < room.capacity:
-                        se.room = room
-                        se.save()
-                        try:
-                            unaccommodated.remove(se.student)
-                        except ValueError:
-                            pass
-                        break
+#                     if current_occupancy < room.capacity:
+#                         se.room = room
+#                         se.save()
+#                         try:
+#                             unaccommodated.remove(se.student)
+#                         except ValueError:
+#                             pass
+#                         break
     
     return unaccommodated
 
