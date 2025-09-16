@@ -35,7 +35,7 @@ class RoomViewSet(viewsets.ModelViewSet):
     serializer_class = RoomSerializer
 
     def get_permissions(self):
-        if self.action in["verify_room", "verify_room_qr", "instructor_room_qr", "verify_room", "verify"]:
+        if self.action in["verify_room", "verify_room_qr", "instructor_room_qr", "verify_room_student", "verify"]:
             return [permissions.AllowAny()]  # No permissions required
         elif self.action in ["list", "retrieve"]:
             return [permissions.IsAuthenticated()]
@@ -539,7 +539,7 @@ class RoomViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="verify")
     @permission_classes([])
-    def verify_room(self, request, *args, **kwargs):
+    def verify_room_student(self, request, *args, **kwargs):
         try:
             tz = pytz_timezone(settings.TIME_ZONE)
             now = timezone.now().astimezone(tz)
