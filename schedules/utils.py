@@ -704,12 +704,13 @@ def find_compatible_courses_within_group(courses):
         student_id = enrollment['student_id']
         course_group_students[course_id][group_id].add(student_id)
     
-    # Calculate total students per course
+    # Calculate total UNIQUE students per course (avoid double counting)
     for course_id, groups in course_group_students.items():
         all_students = set()
         for group_students in groups.values():
             all_students.update(group_students)
         course_total_students[course_id] = len(all_students)
+        logger.debug(f"Course {course_id}: {len(all_students)} unique students across {len(groups)} groups")
     
     # Find conflicts between courses (students taking multiple courses)
     course_conflicts = defaultdict(set)
