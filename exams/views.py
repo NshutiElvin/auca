@@ -1053,7 +1053,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 start_time = time.fromisoformat(existing_slot.get("start"))
                 end_time = time.fromisoformat(existing_slot.get("end"))
 
-                if weekday == "Friday" and existing_slot.name.lower() == "evening":
+                if weekday == "Friday" and existing_slot["name"].lower() == "evening":
                     raise ValueError("We can't schedule exam on Friday evening.")
 
                 try:
