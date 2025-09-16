@@ -957,7 +957,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             course_id = exam["course"]["id"]
             course = Course.objects.get(id=course_id)
 
-            if weekday == "Friday" and existing_slot.name.lower() == "evening":
+            if weekday == "Friday" and existing_slot["name"].lower() == "evening":
                 raise ValueError("We can't schedule exam on Friday evening.")
             group_id = group.get("id")
             real_exam = UnscheduledExam.objects.get(id=exam.get("id"))
