@@ -698,11 +698,24 @@ def find_compatible_courses_within_group(courses):
     course_total_students = defaultdict(int)
     
     # Populate enrollment data efficiently
+    # First, get the correct course-group relationships from the database
+    from courses.models import CourseGroup
+    correct_course_groups = {}
+    for cg in CourseGroup.objects.filter(course_id__in=courses).values('id', 'course_id', 'group_name'):
+        if cg['course_id'] not in correct_course_groups:
+            correct_course_groups[cg['course_id']] = []
+        correct_course_groups[cg['course_id']].append(cg['id'])
+    
     for enrollment in Enrollment.objects.filter(course_id__in=courses).values('course_id', 'group_id', 'student_id').iterator():
         course_id = enrollment['course_id']
         group_id = enrollment['group_id']
         student_id = enrollment['student_id']
-        course_group_students[course_id][group_id].add(student_id)
+        
+        # Verify that this group actually belongs to this course
+        if course_id in correct_course_groups and group_id in correct_course_groups[course_id]:
+            course_group_students[course_id][group_id].add(student_id)
+        else:
+            logger.warning(f"Data inconsistency: Enrollment claims group {group_id} belongs to course {course_id}, but CourseGroup table shows it doesn't")
     
     # Calculate total UNIQUE students per course (avoid double counting)
     for course_id, groups in course_group_students.items():
@@ -710,7 +723,12 @@ def find_compatible_courses_within_group(courses):
         for group_students in groups.values():
             all_students.update(group_students)
         course_total_students[course_id] = len(all_students)
-        logger.debug(f"Course {course_id}: {len(all_students)} unique students across {len(groups)} groups")
+        if course_id == 3992:
+            logger.info(f"find_compatible_courses_within_group - Course {course_id}: {len(all_students)} unique students across {len(groups)} groups")
+            logger.info(f"Course 3992 groups with students: {list(groups.keys())}")
+            logger.info(f"Course 3992 correct groups from DB: {correct_course_groups.get(3992, [])}")
+        else:
+            logger.debug(f"Course {course_id}: {len(all_students)} unique students across {len(groups)} groups")
     
     # Find conflicts between courses (students taking multiple courses)
     course_conflicts = defaultdict(set)
@@ -768,13 +786,21 @@ def find_compatible_courses_within_group(courses):
         total_timeslot_students = 0
         
         for course_id in timeslot_courses:
-            # Get all groups for this course
-            all_groups = list(course_group_students[course_id].keys())
+            # Get all groups for this course - only those that actually belong to the course
+            actual_groups = correct_course_groups.get(course_id, [])
+            enrolled_groups = list(course_group_students[course_id].keys())
+            
+            # Use only groups that both belong to the course AND have enrollments
+            valid_groups = [g for g in actual_groups if g in enrolled_groups]
+            
             student_count = course_total_students[course_id]
+            
+            if course_id == 3992:  # Debug
+                logger.info(f"Course {course_id} - Actual groups: {actual_groups}, Enrolled groups: {enrolled_groups}, Valid groups: {valid_groups}")
             
             course_details.append({
                 "course_id": course_id,
-                "groups": all_groups,
+                "groups": valid_groups,
                 "student_count": student_count
             })
             total_timeslot_students += student_count
@@ -2671,31 +2697,33 @@ def schedule_group_exams(
     course_total_students = {}
     for course_dict in course_group["courses"]:
         course_id = course_dict["course_id"]
-        # Get accurate unique student count directly from the database for this course
-        from django.db import connection
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT COUNT(DISTINCT e.student_id) 
-                FROM enrollments_enrollment e 
-                INNER JOIN courses_coursegroup cg ON e.group_id = cg.id 
-                WHERE cg.course_id = %s AND e.group_id IN %s
-            """, [course_id, tuple(course_dict["groups"])])
-            course_total_students[course_id] = cursor.fetchone()[0]
+        
+        # First, filter groups to only include those that actually belong to this course
+        valid_groups = []
+        for gid in course_dict["groups"]:
+            group_obj = groups_dict.get(gid)
+            if group_obj and group_obj.course_id == course_id:
+                valid_groups.append(gid)
+            elif course_id == 3992:  # Debug problematic course
+                logger.info(f"Filtering out group {gid}: belongs to course {getattr(group_obj, 'course_id', 'N/A')}, expected {course_id}")
+        
+        # Update the course dict with only valid groups
+        course_dict["groups"] = valid_groups
+        
+        if not valid_groups:
+            course_total_students[course_id] = 0
+            if course_id == 3992:
+                logger.info(f"Course {course_id} has NO valid groups after filtering")
+        else:
+            # Get accurate unique student count using Django ORM
+            from enrollments.models import Enrollment
+            course_total_students[course_id] = Enrollment.objects.filter(
+                group_id__in=valid_groups
+            ).values('student_id').distinct().count()
         
         if course_id == 3992:  # Debug the specific problematic course
-            logger.info(f"Course {course_id} total unique students: {course_total_students[course_id]} across {len(course_dict['groups'])} groups")
-            
-            # Also show the fallback method for comparison
-            unique_students = set()
-            for gid in course_dict["groups"]:
-                group_obj = groups_dict.get(gid)
-                if not group_obj or group_obj.course_id != course_id:
-                    logger.debug(f"Skipping group {gid}: not found or belongs to course {getattr(group_obj, 'course_id', 'N/A')}, expected {course_id}")
-                    continue
-                group_students = enrollments_by_group.get(gid, [])
-                logger.debug(f"Course {course_id}, group {gid}: {len(group_students)} students")
-                unique_students.update(group_students)
-            logger.info(f"Course {course_id} fallback method count: {len(unique_students)}")
+            logger.info(f"Course {course_id} total unique students: {course_total_students[course_id]} across {len(valid_groups)} valid groups")
+            logger.info(f"Course {course_id} valid groups: {valid_groups}")
     
     # Sort courses by total students (LARGEST first for better consolidation)
     course_group["courses"].sort(key=lambda x: -course_total_students.get(x["course_id"], 0))
