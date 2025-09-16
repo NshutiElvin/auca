@@ -943,94 +943,94 @@ class ExamViewSet(viewsets.ModelViewSet):
     def schedule_course_single_group(self, request):
         from datetime import time
 
-        try:
-            with transaction.atomic():
-                existing_slot = request.data.get("slot")
-                date = request.data.get("day")
-                new_group_to_add = request.data.get("course_group")
-                date_formatted = parse_date(date)
-                start_time = time.fromisoformat(existing_slot.get("start"))
-                end_time = time.fromisoformat(existing_slot.get("end"))
-                weekday = date_formatted.strftime("%A")
-                exam = new_group_to_add.get("exam")
-                group = new_group_to_add.get("group")
-                course_id = exam["course"]["id"]
-                course = Course.objects.get(id=course_id)
+        # try:
+        with transaction.atomic():
+            existing_slot = request.data.get("slot")
+            date = request.data.get("day")
+            new_group_to_add = request.data.get("course_group")
+            date_formatted = parse_date(date)
+            start_time = time.fromisoformat(existing_slot.get("start"))
+            end_time = time.fromisoformat(existing_slot.get("end"))
+            weekday = date_formatted.strftime("%A")
+            exam = new_group_to_add.get("exam")
+            group = new_group_to_add.get("group")
+            course_id = exam["course"]["id"]
+            course = Course.objects.get(id=course_id)
 
-                if weekday == "Friday" and existing_slot.name.lower() == "evening":
-                    raise ValueError("We can't schedule exam on Friday evening.")
-                group_id = group.get("id")
-                real_exam = UnscheduledExam.objects.get(id=exam.get("id"))
-                master_timetable = real_exam.master_timetable
-                real_group = CourseGroup.objects.get(id=group_id)
-                real_group = UnscheduledExamGroup.objects.get(
-                    group=real_group, exam=real_exam
+            if weekday == "Friday" and existing_slot.name.lower() == "evening":
+                raise ValueError("We can't schedule exam on Friday evening.")
+            group_id = group.get("id")
+            real_exam = UnscheduledExam.objects.get(id=exam.get("id"))
+            master_timetable = real_exam.master_timetable
+            real_group = CourseGroup.objects.get(id=group_id)
+            real_group = UnscheduledExamGroup.objects.get(
+                group=real_group, exam=real_exam
+            )
+
+            try:
+                exam = Exam.objects.create(
+                    date=date_formatted,
+                    start_time=start_time,
+                    end_time=end_time,
+                    group=real_group.group,
                 )
+                master_timetable.exams.add(exam)
 
-                try:
-                    exam = Exam.objects.create(
-                        date=date_formatted,
-                        start_time=start_time,
-                        end_time=end_time,
-                        group=real_group.group,
+                # Update student exam dates
+                student_ids = Enrollment.objects.filter(
+                    course=course, group=real_group.group
+                ).values_list("student_id", flat=True)
+                for student_id in student_ids:
+                    student_exam = StudentExam.objects.create(
+                        student_id=student_id, exam=exam
                     )
-                    master_timetable.exams.add(exam)
-
-                    # Update student exam dates
-                    student_ids = Enrollment.objects.filter(
-                        course=course, group=real_group.group
-                    ).values_list("student_id", flat=True)
-                    for student_id in student_ids:
-                        student_exam = StudentExam.objects.create(
-                            student_id=student_id, exam=exam
-                        )
-                        student_exam.save()
-                    existing_student_exams = (
-                        StudentExam.objects.filter(
-                            exam__date=date_formatted,
-                            exam__start_time=start_time,
-                            exam__end_time=end_time,
-                        )
-                        .select_related(
-                            "exam", "exam__group__course__semester", "student"
-                        )
-                        .order_by("exam__date", "exam__start_time")
+                    student_exam.save()
+                existing_student_exams = (
+                    StudentExam.objects.filter(
+                        exam__date=date_formatted,
+                        exam__start_time=start_time,
+                        exam__end_time=end_time,
                     )
-                    student_exams = (
-                        StudentExam.objects.filter(
-                            student_id__in=student_ids, exam=exam
-                        )
-                        .select_related(
-                            "exam", "exam__group__course__semester", "student"
-                        )
-                        .order_by("exam__date", "exam__start_time")
+                    .select_related(
+                        "exam", "exam__group__course__semester", "student"
                     )
-                    student_exams = student_exams.union(existing_student_exams)
-                    allocate_shared_rooms_updated(student_exams)
-                except UnscheduledExam .DoesNotExist:
-                    pass
+                    .order_by("exam__date", "exam__start_time")
+                )
+                student_exams = (
+                    StudentExam.objects.filter(
+                        student_id__in=student_ids, exam=exam
+                    )
+                    .select_related(
+                        "exam", "exam__group__course__semester", "student"
+                    )
+                    .order_by("exam__date", "exam__start_time")
+                )
+                student_exams = student_exams.union(existing_student_exams)
+                allocate_shared_rooms_updated(student_exams)
+            except UnscheduledExam .DoesNotExist:
+                pass
 
-                except Exception as e:
-                    raise Exception(str(e))
+            except Exception as e:
+                raise Exception(str(e))
 
-                real_exam.groups.remove(real_group.id)
-                if real_exam.groups.count() == 0:
-                    real_exam.delete()
+            real_exam.groups.remove(real_group.id)
+            if real_exam.groups.count() == 0:
+                real_exam.delete()
 
-            return Response(
-                {
-                    "success": True,
-                    "conflict": True,
-                    "message": "Exam Scheduled Successfully",
-                },
-                status=status.HTTP_200_OK,
-            )
-        except Exception as e:
-            print(str(e))
-            return Response(
-                {"success": False, "message": f"Error truncating data: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+        return Response(
+            {
+                "success": True,
+                "conflict": True,
+                "message": "Exam Scheduled Successfully",
+            },
+            status=status.HTTP_200_OK,
+        )
+        # except Exception as e:
+        #     print(str(e))
+        #     return Response(
+        #         {"success": False, "message": f"Error truncating data: {str(e)}"},
+        #         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        #     )
 
     @action(
         detail=False,
