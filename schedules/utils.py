@@ -1197,7 +1197,8 @@ def find_compatible_courses_within_group(courses):
         for course_id, combo_idx, combo in combinations_in_slot:
             course_details.append({
                 "course_id": course_id,
-                "groups": combo['groups']
+                "groups": combo['groups'],
+                "student_count": len(combo['students'])
             })
             total_students += len(combo['students'])
         
@@ -2973,10 +2974,10 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                 groups_scheduled_today = []
                 
                 # Sort remaining groups by total students (smallest first to maximize packing)
-                remaining_groups.sort(key=lambda g: sum(course["student_count"] for course in g["courses"]))
+                remaining_groups.sort(key=lambda g: sum(course.get("student_count", 0) for course in g["courses"]))
                 
                 for group_idx, course_group in enumerate(remaining_groups[:]):  # Copy for safe iteration
-                    total_students_needed = sum(course["student_count"] for course in course_group["courses"])
+                    total_students_needed = sum(course.get("student_count", 0) for course in course_group["courses"])
                     
                     # Check if we can fit this group in any slot today
                     suitable_slot = None
