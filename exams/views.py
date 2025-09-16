@@ -201,8 +201,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
- 
- 
+    
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
@@ -221,28 +220,44 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # Build query based on your actual serializer structure
-            query = """
+            # SAFE APPROACH: Use Django's ORM to get table and column names
+            exam_table = UnscheduledExam._meta.db_table
+            course_table = Course._meta.db_table
+            group_table = UnscheduledExamGroup._meta.db_table
+            
+            # Get the actual foreign key column names
+            exam_course_fk = None
+            exam_group_fk = None
+            
+            for f in UnscheduledExamGroup._meta.fields:
+                if f.is_relation and f.related_model == UnscheduledExam:
+                    exam_group_fk = f.column
+                    break
+            
+            for f in UnscheduledExam._meta.fields:
+                if f.is_relation and f.related_model == Course:
+                    exam_course_fk = f.column
+                    break
+            
+            # If we can't find FK relationships, fall back to common patterns
+            if not exam_group_fk:
+                exam_group_fk = "unscheduled_exam_id"  # try common pattern
+            
+            if not exam_course_fk:
+                exam_course_fk = "course_id"  # try common pattern
+
+            # Build query with actual table names
+            query = f"""
                 SELECT 
-                    ue.id,
-                    ue.master_timetable_id,
-                    ue.course_id,
-                    ue.reason,  -- This is the field from your serializer
-                    ue.created_at,
-                    ue.updated_at,
-                    c.id as course__id,
-                    c.code as course__code,
-                    c.name as course__name,
-                    -- Add other course fields as needed by CourseSerializer
-                    ueg.id as group_id,
-                    ueg.group_name,
-                    ueg.student_count,
-                    ueg.extra_info,
-                    ueg.created_at as group_created_at,
-                    ueg.updated_at as group_updated_at
-                FROM unscheduled_exam ue
-                INNER JOIN course c ON ue.course_id = c.id
-                LEFT JOIN unscheduled_exam_group ueg ON ue.id = ueg.unscheduled_exam_id
+                    ue.*,
+                    c.*,
+                    ueg.*,
+                    ue.id as exam_id,
+                    c.id as course_id,
+                    ueg.id as group_id
+                FROM {exam_table} ue
+                INNER JOIN {course_table} c ON ue.{exam_course_fk} = c.id
+                LEFT JOIN {group_table} ueg ON ue.id = ueg.{exam_group_fk}
                 WHERE ue.master_timetable_id = %s
                 ORDER BY ue.id, ueg.id
             """
@@ -259,7 +274,10 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # Process results to match your serializer structure
+            # DEBUG: Print the actual columns returned
+            print("Columns returned:", columns)
+            
+            # Process results - this will be generic
             converted_data = []
             current_exam_id = None
             current_exam_data = None
@@ -267,45 +285,38 @@ class ExamViewSet(viewsets.ModelViewSet):
             for row in rows:
                 row_dict = dict(zip(columns, row))
                 
-                if current_exam_id != row_dict['id']:
+                # Use the actual ID column names from your query
+                exam_id = row_dict.get('exam_id') or row_dict.get('id')
+                
+                if current_exam_id != exam_id:
                     if current_exam_data:
                         converted_data.append(current_exam_data)
                     
-                    current_exam_id = row_dict['id']
+                    current_exam_id = exam_id
                     current_exam_data = {
-                        "id": row_dict['id'],
-                        "master_timetable": row_dict['master_timetable_id'],
+                        "id": exam_id,
+                        "master_timetable": row_dict.get('master_timetable_id'),
                         "course": {
-                            "id": row_dict['course__id'],
-                            "code": row_dict['course__code'],
-                            "name": row_dict['course__name'],
-                            # Add other course fields as needed by CourseSerializer
+                            "id": row_dict.get('course_id'),
+                            # Add other course fields as needed
                         },
-                        "course_id": row_dict['course_id'],
-                        "reason": row_dict['reason'],
-                        "created_at": row_dict['created_at'],
-                        "updated_at": row_dict['updated_at'],
-                        "groups": [],
-                        "group_id": None  # This will be set to the first group ID if exists
+                        "groups": []
                     }
+                    
+                    # Add all exam fields (excluding IDs and FKs)
+                    for col in columns:
+                        if col.startswith('ue_') or (not col.endswith('_id') and col not in ['exam_id', 'course_id', 'group_id']):
+                            current_exam_data[col.replace('ue_', '')] = row_dict[col]
                 
                 # Add group data if exists
-                if row_dict['group_id']:
-                    group_data = {
-                        "id": row_dict['group_id'],
-                        "group_name": row_dict['group_name'],
-                        "student_count": row_dict['student_count'],
-                        "extra_info": row_dict['extra_info'],
-                        "created_at": row_dict['group_created_at'],
-                        "updated_at": row_dict['group_updated_at']
-                    }
+                group_id = row_dict.get('group_id')
+                if group_id:
+                    group_data = {"id": group_id}
+                    for col in columns:
+                        if col.startswith('ueg_') or (col not in ['exam_id', 'course_id', 'group_id'] and not col.endswith('_id')):
+                            group_data[col.replace('ueg_', '')] = row_dict[col]
                     current_exam_data['groups'].append(group_data)
-                    
-                    # Set group_id to the first group's ID (as per your serializer logic)
-                    if current_exam_data['group_id'] is None:
-                        current_exam_data['group_id'] = row_dict['group_id']
             
-            # Add the last exam
             if current_exam_data:
                 converted_data.append(current_exam_data)
 
