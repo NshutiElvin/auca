@@ -677,117 +677,118 @@ def optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_c
 
 def find_compatible_courses_within_group(courses):
     """
-    Alternative approach: First try to combine groups within courses that don't conflict,
-    then find compatibility between courses.
+    Efficient course grouping that prioritizes consolidation and proper capacity utilization.
+    Key improvements:
+    1. Tries to schedule entire courses together first
+    2. Uses proper bin-packing for capacity utilization
+    3. Minimizes timeslot fragmentation
     """
     if not courses:
-        return {"compatible_groups": [], "group_conflicts": defaultdict(list)}
+        return [], defaultdict(list)
+    
+    # Get capacity constraint
+    try:
+        location = Course.objects.filter(id=courses[0]).values('department__location__id').first()['department__location__id']
+        total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
+    except:
+        total_seats = 1000  # Fallback capacity
     
     # Data structure: {course_id: {group_id: set(student_ids)}}
     course_group_students = defaultdict(lambda: defaultdict(set))
+    course_total_students = defaultdict(int)
     
-    # Populate enrollment data
-    for enrollment in Enrollment.objects.filter(course_id__in=courses).iterator():
-        course_group_students[enrollment.course_id][enrollment.group_id].add(
-            enrollment.student_id
-        )
+    # Populate enrollment data efficiently
+    for enrollment in Enrollment.objects.filter(course_id__in=courses).values('course_id', 'group_id', 'student_id').iterator():
+        course_id = enrollment['course_id']
+        group_id = enrollment['group_id']
+        student_id = enrollment['student_id']
+        course_group_students[course_id][group_id].add(student_id)
     
-    # For each course, find which groups can be combined (no student overlap)
-    course_combined_groups = {}
-    
+    # Calculate total students per course
     for course_id, groups in course_group_students.items():
-        group_list = list(groups.keys())
-        combined_groups = []
-        used_groups = set()
+        all_students = set()
+        for group_students in groups.values():
+            all_students.update(group_students)
+        course_total_students[course_id] = len(all_students)
+    
+    # Find conflicts between courses (students taking multiple courses)
+    course_conflicts = defaultdict(set)
+    for course1, course2 in combinations(course_group_students.keys(), 2):
+        # Get all students in each course
+        students1 = set()
+        students2 = set()
+        for group_students in course_group_students[course1].values():
+            students1.update(group_students)
+        for group_students in course_group_students[course2].values():
+            students2.update(group_students)
         
-        for group_id in group_list:
-            if group_id in used_groups:
-                continue
+        if students1 & students2:  # If courses share students
+            course_conflicts[course1].add(course2)
+            course_conflicts[course2].add(course1)
+    
+    # IMPROVED ALGORITHM: Bin-packing with consolidation priority
+    timeslots = []  # Each timeslot is a list of courses
+    course_assigned = set()
+    
+    # Sort courses by total students (largest first for better bin packing)
+    courses_by_size = sorted(course_total_students.items(), key=lambda x: -x[1])
+    
+    for course_id, student_count in courses_by_size:
+        if course_id in course_assigned:
+            continue
+            
+        # Try to find an existing timeslot where this course can fit
+        assigned = False
+        
+        for slot_idx, timeslot in enumerate(timeslots):
+            # Calculate current timeslot capacity usage
+            current_capacity = sum(course_total_students[c] for c in timeslot)
+            
+            # Check if course fits in remaining capacity
+            if current_capacity + student_count <= total_seats:
+                # Check for conflicts with courses already in this timeslot
+                has_conflict = any(conflicted_course in timeslot for conflicted_course in course_conflicts[course_id])
                 
-            # Start a new combined group
-            current_combination = [group_id]
-            current_students = groups[group_id].copy()
-            used_groups.add(group_id)
-            
-            # Try to add more groups that don't conflict
-            for other_group in group_list:
-                if other_group in used_groups:
-                    continue
-                    
-                other_students = groups[other_group]
-                if not (current_students & other_students):  # No overlap
-                    current_combination.append(other_group)
-                    current_students.update(other_students)
-                    used_groups.add(other_group)
-            
-            combined_groups.append({
-                'groups': current_combination,
-                'students': current_students
-            })
+                if not has_conflict:
+                    timeslot.append(course_id)
+                    course_assigned.add(course_id)
+                    assigned = True
+                    break
         
-        course_combined_groups[course_id] = combined_groups
+        # If couldn't fit in existing timeslot, create new one
+        if not assigned:
+            timeslots.append([course_id])
+            course_assigned.add(course_id)
     
-    # Now find compatibility between course combinations
-    all_course_combinations = []
-    for course_id, combinations_list in course_combined_groups.items():
-        for i, combo in enumerate(combinations_list):
-            all_course_combinations.append((course_id, i, combo))
-    
-    # Build conflict graph between course combinations
-    combination_conflicts = defaultdict(list)
-    for (course1, combo1_idx, combo1), (course2, combo2_idx, combo2) in combinations(all_course_combinations, 2):
-        if combo1['students'] & combo2['students']:  # Student overlap
-            key1 = (course1, combo1_idx)
-            key2 = (course2, combo2_idx)
-            combination_conflicts[key1].append(key2)
-            combination_conflicts[key2].append(key1)
-    
-    # Greedy coloring
-    color_combinations = defaultdict(list)
-    colored = {}
-    combination_list = sorted(all_course_combinations, 
-                            key=lambda x: -len(combination_conflicts[(x[0], x[1])]))
-    
-    for course_id, combo_idx, combo in combination_list:
-        key = (course_id, combo_idx)
-        
-        # Find used colors
-        used_colors = {
-            colored[conflict]
-            for conflict in combination_conflicts[key]
-            if conflict in colored
-        }
-        
-        # Assign first available color
-        for color in range(len(all_course_combinations)):
-            if color not in used_colors:
-                colored[key] = color
-                color_combinations[color].append((course_id, combo_idx, combo))
-                break
-    
-    # Convert to output format
+    # Convert to required format
     compatible_groups = []
-    for color, combinations_in_slot in color_combinations.items():
+    for slot_idx, timeslot_courses in enumerate(timeslots):
         course_details = []
-        total_students = 0
+        total_timeslot_students = 0
         
-        for course_id, combo_idx, combo in combinations_in_slot:
+        for course_id in timeslot_courses:
+            # Get all groups for this course
+            all_groups = list(course_group_students[course_id].keys())
+            student_count = course_total_students[course_id]
+            
             course_details.append({
                 "course_id": course_id,
-                "groups": combo['groups'],
-                "student_count": len(combo['students'])
+                "groups": all_groups,
+                "student_count": student_count
             })
-            total_students += len(combo['students'])
+            total_timeslot_students += student_count
         
         compatible_groups.append({
-            "timeslot": color + 1,
+            "timeslot": slot_idx + 1,
             "courses": course_details,
-            "student_count": total_students,
+            "student_count": total_timeslot_students,
+            "within_capacity": total_timeslot_students <= total_seats
         })
     
-    compatible_groups.sort(key=lambda x: -x["student_count"])
+    # Sort by timeslot number
+    compatible_groups.sort(key=lambda x: x["timeslot"])
     
-    return compatible_groups, combination_conflicts
+    return compatible_groups, course_conflicts
  
 
 def has_sufficient_gap(student_exam_dates, proposed_date, min_gap_days=2):
@@ -2550,21 +2551,26 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                 # Try to schedule as many groups as possible on this date
                 groups_scheduled_today = []
                 
-                # Sort remaining groups by total students (smallest first to maximize packing)
-                remaining_groups.sort(key=lambda g: sum(course.get("student_count", 0) for course in g["courses"]))
+                # Sort remaining groups by total students (LARGEST first for better consolidation)
+                remaining_groups.sort(key=lambda g: -sum(course.get("student_count", 0) for course in g["courses"]))
                 
                 for group_idx, course_group in enumerate(remaining_groups[:]):  # Copy for safe iteration
                     total_students_needed = sum(course.get("student_count", 0) for course in course_group["courses"])
                     
-                    # Check if we can fit this group in any slot today
-                    suitable_slot = None
+                    # Find the BEST slot (most remaining capacity after fitting this group)
+                    best_slot = None
+                    best_remaining_capacity = -1
+                    
                     for slot_name in all_slots:
                         if slot_seats_usage[slot_name] + total_students_needed <= total_seats:
-                            suitable_slot = slot_name
-                            break
+                            remaining_capacity = total_seats - (slot_seats_usage[slot_name] + total_students_needed)
+                            # Prefer slots that will be most efficiently used (least waste)
+                            if remaining_capacity >= 0 and (best_slot is None or remaining_capacity > best_remaining_capacity):
+                                best_slot = slot_name
+                                best_remaining_capacity = remaining_capacity
                     
-                    if suitable_slot is None:
-                        continue  
+                    if best_slot is None:
+                        continue
                     
                    
                     group_exams, partially_scheduled, reasons = schedule_group_exams(
@@ -2656,8 +2662,17 @@ def schedule_group_exams(
     unscheduled_reasons = {}
     partially_scheduled = False
     
-    # Sort courses by number of students (smallest first for better packing)
-    course_group["courses"].sort(key=lambda x: x.get("student_count", 0))
+    # IMPROVED ALGORITHM: Try to schedule entire courses in one slot first
+    
+    # Calculate total course sizes and try to fit entire courses together
+    course_total_students = {}
+    for course_dict in course_group["courses"]:
+        course_id = course_dict["course_id"]
+        total = sum(len(enrollments_by_group.get(gid, [])) for gid in course_dict["groups"])
+        course_total_students[course_id] = total
+    
+    # Sort courses by total students (LARGEST first for better consolidation)
+    course_group["courses"].sort(key=lambda x: -course_total_students.get(x["course_id"], 0))
     
     for course_idx, course_dict in enumerate(course_group["courses"]):
         course_id = course_dict["course_id"]
@@ -2667,61 +2682,156 @@ def schedule_group_exams(
         
         course = courses_dict[course_id]
         remaining_groups = []
+        course_total_needed = course_total_students.get(course_id, 0)
         
-        # Sort groups by size (smallest first for better packing)
-        group_sizes = []
-        for group_id in course_dict["groups"]:
-            if group_id not in groups_dict:
-                logger.warning(f"Group with id {group_id} not found")
+        # Try to find a slot that can fit the ENTIRE course at once
+        best_slot_for_course = None
+        
+        for slot_name in all_slots:
+            if slot_name not in slot_map:
                 continue
             
-            student_ids = enrollments_by_group.get(group_id, [])
-            group_sizes.append((group_id, len(student_ids)))
+            # Check if the entire course can fit in this slot
+            if slot_seats_usage[slot_name] + course_total_needed <= all_available_seats:
+                # This slot can fit the entire course - use it!
+                best_slot_for_course = slot_name
+                break
         
-        # Sort by size (smallest first)
-        group_sizes.sort(key=lambda x: x[1])
-        
-        for group_id, needed_seats in group_sizes:
-            if group_id not in groups_dict:
-                continue
+        if best_slot_for_course:
+            # Schedule ALL groups of this course in the same slot
+            logger.info(f"Scheduling entire course {course_id} ({course_total_needed} students) in slot {best_slot_for_course}")
             
-            group = groups_dict[group_id]
-            student_ids = enrollments_by_group.get(group_id, [])
-            
-            if not student_ids:
-                logger.info(f"No enrollments found for group {group_id}")
-                unscheduled_reasons[group_id] = "No enrolled students"
-                partially_scheduled = True
-                remaining_groups.append(group_id)
-                continue
-            
-            # Try to find the best slot for this group
-            best_slot = None
-            min_remaining_capacity = float('inf')
-            
-            for slot_name in all_slots:
-                if slot_name not in slot_map:
+            for group_id in course_dict["groups"]:
+                if group_id not in groups_dict:
+                    logger.warning(f"Group with id {group_id} not found")
+                    remaining_groups.append(group_id)
                     continue
                 
-                # Check if adding this group would exceed capacity
-                if slot_seats_usage[slot_name] + needed_seats > all_available_seats:
+                group = groups_dict[group_id]
+                student_ids = enrollments_by_group.get(group_id, [])
+                
+                if not student_ids:
+                    logger.info(f"No enrollments found for group {group_id}")
+                    unscheduled_reasons[group_id] = "No enrolled students"
+                    partially_scheduled = True
+                    remaining_groups.append(group_id)
                     continue
                 
-                # Calculate remaining capacity after adding this group
-                remaining_capacity = all_available_seats - (slot_seats_usage[slot_name] + needed_seats)
+                # Create exam for this group in the chosen slot
+                wanted_slot = slot_map[best_slot_for_course]
+                start_time = time(*map(int, wanted_slot["start"].split(":")))
+                end_time = time(*map(int, wanted_slot["end"].split(":")))
                 
-                # Choose slot that leaves the least remaining capacity (best fit)
-                if remaining_capacity < min_remaining_capacity:
-                    best_slot = slot_name
-                    min_remaining_capacity = remaining_capacity
+                try:
+                    exam = Exam.objects.create(
+                        date=current_date,
+                        start_time=start_time,
+                        end_time=end_time,
+                        group=group,
+                        slot_name=best_slot_for_course,
+                    )
+                    master_timetable.exams.add(exam)
+                    exams_created.append(exam)
+                    
+                    student_exam_objs = [
+                        StudentExam(student_id=student_id, exam=exam) for student_id in student_ids
+                    ]
+                    StudentExam.objects.bulk_create(student_exam_objs)
+                    
+                    logger.debug(f"Scheduled course {course_id}, group {group_id} at {start_time}-{end_time} in slot {best_slot_for_course}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to create exam for course {course_id}, group {group_id}: {e}")
+                    unscheduled_reasons[group_id] = str(e)
+                    partially_scheduled = True
+                    remaining_groups.append(group_id)
             
-            if best_slot is None:
-                reason = f"Not enough seats for course {course_id}, group {group_id} on {current_date}"
-                logger.info(reason)
-                unscheduled_reasons[group_id] = reason
-                partially_scheduled = True
-                remaining_groups.append(group_id)
-                continue
+            # Update slot usage for the entire course
+            slot_seats_usage[best_slot_for_course] += course_total_needed
+        
+        else:
+            # Course doesn't fit entirely in any slot - fall back to individual group scheduling
+            logger.info(f"Course {course_id} too large ({course_total_needed} students), scheduling groups individually")
+            
+            group_sizes = []
+            for group_id in course_dict["groups"]:
+                if group_id not in groups_dict:
+                    logger.warning(f"Group with id {group_id} not found")
+                    continue
+                
+                student_ids = enrollments_by_group.get(group_id, [])
+                group_sizes.append((group_id, len(student_ids)))
+            
+            # Sort by size (LARGEST first for better consolidation)
+            group_sizes.sort(key=lambda x: -x[1])
+            
+            for group_id, needed_seats in group_sizes:
+                group = groups_dict[group_id]
+                student_ids = enrollments_by_group.get(group_id, [])
+                
+                if not student_ids:
+                    logger.info(f"No enrollments found for group {group_id}")
+                    unscheduled_reasons[group_id] = "No enrolled students"
+                    partially_scheduled = True
+                    remaining_groups.append(group_id)
+                    continue
+                
+                # Find best slot for this individual group
+                best_slot = None
+                min_remaining_capacity = float('inf')
+                
+                for slot_name in all_slots:
+                    if slot_name not in slot_map:
+                        continue
+                    
+                    if slot_seats_usage[slot_name] + needed_seats > all_available_seats:
+                        continue
+                    
+                    remaining_capacity = all_available_seats - (slot_seats_usage[slot_name] + needed_seats)
+                    
+                    if remaining_capacity < min_remaining_capacity:
+                        best_slot = slot_name
+                        min_remaining_capacity = remaining_capacity
+                
+                if best_slot is None:
+                    reason = f"Not enough seats for course {course_id}, group {group_id} on {current_date}"
+                    logger.info(reason)
+                    unscheduled_reasons[group_id] = reason
+                    partially_scheduled = True
+                    remaining_groups.append(group_id)
+                    continue
+                
+                # Create exam for this group
+                wanted_slot = slot_map[best_slot]
+                start_time = time(*map(int, wanted_slot["start"].split(":")))
+                end_time = time(*map(int, wanted_slot["end"].split(":")))
+                
+                try:
+                    exam = Exam.objects.create(
+                        date=current_date,
+                        start_time=start_time,
+                        end_time=end_time,
+                        group=group,
+                        slot_name=best_slot,
+                    )
+                    master_timetable.exams.add(exam)
+                    exams_created.append(exam)
+                    
+                    student_exam_objs = [
+                        StudentExam(student_id=student_id, exam=exam) for student_id in student_ids
+                    ]
+                    StudentExam.objects.bulk_create(student_exam_objs)
+                    
+                    # Update slot usage
+                    slot_seats_usage[best_slot] += needed_seats
+                    
+                    logger.debug(f"Scheduled course {course_id}, group {group_id} at {start_time}-{end_time} in slot {best_slot}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to create exam for course {course_id}, group {group_id}: {e}")
+                    unscheduled_reasons[group_id] = str(e)
+                    partially_scheduled = True
+                    remaining_groups.append(group_id)
             
             # Use the best slot found
             wanted_slot = slot_map[best_slot]
