@@ -2674,7 +2674,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
             for date in dates:
                 slot_cache[date] = {slot["name"]: slot for slot in slots_by_date[date]}
             
-            # Create a copy of compatible_groups to work with
+            
             remaining_groups = copy.deepcopy(compatible_groups)
             
             # Process each date
