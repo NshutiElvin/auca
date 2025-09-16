@@ -201,19 +201,17 @@ class ExamViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+ 
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
             location = request.GET.get("location")
 
-            # Find the latest timetable only with needed fields
+            # Get recent timetable
             timetable_filter = {"location_id": location} if location else {}
-            recent_timetable = (
-                MasterTimetable.objects.filter(**timetable_filter)
-                .only("id")
-                .order_by("-created_at")
-                .first()
-            )
+            recent_timetable = MasterTimetable.objects.filter(
+                **timetable_filter
+            ).order_by("-created_at").first()
 
             if not recent_timetable:
                 return Response({
@@ -222,47 +220,100 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # ⚡ Preload all nested relationships your serializer needs
-            exams_qs = (
-                UnscheduledExam.objects
-                .filter(master_timetable_id=recent_timetable.id)
-                .select_related(
-                    "course",          # Example FK
-                    "master_timetable" # Example FK
-                    # Add all other FK/OneToOne fields your serializer touches
-                )
-                .prefetch_related(
-                    Prefetch(
-                        "groups",
-                        queryset=UnscheduledExamGroup.objects.select_related(
-                            # if group has nested FKs, preload them here too
-                        ),
-                        to_attr="prefetched_groups"
-                    ),
-                    # Add any other M2M or reverse-FK prefetches here if used in nested serializers
-                )
-            )
+            # Get table names from models
+            exam_table = UnscheduledExam._meta.db_table
+            course_table = Course._meta.db_table
+            group_table = UnscheduledExamGroup._meta.db_table
 
-            if not exams_qs.exists():
+            # Build the query based on your serializer fields
+            query = f"""
+                SELECT 
+                    ue.id,
+                    ue.master_timetable_id,
+                    ue.course_id,
+                    ue.reason,
+                    ue.created_at,
+                    ue.updated_at,
+                    c.id as course_id,
+                    c.code as course_code,
+                    c.name as course_name,
+                    -- Add other course fields that CourseSerializer might need
+                    ueg.id as group_id,
+                    ueg.group_name,
+                    ueg.student_count,
+                    ueg.extra_info,
+                    ueg.created_at as group_created_at,
+                    ueg.updated_at as group_updated_at
+                FROM {exam_table} ue
+                INNER JOIN {course_table} c ON ue.course_id = c.id
+                LEFT JOIN {group_table} ueg ON ue.id = ueg.unscheduled_exam_id
+                WHERE ue.master_timetable_id = %s
+                ORDER BY ue.id, ueg.id
+            """
+
+            with connection.cursor() as cursor:
+                cursor.execute(query, [recent_timetable.id])
+                rows = cursor.fetchall()
+                columns = [col[0] for col in cursor.description]
+
+            if not rows:
                 return Response({
                     "success": True,
                     "message": "No unscheduled exams found.",
                     "data": [],
                 })
 
-            # ⚡ Serialize all at once with many=True
-            # This avoids creating a serializer per exam inside a loop
-            serializer = UnscheduledExamSerializer(exams_qs, many=True, context={"request": request})
-            serialized_data = serializer.data
+            # Process results to match UnscheduledExamSerializer structure
+            converted_data = []
+            current_exam_id = None
+            current_exam_data = None
 
-            # Optional: inject your custom group_id field if frontend needs it
-            for item in serialized_data:
-                item["group_id"] = None
+            for row in rows:
+                row_dict = dict(zip(columns, row))
+                
+                if current_exam_id != row_dict['id']:
+                    if current_exam_data:
+                        converted_data.append(current_exam_data)
+                    
+                    current_exam_id = row_dict['id']
+                    current_exam_data = {
+                        "id": row_dict['id'],
+                        "course": {
+                            "id": row_dict['course_id'],
+                            "code": row_dict['course_code'],
+                            "name": row_dict['course_name'],
+                        },
+                        "course_id": row_dict['course_id'],
+                        "reason": row_dict['reason'],
+                        "created_at": row_dict['created_at'],
+                        "updated_at": row_dict['updated_at'],
+                        "groups": [],
+                        "group_id": None
+                    }
+                
+                # Add group data if exists
+                if row_dict['group_id']:
+                    group_data = {
+                        "id": row_dict['group_id'],
+                        "group_name": row_dict['group_name'],
+                        "student_count": row_dict['student_count'],
+                        "extra_info": row_dict['extra_info'],
+                        "created_at": row_dict['group_created_at'],
+                        "updated_at": row_dict['group_updated_at']
+                    }
+                    current_exam_data['groups'].append(group_data)
+                    
+                    # Set group_id to the first group's ID
+                    if current_exam_data['group_id'] is None:
+                        current_exam_data['group_id'] = row_dict['group_id']
+            
+            if current_exam_data:
+                converted_data.append(current_exam_data)
 
             return Response({
                 "success": True,
                 "message": "Unscheduled exams retrieved successfully.",
-                "data": serialized_data,
+                "data": converted_data,
             })
 
         except Exception as e:
@@ -274,7 +325,6 @@ class ExamViewSet(viewsets.ModelViewSet):
                 "message": "Error retrieving unscheduled exams.",
                 "data": [],
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
     # @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
     # def generate_exam_schedule_view(self, request):
     #     import datetime
