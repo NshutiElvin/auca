@@ -2671,12 +2671,31 @@ def schedule_group_exams(
     course_total_students = {}
     for course_dict in course_group["courses"]:
         course_id = course_dict["course_id"]
-        # Count UNIQUE students per course to avoid double-counting across groups
-        unique_students = set()
-        for gid in course_dict["groups"]:
-            group_students = enrollments_by_group.get(gid, [])
-            unique_students.update(group_students)
-        course_total_students[course_id] = len(unique_students)
+        # Get accurate unique student count directly from the database for this course
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(DISTINCT e.student_id) 
+                FROM enrollments_enrollment e 
+                INNER JOIN courses_coursegroup cg ON e.group_id = cg.id 
+                WHERE cg.course_id = %s AND e.group_id IN %s
+            """, [course_id, tuple(course_dict["groups"])])
+            course_total_students[course_id] = cursor.fetchone()[0]
+        
+        if course_id == 3992:  # Debug the specific problematic course
+            logger.info(f"Course {course_id} total unique students: {course_total_students[course_id]} across {len(course_dict['groups'])} groups")
+            
+            # Also show the fallback method for comparison
+            unique_students = set()
+            for gid in course_dict["groups"]:
+                group_obj = groups_dict.get(gid)
+                if not group_obj or group_obj.course_id != course_id:
+                    logger.debug(f"Skipping group {gid}: not found or belongs to course {getattr(group_obj, 'course_id', 'N/A')}, expected {course_id}")
+                    continue
+                group_students = enrollments_by_group.get(gid, [])
+                logger.debug(f"Course {course_id}, group {gid}: {len(group_students)} students")
+                unique_students.update(group_students)
+            logger.info(f"Course {course_id} fallback method count: {len(unique_students)}")
     
     # Sort courses by total students (LARGEST first for better consolidation)
     course_group["courses"].sort(key=lambda x: -course_total_students.get(x["course_id"], 0))
@@ -2839,38 +2858,6 @@ def schedule_group_exams(
                     unscheduled_reasons[group_id] = str(e)
                     partially_scheduled = True
                     remaining_groups.append(group_id)
-            
-            # Use the best slot found
-            wanted_slot = slot_map[best_slot]
-            start_time = time(*map(int, wanted_slot["start"].split(":")))
-            end_time = time(*map(int, wanted_slot["end"].split(":")))
-            
-            try:
-                exam = Exam.objects.create(
-                    date=current_date,
-                    start_time=start_time,
-                    end_time=end_time,
-                    group=group,
-                    slot_name=best_slot,
-                )
-                master_timetable.exams.add(exam)
-                exams_created.append(exam)
-                
-                student_exam_objs = [
-                    StudentExam(student_id=student_id, exam=exam) for student_id in student_ids
-                ]
-                StudentExam.objects.bulk_create(student_exam_objs)
-                
-                # Update slot usage
-                slot_seats_usage[best_slot] += needed_seats
-                
-                logger.debug(f"Scheduled course {course_id}, group {group_id} at {start_time}â€“{end_time} in slot {best_slot}")
-                
-            except Exception as e:
-                logger.error(f"Failed to create exam for course {course_id}, group {group_id}: {e}")
-                unscheduled_reasons[group_id] = str(e)
-                partially_scheduled = True
-                remaining_groups.append(group_id)
         
         # Update groups for this course to only those not scheduled
         course_dict["groups"] = remaining_groups
