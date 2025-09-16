@@ -775,6 +775,112 @@ def find_compatible_courses_within_group(courses):
     return compatible_groups, course_conflicts
 
 
+def find_compatible_courses_within_group(courses):
+    if not courses:
+        return [], defaultdict(list)
+
+    # Get location and total capacity
+    location = Course.objects.filter(id=courses[0]).values('department__location__id').first()['department__location__id']
+    total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
+    max_students_per_timeslot = total_seats * 3
+
+    # Fetch enrollments efficiently
+    course_students = defaultdict(set)
+    course_group_students = defaultdict(lambda: defaultdict(set))
+    course_group_sizes = defaultdict(lambda: defaultdict(int))
+
+    for enrollment in Enrollment.objects.filter(course_id__in=courses).values('course_id', 'group_id', 'student_id').iterator():
+        course_id = enrollment['course_id']
+        group_id = enrollment['group_id']
+        student_id = enrollment['student_id']
+        course_students[course_id].add(student_id)
+        course_group_students[course_id][group_id].add(student_id)
+        course_group_sizes[course_id][group_id] += 1
+
+    # Find course conflicts (for return value, as in original)
+    course_conflicts = defaultdict(list)
+    for course1, course2 in combinations(course_students.keys(), 2):
+        if course_students[course1] & course_students[course2]:
+            course_conflicts[course1].append(course2)
+            course_conflicts[course2].append(course1)
+
+    # Find group conflicts (for scheduling)
+    group_conflicts = defaultdict(set)
+    all_groups = [(course_id, group_id) for course_id in course_group_students for group_id in course_group_students[course_id]]
+    for (course1, group1), (course2, group2) in combinations(all_groups, 2):
+        if course_group_students[course1][group1] & course_group_students[course2][group2]:
+            group_conflicts[(course1, group1)].add((course2, group2))
+            group_conflicts[(course2, group2)].add((course1, group1))
+
+    # Schedule groups across courses
+    color_groups = defaultdict(list)  # color -> [(course_id, group_id), ...]
+    color_student_counts = defaultdict(int)  # color -> total students
+    colored = {}  # (course_id, group_id) -> color
+
+    # Sort groups by size (largest first)
+    group_list = sorted(all_groups, key=lambda x: -course_group_sizes[x[0]][x[1]])
+
+    for course_id, group_id in group_list:
+        group_size = course_group_sizes[course_id][group_id]
+        available_colors = []
+
+        # Find valid colors
+        for color in range(len(color_student_counts)):
+            is_conflict_free = all(
+                (conflict_course, conflict_group) not in colored or colored[(conflict_course, conflict_group)] != color
+                for (conflict_course, conflict_group) in group_conflicts[(course_id, group_id)]
+            )
+            has_capacity = (color_student_counts[color] + group_size) <= max_students_per_timeslot
+            if is_conflict_free and has_capacity:
+                available_colors.append(color)
+
+        if available_colors:
+            chosen_color = min(available_colors, key=lambda c: color_student_counts[c])
+        else:
+            chosen_color = len(color_student_counts)
+
+        colored[(course_id, group_id)] = chosen_color
+        color_groups[chosen_color].append((course_id, group_id))
+        color_student_counts[chosen_color] += group_size
+
+    # Convert to course-centric structure
+    color_course_groups = defaultdict(lambda: defaultdict(list))
+    for color, groups in color_groups.items():
+        for course_id, group_id in groups:
+            color_course_groups[color][course_id].append(group_id)
+
+    # Optimize timeslot adjacency (assumed to exist)
+    optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_students_per_timeslot)
+
+    # Build compatible groups in original format
+    compatible_groups = []
+    for color in sorted(color_course_groups.keys()):
+        courses_in_slot = []
+        total_students = color_student_counts[color]
+
+        for course_id, group_ids in color_course_groups[color].items():
+            course_student_count = sum(course_group_sizes[course_id][group_id] for group_id in group_ids)
+            all_groups = list(course_group_students[course_id].keys())
+            courses_in_slot.append({
+                "course_id": course_id,
+                "groups": group_ids,
+                "student_count": course_student_count,
+                "all_groups_scheduled_together": len(group_ids) == len(all_groups),
+                "split_course": len(group_ids) < len(all_groups)
+            })
+
+        compatible_groups.append({
+            "timeslot": color + 1,
+            "courses": courses_in_slot,
+            "student_count": total_students,
+            "within_capacity": total_students <= max_students_per_timeslot
+        })
+
+    compatible_groups.sort(key=lambda x: x["timeslot"])
+
+    return compatible_groups, course_conflicts
+
+
 def optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_capacity):
     """Optimize timeslot arrangement to keep split courses adjacent"""
     # Find courses that are split across multiple timeslots
