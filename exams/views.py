@@ -241,7 +241,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                     ueg.created_at as group_created_at,
                     ueg.updated_at as group_updated_at
                 FROM exams_unscheduledexam ue
-                INNER JOIN course c ON ue.course_id = c.id
+                INNER JOIN courses_course c ON ue.course_id = c.id
                 LEFT JOIN exams_unscheduledexam_groups ueg ON ue.id = ueg.unscheduled_exam_id
                 WHERE ue.master_timetable_id = %s
                 ORDER BY ue.id, ueg.id
