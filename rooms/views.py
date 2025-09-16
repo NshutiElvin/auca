@@ -36,7 +36,7 @@ class RoomViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in["verify_room", "verify_room_qr", "instructor_room_qr", "verify_room", "verify"]:
-            return []  # No permissions required
+            return [permissions.AllowAny()]  # No permissions required
         elif self.action in ["list", "retrieve"]:
             return [permissions.IsAuthenticated()]
         return [permissions.IsAdminUser()]
