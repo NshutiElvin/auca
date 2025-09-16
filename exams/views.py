@@ -200,15 +200,15 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "message": f"Error updating the timetable status: {str(e)}",
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-    
+            )
+ 
     
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
             location = request.GET.get("location")
 
-            # Get recent timetable efficiently
+            # Get recent timetable
             timetable_filter = {"location_id": location} if location else {}
             recent_timetable = MasterTimetable.objects.filter(
                 **timetable_filter
@@ -221,28 +221,25 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # RAW SQL QUERY: Fetch exams with their groups in a single query
-            query = """
-                SELECT 
-                    ue.id,
-                    ue.master_timetable_id,
-                    ue.course_id,
-                    ue.exam_type,
-                    ue.duration,
-                    ue.extra_info,
-                    ue.created_at,
-                    ue.updated_at,
-                    c.code as course_code,
-                    c.name as course_name,
-                    ueg.id as group_id,
-                    ueg.group_name,
-                    ueg.student_count,
-                    ueg.extra_info as group_extra_info,
-                    ueg.created_at as group_created_at,
-                    ueg.updated_at as group_updated_at
-                FROM exams_unscheduledexam ue
-                INNER JOIN courses_course c ON ue.course_id = c.id
-                LEFT JOIN exams_unscheduledexam_groups ueg ON ue.id = ueg.unscheduledexam_id
+            # FIRST: Inspect your actual model schema to build the correct query
+            exam_fields = [f.column for f in UnscheduledExam._meta.fields]
+            course_fields = [f.column for f in Course._meta.fields if f.column not in ['id']]
+            group_fields = [f.column for f in UnscheduledExamGroup._meta.fields]
+            
+            # Build the query dynamically based on actual field names
+            select_clause = [
+                'ue.' + field for field in exam_fields
+            ] + [
+                'c.' + field + ' as course_' + field for field in course_fields
+            ] + [
+                'ueg.' + field + ' as group_' + field for field in group_fields
+            ]
+
+            query = f"""
+                SELECT {', '.join(select_clause)}
+                FROM {UnscheduledExam._meta.db_table} ue
+                INNER JOIN {Course._meta.db_table} c ON ue.course_id = c.id
+                LEFT JOIN {UnscheduledExamGroup._meta.db_table} ueg ON ue.id = ueg.unscheduled_exam_id
                 WHERE ue.master_timetable_id = %s
                 ORDER BY ue.id, ueg.id
             """
@@ -259,7 +256,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # Process the raw data into structured format
+            # Process results
             converted_data = []
             current_exam_id = None
             current_exam_data = None
@@ -267,43 +264,37 @@ class ExamViewSet(viewsets.ModelViewSet):
             for row in rows:
                 row_dict = dict(zip(columns, row))
                 
-                # If this is a new exam, create the base structure
-                if row_dict['id'] != current_exam_id:
+                if current_exam_id != row_dict['id']:
                     if current_exam_data:
                         converted_data.append(current_exam_data)
                     
                     current_exam_id = row_dict['id']
                     current_exam_data = {
                         "id": row_dict['id'],
-                        "master_timetable": row_dict['master_timetable_id'],
+                        "master_timetable": row_dict.get('master_timetable_id'),
                         "course": {
-                            "id": row_dict['course_id'],
-                            "code": row_dict['course_code'],
-                            "name": row_dict['course_name']
+                            "id": row_dict.get('course_id'),
+                            # Add other course fields dynamically
                         },
-                        "exam_type": row_dict['exam_type'],
-                        "duration": row_dict['duration'],
-                        "extra_info": row_dict['extra_info'],
-                        "created_at": row_dict['created_at'],
-                        "updated_at": row_dict['updated_at'],
-                        "groups": [],
-                        "group_id": None
+                        "groups": []
                     }
+                    
+                    # Add all exam fields dynamically
+                    for field in exam_fields:
+                        if field not in ['id', 'course_id', 'master_timetable_id']:
+                            current_exam_data[field] = row_dict.get(field)
+                    
+                    # Add course fields dynamically
+                    for field in course_fields:
+                        current_exam_data['course'][field] = row_dict.get(f'course_{field}')
                 
-                # Add group data if it exists (LEFT JOIN might return NULL group_id)
-                if row_dict['group_id']:
-                    group_data = {
-                        "id": row_dict['group_id'],
-                        "unscheduled_exam": row_dict['id'],
-                        "group_name": row_dict['group_name'],
-                        "student_count": row_dict['student_count'],
-                        "extra_info": row_dict['group_extra_info'],
-                        "created_at": row_dict['group_created_at'],
-                        "updated_at": row_dict['group_updated_at']
-                    }
+                # Add group data if exists
+                if row_dict.get('group_id'):  # Assuming group_id exists in UnscheduledExamGroup
+                    group_data = {}
+                    for field in group_fields:
+                        group_data[field] = row_dict.get(f'group_{field}')
                     current_exam_data['groups'].append(group_data)
             
-            # Add the last exam
             if current_exam_data:
                 converted_data.append(current_exam_data)
 
