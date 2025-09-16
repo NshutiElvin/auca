@@ -202,6 +202,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
  
+ 
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
@@ -220,33 +221,28 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # Get table names from models
-            exam_table = UnscheduledExam._meta.db_table
-            course_table = Course._meta.db_table
-            group_table = UnscheduledExamGroup._meta.db_table
-
-            # Build the query based on your serializer fields
-            query = f"""
+            # Build query based on your actual serializer structure
+            query = """
                 SELECT 
                     ue.id,
                     ue.master_timetable_id,
                     ue.course_id,
-                    ue.reason,
+                    ue.reason,  -- This is the field from your serializer
                     ue.created_at,
                     ue.updated_at,
-                    c.id as course_id,
-                    c.code as course_code,
-                    c.name as course_name,
-                    -- Add other course fields that CourseSerializer might need
+                    c.id as course__id,
+                    c.code as course__code,
+                    c.name as course__name,
+                    -- Add other course fields as needed by CourseSerializer
                     ueg.id as group_id,
                     ueg.group_name,
                     ueg.student_count,
                     ueg.extra_info,
                     ueg.created_at as group_created_at,
                     ueg.updated_at as group_updated_at
-                FROM {exam_table} ue
-                INNER JOIN {course_table} c ON ue.course_id = c.id
-                LEFT JOIN {group_table} ueg ON ue.id = ueg.unscheduled_exam_id
+                FROM unscheduled_exam ue
+                INNER JOIN course c ON ue.course_id = c.id
+                LEFT JOIN unscheduled_exam_group ueg ON ue.id = ueg.unscheduled_exam_id
                 WHERE ue.master_timetable_id = %s
                 ORDER BY ue.id, ueg.id
             """
@@ -263,7 +259,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # Process results to match UnscheduledExamSerializer structure
+            # Process results to match your serializer structure
             converted_data = []
             current_exam_id = None
             current_exam_data = None
@@ -278,17 +274,19 @@ class ExamViewSet(viewsets.ModelViewSet):
                     current_exam_id = row_dict['id']
                     current_exam_data = {
                         "id": row_dict['id'],
+                        "master_timetable": row_dict['master_timetable_id'],
                         "course": {
-                            "id": row_dict['course_id'],
-                            "code": row_dict['course_code'],
-                            "name": row_dict['course_name'],
+                            "id": row_dict['course__id'],
+                            "code": row_dict['course__code'],
+                            "name": row_dict['course__name'],
+                            # Add other course fields as needed by CourseSerializer
                         },
                         "course_id": row_dict['course_id'],
                         "reason": row_dict['reason'],
                         "created_at": row_dict['created_at'],
                         "updated_at": row_dict['updated_at'],
                         "groups": [],
-                        "group_id": None
+                        "group_id": None  # This will be set to the first group ID if exists
                     }
                 
                 # Add group data if exists
@@ -303,10 +301,11 @@ class ExamViewSet(viewsets.ModelViewSet):
                     }
                     current_exam_data['groups'].append(group_data)
                     
-                    # Set group_id to the first group's ID
+                    # Set group_id to the first group's ID (as per your serializer logic)
                     if current_exam_data['group_id'] is None:
                         current_exam_data['group_id'] = row_dict['group_id']
             
+            # Add the last exam
             if current_exam_data:
                 converted_data.append(current_exam_data)
 
