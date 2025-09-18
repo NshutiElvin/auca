@@ -24,7 +24,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
 class UserSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
+    password = serializers.CharField(write_only=True, required=False, validators=[validate_password])
     password_strength = serializers.SerializerMethodField(read_only=True)
     reg_no = serializers.CharField(write_only=True, required=False)
     department = serializers.PrimaryKeyRelatedField(write_only=True, queryset=Department.objects.all(), required=False)
