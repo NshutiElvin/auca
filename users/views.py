@@ -130,14 +130,14 @@ class UserViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def user_permissions(self, request):
-        user_permissions= Permission.objects.all()
+        user_permissionss= Permission.objects.all()
         data = [
             {
                 "codename": perm.codename,
                 "name": perm.name,
                 "model": perm.content_type.model
             }
-            for perm in user_permissions
+            for perm in user_permissionss
         ]
         return Response({
             'success': True,
