@@ -65,7 +65,9 @@ class UserViewSet(viewsets.ModelViewSet):
         return [permission() for permission in permission_classes]
     
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
+        data=request.data
+        data.pop("permissions", None)
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
@@ -97,7 +99,7 @@ class UserViewSet(viewsets.ModelViewSet):
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
         data=request.data
-        
+        data.pop("permissions", None)
         serializer = self.get_serializer(instance, data=data, partial=partial)
        
         serializer.is_valid(raise_exception=True)
