@@ -121,6 +121,7 @@ class UserSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         # Extract permissions if provided
         permissions_data = validated_data.pop('user_permissions', None)
+        print(permissions_data)
         
         password = validated_data.pop('password', None)
         user = super().update(instance, validated_data)
@@ -133,6 +134,7 @@ class UserSerializer(serializers.ModelSerializer):
         if permissions_data is not None:
             user.user_permissions.clear()
             for perm_codename in permissions_data:
+                print(perm_codename)
                 try:
                     permission = Permission.objects.get(codename=perm_codename)
                     user.user_permissions.add(permission)
@@ -186,47 +188,4 @@ class PasswordChangeSerializer(serializers.Serializer):
         return user
     
 
-class UserPermissionsSerializer(serializers.ModelSerializer):
-    permissions = serializers.ListField(
-        child=serializers.CharField(),
-        write_only=True,
-        required=False
-    )
-    current_permissions = serializers.ListField(
-        child=serializers.CharField(),
-        read_only=True,
-        source='get_permissions_list'
-    )
-    
-    class Meta:
-        model = User
-        fields = ('id', 'email', 'permissions', 'current_permissions')
-    
-    def update(self, instance, validated_data):
-        permissions_data = validated_data.pop('permissions', None)
-        
-        if permissions_data is not None:
-            # Clear existing permissions and add new ones
-            instance.user_permissions.clear()
-            
-            for perm_codename in permissions_data:
-                try:
-                    # Handle both "app_label.codename" format and just "codename"
-                    if '.' in perm_codename:
-                        app_label, codename = perm_codename.split('.', 1)
-                        permission = Permission.objects.get(
-                            content_type__app_label=app_label,
-                            codename=codename
-                        )
-                    else:
-                        # Try to find permission by codename (might be ambiguous)
-                        permission = Permission.objects.get(codename=perm_codename)
-                    
-                    instance.user_permissions.add(permission)
-                except Permission.DoesNotExist:
-                    raise serializers.ValidationError(
-                        f"Permission '{perm_codename}' does not exist."
-                    )
-        
-        instance.save()
-        return instance
+ 

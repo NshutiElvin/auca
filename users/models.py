@@ -15,7 +15,7 @@ class UserManager(BaseUserManager):
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
-        user._assign_default_permissions()
+ 
         return user
 
     def create_superuser(self, email, password=None, **extra_fields):
@@ -63,40 +63,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     def get_full_name(self):
         return f"{self.first_name} {self.last_name}"
     
-    def _assign_default_permissions(self):
-        """Assign default permissions based on user role"""
-        from django.contrib.auth.models import Permission
-        
-        # Define default permissions for each role
-        default_permissions = {
-            'student': [
-                'view_student', 'change_student',  # Example permissions
-            ],
-            'instructor': [
-                'view_student', 'change_student', 'view_course', 'change_course',
-            ],
-            'teacher': [
-                'view_student', 'change_student', 'view_course', 'change_course',
-                'add_assignment', 'change_assignment',
-            ],
-            'admin': [
-                # Admins typically get all permissions via is_staff/is_superuser
-            ]
-        }
-        
-        if self.role in default_permissions:
-            for perm_codename in default_permissions[self.role]:
-                try:
-                    app_label, codename = perm_codename.split('.')
-                    permission = Permission.objects.get(
-                        content_type__app_label=app_label,
-                        codename=codename
-                    )
-                    self.user_permissions.add(permission)
-                except (ValueError, Permission.DoesNotExist):
-                    # Skip if permission doesn't exist or format is wrong
-                    continue
-    
+ 
     def get_permissions_list(self):
         """Return list of permission codenames for the user"""
         return list(self.user_permissions.values_list('codename', flat=True))
