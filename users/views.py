@@ -133,14 +133,26 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def user_permissions(self, request):
         user_permissionss= Permission.objects.all()
-        data = [
-            {
+        known_models= [
+        "course",
+        "department",
+        "enrollment",
+        "student",
+        "exam",
+        "studentexam",
+        "unscheduledexam", 
+        "room",
+        
+    ]
+        data = [ ]
+          
+        for perm in user_permissionss:
+            if perm.content_type.model in known_models:
+                data.append(  {
                 "codename": perm.codename,
                 "name": perm.name,
                 "model": perm.content_type.model
-            }
-            for perm in user_permissionss
-        ]
+            })
         return Response({
             'success': True,
             'data': data,
