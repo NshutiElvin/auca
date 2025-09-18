@@ -29,7 +29,7 @@ class UserSerializer(serializers.ModelSerializer):
     password_strength = serializers.SerializerMethodField(read_only=True)
     reg_no = serializers.CharField(write_only=True, required=False)
     department = serializers.PrimaryKeyRelatedField(write_only=True, queryset=Department.objects.all(), required=False)
-    permissions = serializers.ListField(
+    user_permissions = serializers.ListField(
     child=serializers.CharField(),
     write_only=True,
     required=False,
@@ -45,7 +45,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = (
     'id', 'email', 'first_name', 'last_name', 'password', 
     'password_strength', 'role', 'reg_no', 'department',
-    'permissions', 'current_permissions'   
+    'user_permissions', 'current_permissions'   
 )
 
         extra_kwargs = {
