@@ -7,6 +7,7 @@ from .serializers import UserSerializer, CustomTokenObtainPairSerializer, Passwo
 from .permissions import IsAdmin, IsModerator
 from .validators import get_password_strength
 from rest_framework.permissions import AllowAny
+from django.contrib.auth.models import Permission
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
@@ -124,6 +125,23 @@ class UserViewSet(viewsets.ModelViewSet):
         return Response({
             'success': True,
             'data': serializer.data,
+            'message': 'Profile fetched successfully'
+        })
+    
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    def permissions(self, request):
+        user_permissions= Permission.objects.all()
+        data = [
+            {
+                "codename": perm.codename,
+                "name": perm.name,
+                "model": perm.content_type.model
+            }
+            for perm in user_permissions
+        ]
+        return Response({
+            'success': True,
+            'data': data,
             'message': 'Profile fetched successfully'
         })
     
