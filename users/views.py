@@ -12,7 +12,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 User = get_user_model()
-
+import pprint
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
         
@@ -68,6 +68,7 @@ class UserViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         data=request.data
         data.pop("permissions", None)
+        pprint.pprint(data)
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -100,6 +101,7 @@ class UserViewSet(viewsets.ModelViewSet):
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
         data=request.data
+        pprint.pprint(data)
         data.pop("permissions", None)
         serializer = self.get_serializer(instance, data=data, partial=partial)
        
