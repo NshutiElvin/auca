@@ -44,6 +44,10 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
+    def get_queryset(self):
+        # Optimize queries by prefetching permissions
+        queryset = User.objects.prefetch_related('user_permissions')
+        return queryset
         
     def get_permissions(self):
         if self.action == "logout":
