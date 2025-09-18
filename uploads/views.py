@@ -479,6 +479,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         existing_user.first_name = first_name
                         existing_user.last_name = last_name
                         existing_user.email = email
+                        existing_user.is_active=True
                         users_to_update.append(existing_user)
                         user = existing_user
                     
