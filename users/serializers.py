@@ -120,7 +120,7 @@ class UserSerializer(serializers.ModelSerializer):
     
     def update(self, instance, validated_data):
         # Extract permissions if provided
-        permissions_data = validated_data.pop('permissions', None)
+        permissions_data = validated_data.pop('user_permissions', None)
         
         password = validated_data.pop('password', None)
         user = super().update(instance, validated_data)
