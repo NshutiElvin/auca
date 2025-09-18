@@ -10,6 +10,7 @@ from student.models import Student
 from django.utils.translation import gettext_lazy as _
 from Admin.models import Admin
 from django.conf import settings
+from django.contrib.auth.models import Permission
 User = get_user_model()
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -27,17 +28,33 @@ class UserSerializer(serializers.ModelSerializer):
     password_strength = serializers.SerializerMethodField(read_only=True)
     reg_no = serializers.CharField(write_only=True, required=False)
     department = serializers.PrimaryKeyRelatedField(write_only=True, queryset=Department.objects.all(), required=False)
-    
+    permissions = serializers.ListField(
+    child=serializers.CharField(),
+    write_only=True,
+    required=False,
+    help_text="List of permission codenames to assign to the user"
+)
+    current_permissions = serializers.ListField(
+    child=serializers.CharField(),
+    read_only=True,
+    source='get_permissions_list'
+)
     class Meta:
         model = User
         fields = (
-            'id', 'email', 'first_name', 'last_name', 'password', 
-            'password_strength', 'role', 'reg_no', 'department'
-        )
+    'id', 'email', 'first_name', 'last_name', 'password', 
+    'password_strength', 'role', 'reg_no', 'department',
+    'permissions', 'current_permissions'   
+)
+
         extra_kwargs = {
-            'password': {'write_only': True}
+            'password': {'write_only': True},
+            'user_permissions': {'write_only': True}
         }
     
+    def get_all_permissions(self, obj):
+        """Return all permissions (including groups)"""
+        return list(obj.get_all_permissions())
     def get_password_strength(self, obj):
         """
         Calculate password strength when reading the object
@@ -69,6 +86,9 @@ class UserSerializer(serializers.ModelSerializer):
         return value
     
     def create(self, validated_data):
+        # Extract permissions if provided during creation
+        permissions_data = validated_data.pop('user_permissions', None)
+        
         role = validated_data.get('role')
         if role not in ['admin', 'student', 'instructor', 'teacher']:
             raise serializers.ValidationError("Invalid role. Must be 'admin', 'student', 'instructor', or 'teacher'.")
@@ -78,30 +98,30 @@ class UserSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             user = User.objects.create_user(**validated_data)
+            
+            # Add custom permissions if provided
+            if permissions_data:
+                user.user_permissions.set(permissions_data)
 
             if user.role == 'student':
                 if not reg_no or not department:
                     raise serializers.ValidationError("reg_no and department are required for students.")
                 try:
                     Student.objects.create(user=user, reg_no=reg_no, department=department)
-
                 except Exception as e:
-
                     raise serializers.ValidationError(str(e))
             elif user.role == 'admin':
                 try:
                     Admin.objects.create(user=user)
-
                 except Exception as e:
-
                     raise serializers.ValidationError(str(e))
-
 
         return user
     
     def update(self, instance, validated_data):
-
-       
+        # Extract permissions if provided
+        permissions_data = validated_data.pop('permissions', None)
+        
         password = validated_data.pop('password', None)
         user = super().update(instance, validated_data)
         
@@ -109,6 +129,16 @@ class UserSerializer(serializers.ModelSerializer):
             user.set_password(password)
             user.save()
         
+        # Handle permissions update if provided
+        if permissions_data is not None:
+            user.user_permissions.clear()
+            for perm_codename in permissions_data:
+                try:
+                    permission = Permission.objects.get(codename=perm_codename)
+                    user.user_permissions.add(permission)
+                except Permission.DoesNotExist:
+                    # Skip if permission doesn't exist
+                    continue
         
         return user
 
@@ -154,3 +184,49 @@ class PasswordChangeSerializer(serializers.Serializer):
         user.set_password(self.validated_data['new_password'])
         user.save()
         return user
+    
+
+class UserPermissionsSerializer(serializers.ModelSerializer):
+    permissions = serializers.ListField(
+        child=serializers.CharField(),
+        write_only=True,
+        required=False
+    )
+    current_permissions = serializers.ListField(
+        child=serializers.CharField(),
+        read_only=True,
+        source='get_permissions_list'
+    )
+    
+    class Meta:
+        model = User
+        fields = ('id', 'email', 'permissions', 'current_permissions')
+    
+    def update(self, instance, validated_data):
+        permissions_data = validated_data.pop('permissions', None)
+        
+        if permissions_data is not None:
+            # Clear existing permissions and add new ones
+            instance.user_permissions.clear()
+            
+            for perm_codename in permissions_data:
+                try:
+                    # Handle both "app_label.codename" format and just "codename"
+                    if '.' in perm_codename:
+                        app_label, codename = perm_codename.split('.', 1)
+                        permission = Permission.objects.get(
+                            content_type__app_label=app_label,
+                            codename=codename
+                        )
+                    else:
+                        # Try to find permission by codename (might be ambiguous)
+                        permission = Permission.objects.get(codename=perm_codename)
+                    
+                    instance.user_permissions.add(permission)
+                except Permission.DoesNotExist:
+                    raise serializers.ValidationError(
+                        f"Permission '{perm_codename}' does not exist."
+                    )
+        
+        instance.save()
+        return instance

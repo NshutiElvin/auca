@@ -1,7 +1,12 @@
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.utils import timezone
+from django.contrib.auth.models import Permission
+from django.contrib.contenttypes.models import ContentType
 
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.utils import timezone
+from django.contrib.auth.models import Permission
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
         if not email:
@@ -10,6 +15,7 @@ class UserManager(BaseUserManager):
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
+        user._assign_default_permissions()
         return user
 
     def create_superuser(self, email, password=None, **extra_fields):
@@ -38,7 +44,14 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(default=timezone.now)
-    
+    user_permissions = models.ManyToManyField(
+        Permission,
+        verbose_name='user permissions',
+        blank=True,
+        help_text='Specific permissions for this user.',
+        related_name="custom_user_permissions",
+        related_query_name="user",
+    )
     objects = UserManager()
     
     USERNAME_FIELD = 'email'
@@ -49,3 +62,47 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     def get_full_name(self):
         return f"{self.first_name} {self.last_name}"
+    
+    def _assign_default_permissions(self):
+        """Assign default permissions based on user role"""
+        from django.contrib.auth.models import Permission
+        
+        # Define default permissions for each role
+        default_permissions = {
+            'student': [
+                'view_student', 'change_student',  # Example permissions
+            ],
+            'instructor': [
+                'view_student', 'change_student', 'view_course', 'change_course',
+            ],
+            'teacher': [
+                'view_student', 'change_student', 'view_course', 'change_course',
+                'add_assignment', 'change_assignment',
+            ],
+            'admin': [
+                # Admins typically get all permissions via is_staff/is_superuser
+            ]
+        }
+        
+        if self.role in default_permissions:
+            for perm_codename in default_permissions[self.role]:
+                try:
+                    app_label, codename = perm_codename.split('.')
+                    permission = Permission.objects.get(
+                        content_type__app_label=app_label,
+                        codename=codename
+                    )
+                    self.user_permissions.add(permission)
+                except (ValueError, Permission.DoesNotExist):
+                    # Skip if permission doesn't exist or format is wrong
+                    continue
+    
+    def get_permissions_list(self):
+        """Return list of permission codenames for the user"""
+        return list(self.user_permissions.values_list('codename', flat=True))
+    
+    def get_all_permissions(self):
+        """Override to include both group and user permissions"""
+        permissions = super().get_all_permissions()
+        # Add any custom logic if needed
+        return permissions
