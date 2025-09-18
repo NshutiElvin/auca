@@ -129,7 +129,7 @@ class UserViewSet(viewsets.ModelViewSet):
         })
     
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
-    def permissions(self, request):
+    def user_permissions(self, request):
         user_permissions= Permission.objects.all()
         data = [
             {
