@@ -11,8 +11,9 @@ from django.utils.translation import gettext_lazy as _
 from Admin.models import Admin
 from django.conf import settings
 from django.contrib.auth.models import Permission
+import logging
 User = get_user_model()
-
+logger = logging.getLogger(__name__)
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
    
     @classmethod
@@ -95,13 +96,22 @@ class UserSerializer(serializers.ModelSerializer):
 
         reg_no = validated_data.pop('reg_no', None)
         department = validated_data.pop('department', None)
+        logging.debug(str(permissions_data))
 
         with transaction.atomic():
             user = User.objects.create_user(**validated_data)
             
-            # Add custom permissions if provided
-            if permissions_data:
-                user.user_permissions.set(permissions_data)
+              # Handle permissions update if provided
+            if permissions_data is not None:
+                user.user_permissions.clear()
+                for perm_codename in permissions_data:
+                    logging.debug(str(perm_codename))
+                    try:
+                        permission = Permission.objects.get(codename=perm_codename)
+                        user.user_permissions.add(permission)
+                    except Permission.DoesNotExist:
+                        # Skip if permission doesn't exist
+                        continue
 
             if user.role == 'student':
                 if not reg_no or not department:
@@ -121,14 +131,10 @@ class UserSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         # Extract permissions if provided
         permissions_data = validated_data.pop('user_permissions', None)
-        print(permissions_data)
-        
-        password = validated_data.pop('password', None)
+        logging.debug(str(permissions_data))
+ 
         user = super().update(instance, validated_data)
-        
-        if password:
-            user.set_password(password)
-            user.save()
+  
         
         # Handle permissions update if provided
         if permissions_data is not None:
