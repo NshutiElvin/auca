@@ -97,6 +97,7 @@ class UserViewSet(viewsets.ModelViewSet):
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        validated_data.pop('password', None)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         return Response({
