@@ -26,11 +26,29 @@ class CustomTokenRefreshView(TokenRefreshView):
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
+    
     def post(self, request, *args, **kwargs):
+        # First validate the credentials to get the authenticated user
+        serializer = self.get_serializer(data=request.data)
+        
+        try:
+            serializer.is_valid(raise_exception=True)
+            user = serializer.user  # Get the authenticated user
+        except Exception as e:
+            return Response(
+                {"error": "Invalid credentials"}, 
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        # Now proceed with the token generation
         response = super().post(request, *args, **kwargs)
+        
         if response.status_code == status.HTTP_200_OK:
             refresh_token = response.data.get('refresh')
-            user_permissions= request.user.get_permissions_list()
+            
+            # Get user permissions (make sure your User model has this method)
+            user_permissions = user.get_permissions_list() if hasattr(user, 'get_permissions_list') else []
+            
             response.set_cookie(
                 key='refresh_token',
                 value=refresh_token,
@@ -39,8 +57,11 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 samesite='None',  
                 max_age=60*60*24   
             )
-            response["permissions"]= user_permissions
             response.data.pop('refresh', None)
+            
+            # Add permissions to the response data, not the response headers
+            response.data['permissions'] = user_permissions
+        
         return response
 
  
