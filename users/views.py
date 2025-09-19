@@ -9,19 +9,54 @@ from .validators import get_password_strength
 from rest_framework.permissions import AllowAny
 from django.contrib.auth.models import Permission
 from rest_framework_simplejwt.views import TokenRefreshView
-from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 User = get_user_model()
 import pprint
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
-        
         refresh_token = request.COOKIES.get('refresh_token')
         if refresh_token is None:
             return Response({"detail": "Refresh token not found in cookies."}, status=status.HTTP_401_UNAUTHORIZED)
-         
+        
         request.data['refresh'] = refresh_token
-        return super().post(request, *args, **kwargs)
+        response = super().post(request, *args, **kwargs)
+        
+        if response.status_code == status.HTTP_200_OK:
+            try:
+            
+                token = RefreshToken(refresh_token)
+                user_id = token.payload.get('user_id')
+                
+                if user_id:
+                    user = User.objects.get(id=user_id)
+               
+                    if hasattr(user, 'get_permissions_list'):
+                        user_permissions = user.get_permissions_list()
+                    else:
+                    
+                        if user.is_superuser:
+                            from django.contrib.auth.models import Permission
+                            user_permissions = list(Permission.objects.values_list('codename', flat=True))
+                        else:
+                            user_perms = user.user_permissions.values_list('codename', flat=True)
+                            group_perms = Permission.objects.filter(
+                                group__user=user
+                            ).values_list('codename', flat=True)
+                            user_permissions = list(set(user_perms) | set(group_perms))
+                    
+                    # Add permissions to the response
+                    response.data['permissions'] = user_permissions
+                    
+            except User.DoesNotExist:
+                # User not found, but token is valid - this shouldn't normally happen
+                response.data['permissions'] = []
+            except Exception as e:
+                # Log the error but don't fail the refresh
+                print(f"Error getting user permissions during refresh: {str(e)}")
+                response.data['permissions'] = []
+        
+        return response
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
