@@ -47,7 +47,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             refresh_token = response.data.get('refresh')
             
             # Get user permissions (make sure your User model has this method)
-            user_permissions = user.get_permissions_list() if hasattr(user, 'get_permissions_list') else []
+            user_permissions = user.get_permissions_list() 
             
             response.set_cookie(
                 key='refresh_token',
