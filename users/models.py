@@ -71,5 +71,5 @@ class User(AbstractBaseUser, PermissionsMixin):
     def get_all_permissions(self):
         """Override to include both group and user permissions"""
         permissions = super().get_all_permissions()
-        # Add any custom logic if needed
+        
         return permissions

@@ -30,6 +30,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         response = super().post(request, *args, **kwargs)
         if response.status_code == status.HTTP_200_OK:
             refresh_token = response.data.get('refresh')
+            user_permissions= request.user.get_permissions_list()
             response.set_cookie(
                 key='refresh_token',
                 value=refresh_token,
@@ -38,6 +39,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 samesite='None',  
                 max_age=60*60*24   
             )
+            response["permissions"]= user_permissions
             response.data.pop('refresh', None)
         return response
 
