@@ -129,14 +129,13 @@ class UserSerializer(serializers.ModelSerializer):
         return user
     
     def update(self, instance, validated_data):
-        # Extract permissions if provided
+    # Extract permissions if provided
         permissions_data = validated_data.pop('user_permissions', None)
         logging.debug(str(permissions_data))
-        user =None
+        
+        # Use transaction to ensure atomicity
         with transaction.atomic():
- 
             user = super().update(instance, validated_data)
-    
             
             # Handle permissions update if provided
             if permissions_data is not None:
@@ -144,11 +143,14 @@ class UserSerializer(serializers.ModelSerializer):
                 for perm_codename in permissions_data:
                     print(perm_codename)
                     try:
-                        permission = Permission.objects.filter(codename=perm_codename).first()
+                        permission = Permission.objects.get(codename=perm_codename)
                         user.user_permissions.add(permission)
                     except Permission.DoesNotExist:
-                        # Skip if permission doesn't exist
+                        logging.warning(f"Permission {perm_codename} does not exist")
                         continue
+            
+            # Refresh from database to ensure we have the latest state
+            user.refresh_from_db()
         
         return user
 
