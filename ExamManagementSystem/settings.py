@@ -139,7 +139,7 @@ else:
             'PASSWORD': os.getenv("DATABASE_PASSWORD", 'ZJAZNQ9W6M0CxycsCwJ2Jjp33CHniYVa'),
             'HOST': os.getenv("DATABASE_HOST", 'dpg-d2omup0gjchc73ev4cfg-a.oregon-postgres.render.com'),  # Full domain for local
             'PORT': os.getenv("DATABASE_PORT", '5432'),
-            'ATOMIC_REQUESTS': False
+            
         }
     }
 
