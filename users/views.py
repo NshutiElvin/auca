@@ -133,9 +133,9 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
 
     def get_queryset(self):
-        # Optimize queries by prefetching permissions
-        queryset = User.objects.prefetch_related("user_permissions")
-        return queryset
+        if self.action in ["list", "retrieve"]:
+            return User.objects.prefetch_related("user_permissions")
+        return User.objects.all()
 
     def get_permissions(self):
         if self.action == "logout":
