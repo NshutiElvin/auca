@@ -133,8 +133,7 @@ class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     filter_backends = [filters.SearchFilter]
-    search_fields = [  'id', 'email', 'first_name', 'last_name', 'password', "is_active",
-    'password_strength', 'role', 'reg_no', 'department']
+    search_fields = [  'id', 'email', 'first_name', 'last_name', "is_active",]
 
     def get_permissions(self):
         if self.action == "logout":
