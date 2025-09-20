@@ -89,7 +89,7 @@ class UserSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         # Extract permissions if provided during creation
         permissions_data = validated_data.pop('user_permissions', None)
-        
+        permissions_data= Permission.objects.filter(codename__in=permissions_data)
         role = validated_data.get('role')
         if role not in ['admin', 'student', 'instructor', 'teacher']:
             raise serializers.ValidationError("Invalid role. Must be 'admin', 'student', 'instructor', or 'teacher'.")
@@ -127,7 +127,7 @@ class UserSerializer(serializers.ModelSerializer):
     # Extract permissions if provided
         permissions_data = validated_data.pop('user_permissions', None)
         logging.debug(str(permissions_data))
-        
+        permissions_data= Permission.objects.filter(codename__in=permissions_data)
         # Use transaction to ensure atomicity
         with transaction.atomic():
             user = super().update(instance, validated_data)
