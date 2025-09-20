@@ -100,11 +100,12 @@ class UserSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             user = User.objects.create_user(**validated_data)
-            delattr(user, '_perm_cache')
+            user.save()
             
               # Handle permissions update if provided
             if permissions_data is not None:
                 user.user_permissions.set(permissions_data)
+                user.refresh_from_db()
                
 
             if user.role == 'student':
@@ -132,12 +133,13 @@ class UserSerializer(serializers.ModelSerializer):
         # Use transaction to ensure atomicity
         with transaction.atomic():
             user = super().update(instance, validated_data)
-            delattr(user, '_perm_cache')
+            user.save()
             
             # Handle permissions update if provided
             if permissions_data is not None:
                 
                 user.user_permissions.set(permissions_data)
+                user.refresh_from_db()
                 user.save()
 
         
