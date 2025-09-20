@@ -89,7 +89,7 @@ class UserSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         # Extract permissions if provided during creation
         permissions_data = validated_data.pop('user_permissions', None)
-        permissions_data= Permission.objects.filter(codename__in=permissions_data)
+        
         role = validated_data.get('role')
         if role not in ['admin', 'student', 'instructor', 'teacher']:
             raise serializers.ValidationError("Invalid role. Must be 'admin', 'student', 'instructor', or 'teacher'.")
@@ -100,13 +100,18 @@ class UserSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             user = User.objects.create_user(**validated_data)
-            user.save()
             
               # Handle permissions update if provided
             if permissions_data is not None:
-                user.user_permissions.set(permissions_data)
-                user.refresh_from_db()
-               
+                user.user_permissions.clear()
+                for perm_codename in permissions_data:
+                    logging.debug(str(perm_codename))
+                    try:
+                        permission = Permission.objects.filter(codename=perm_codename).first()
+                        user.user_permissions.add(permission)
+                    except Permission.DoesNotExist:
+                        # Skip if permission doesn't exist
+                        continue
 
             if user.role == 'student':
                 if not reg_no or not department:
@@ -120,8 +125,6 @@ class UserSerializer(serializers.ModelSerializer):
                     Admin.objects.create(user=user)
                 except Exception as e:
                     raise serializers.ValidationError(str(e))
-            user.save()
-                 
 
         return user
     
@@ -129,19 +132,25 @@ class UserSerializer(serializers.ModelSerializer):
     # Extract permissions if provided
         permissions_data = validated_data.pop('user_permissions', None)
         logging.debug(str(permissions_data))
-        permissions_data= Permission.objects.filter(codename__in=permissions_data)
+        
         # Use transaction to ensure atomicity
         with transaction.atomic():
             user = super().update(instance, validated_data)
-            user.save()
             
             # Handle permissions update if provided
             if permissions_data is not None:
-                
-                user.user_permissions.set(permissions_data)
-                user.refresh_from_db()
-                user.save()
-
+                user.user_permissions.clear()
+                for perm_codename in permissions_data:
+                    print(perm_codename)
+                    try:
+                        permission = Permission.objects.get(codename=perm_codename)
+                        user.user_permissions.add(permission)
+                    except Permission.DoesNotExist:
+                        logging.warning(f"Permission {perm_codename} does not exist")
+                        continue
+            
+            # Refresh from database to ensure we have the latest state
+            user.refresh_from_db()
         
         return user
 
