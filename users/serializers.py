@@ -100,6 +100,7 @@ class UserSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             user = User.objects.create_user(**validated_data)
+            user.save()
             
               # Handle permissions update if provided
             if permissions_data is not None:
@@ -131,6 +132,7 @@ class UserSerializer(serializers.ModelSerializer):
         # Use transaction to ensure atomicity
         with transaction.atomic():
             user = super().update(instance, validated_data)
+            user.save()
             
             # Handle permissions update if provided
             if permissions_data is not None:
