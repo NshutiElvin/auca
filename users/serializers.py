@@ -143,7 +143,7 @@ class UserSerializer(serializers.ModelSerializer):
                 for perm_codename in permissions_data:
                     print(perm_codename)
                     try:
-                        permission = Permission.objects.get(codename=perm_codename)
+                        permission = Permission.objects.filter(codename=perm_codename).first()
                         user.user_permissions.add(permission)
                     except Permission.DoesNotExist:
                         logging.warning(f"Permission {perm_codename} does not exist")
