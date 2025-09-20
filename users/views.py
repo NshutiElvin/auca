@@ -19,7 +19,7 @@ from rest_framework_simplejwt.token_blacklist.models import (
     OutstandingToken,
 )
 
-User = get_user_model()
+from .models import User
 import pprint
 
 
