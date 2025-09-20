@@ -125,6 +125,7 @@ class UserSerializer(serializers.ModelSerializer):
                     Admin.objects.create(user=user)
                 except Exception as e:
                     raise serializers.ValidationError(str(e))
+            transaction.on_commit(lambda: logging.debug(f"User {user.id} created successfull"))
 
         return user
     
@@ -149,8 +150,7 @@ class UserSerializer(serializers.ModelSerializer):
                         logging.warning(f"Permission {perm_codename} does not exist")
                         continue
             
-            # Refresh from database to ensure we have the latest state
-            user.refresh_from_db()
+            transaction.on_commit(lambda: logging.debug(f"User {user.id} update successfull"))
         
         return user
 
