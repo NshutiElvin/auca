@@ -103,15 +103,8 @@ class UserSerializer(serializers.ModelSerializer):
             
               # Handle permissions update if provided
             if permissions_data is not None:
-                user.user_permissions.clear()
-                for perm_codename in permissions_data:
-                    logging.debug(str(perm_codename))
-                    try:
-                        permission = Permission.objects.filter(codename=perm_codename).first()
-                        user.user_permissions.add(permission)
-                    except Permission.DoesNotExist:
-                        # Skip if permission doesn't exist
-                        continue
+                user.user_permissions.set(permissions_data)
+               
 
             if user.role == 'student':
                 if not reg_no or not department:
@@ -125,6 +118,8 @@ class UserSerializer(serializers.ModelSerializer):
                     Admin.objects.create(user=user)
                 except Exception as e:
                     raise serializers.ValidationError(str(e))
+            user.save()
+                 
 
         return user
     
@@ -139,18 +134,10 @@ class UserSerializer(serializers.ModelSerializer):
             
             # Handle permissions update if provided
             if permissions_data is not None:
-                user.user_permissions.clear()
-                for perm_codename in permissions_data:
-                    print(perm_codename)
-                    try:
-                        permission = Permission.objects.get(codename=perm_codename)
-                        user.user_permissions.add(permission)
-                    except Permission.DoesNotExist:
-                        logging.warning(f"Permission {perm_codename} does not exist")
-                        continue
-            
-            # Refresh from database to ensure we have the latest state
-            user.refresh_from_db()
+                
+                user.user_permissions.set(permissions_data)
+                user.save()
+
         
         return user
 

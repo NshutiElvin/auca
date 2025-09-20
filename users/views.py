@@ -48,8 +48,9 @@ class CustomTokenRefreshView(TokenRefreshView):
                         # Clear the invalid refresh token cookie
                         response.delete_cookie("refresh_token")
                         return Response(
-                            {"success":False,
-                                "message": "Account is deactivated. Please contact administrator."
+                            {
+                                "success": False,
+                                "message": "Account is deactivated. Please contact administrator.",
                             },
                             status=status.HTTP_401_UNAUTHORIZED,
                         )
