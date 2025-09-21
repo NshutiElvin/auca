@@ -2923,7 +2923,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                 
                 # Sort remaining groups by total students (smallest first to maximize packing)
                 remaining_groups.sort(key=lambda g: sum(course["student_count"] for course in g["courses"]))
-                logger.info(remaining_groups[:])
+                logger.info(remaining_groups[date_idx])
                 for group_idx, course_group in enumerate(remaining_groups[:]):  # Copy for safe iteration
                     total_students_needed = sum(course["student_count"] for course in course_group["courses"])
                     
