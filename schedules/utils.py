@@ -590,14 +590,13 @@ def verify_groups_compatibility(groups):
                             group_conflicts.append((group1, group2, shared_students))
     
     return group_conflicts
-
 from collections import defaultdict, Counter
 from itertools import combinations
 from django.db.models import Sum
 
 def find_compatible_courses_within_group(courses):
     if not courses:
-        return {"compatible_groups": [], "group_conflicts": defaultdict(list)}
+        return [], defaultdict(list)
     
     # Get location and total capacity
     location = Course.objects.filter(id=courses[0]).first().department.location.id
@@ -873,6 +872,7 @@ def perform_group_rearrangement(course_id, source_colors, target_colors, color_c
         group_size = len(group_students)
         color_student_counts[target_color] += group_size
         color_students[target_color].update(group_students)
+
 # def find_compatible_courses_within_group(courses):
 #     if not courses:
 #         return {"compatible_groups": [], "group_conflicts": defaultdict(list)}
