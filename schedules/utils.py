@@ -2814,6 +2814,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         slots_by_date = get_slots_by_date(slots)
         # Get all available dates (excluding Saturdays) and sort them
         dates = sorted(date for date in slots_by_date if date.strftime("%A") != "Saturday")
+        logger.info(f"dates: {str(dates)}")
         
         if not dates:
             logger.info("No available dates (excluding Saturdays)")
