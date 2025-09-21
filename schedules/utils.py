@@ -3134,6 +3134,126 @@ def schedule_group_exams(
     
     return exams_created, partially_scheduled, unscheduled_reasons
 
+
+
+
+def schedule_group_exams(
+    group_idx,
+    course_group,
+    current_date,
+    weekday,
+    slot_map,
+    all_slots,
+    all_available_seats,
+    courses_dict,
+    groups_dict,
+    enrollments_by_group,
+    master_timetable,
+     slot_seats_usage
+):
+  
+    exams_created = []
+    unscheduled_reasons = {}
+    partially_scheduled = False
+
+    for course_idx, course_dict in enumerate(course_group["courses"]):
+        course_id = course_dict["course_id"]
+        if course_id not in courses_dict:
+            logger.warning(f"Course with id {course_id} not found")
+            continue
+
+        course = courses_dict[course_id]
+        remaining_groups = []
+        for group_id in course_dict["groups"]:
+            if group_id not in groups_dict:
+                logger.warning(f"Group with id {group_id} not found")
+                continue
+
+            group = groups_dict[group_id]
+            student_ids = enrollments_by_group.get(group_id, [])
+
+            if not student_ids:
+                logger.info(f"No enrollments found for group {group_id}")
+                unscheduled_reasons[group_id] = "No enrolled students"
+                partially_scheduled = True
+                continue
+            
+            # Check for student conflicts - NEW ADDITION
+            conflicted_students = []
+            for student_id in student_ids:
+                existing_exams = StudentExam.objects.filter(
+                    student_id=student_id,
+                    exam__date=current_date
+                )
+                if existing_exams.exists():
+                    conflicted_students.append(student_id)
+            
+            if conflicted_students:
+                reason = f"Students {conflicted_students} already have exams on {current_date}"
+                logger.info(reason)
+                unscheduled_reasons[group_id] = reason
+                partially_scheduled = True
+                continue
+            
+            needed_seats = len(student_ids)
+            slot_name = get_exam_time_for_group( weekday, all_slots, all_available_seats,slot_seats_usage, needed_seats )
+            print(slot_name)
+            if slot_name not in slot_map:
+                reason = f"No valid time slot for group {group.group_name} on {weekday}"
+                logger.info(reason)
+                unscheduled_reasons[group_id] = reason
+                partially_scheduled = True
+                continue
+
+            wanted_slot = slot_map[slot_name]
+            start_time = time(*map(int, wanted_slot["start"].split(":")))
+            end_time = time(*map(int, wanted_slot["end"].split(":")))
+
+            
+            if slot_seats_usage[slot_name] + needed_seats > all_available_seats:
+                reason = (
+                    f"Not enough seats for course {course_id}, group {group_id} in {slot_name} slot "
+                    f"(Required: {needed_seats}, Available: {all_available_seats - slot_seats_usage[slot_name]})"
+                )
+                logger.info(reason)
+                unscheduled_reasons[group_id] = reason
+                partially_scheduled = True
+                continue
+
+            try:
+                exam = Exam.objects.create(
+                    date=current_date,
+                    start_time=start_time,
+                    end_time=end_time,
+                    group=group,
+                    slot_name=slot_name,
+                )
+                master_timetable.exams.add(exam)
+                exams_created.append(exam)
+
+                student_exam_objs = [
+                    StudentExam(student_id=student_id, exam=exam) for student_id in student_ids
+                ]
+                StudentExam.objects.bulk_create(student_exam_objs)
+
+                slot_seats_usage[slot_name] += needed_seats
+                logger.debug(f"Scheduled course {course_id}, group {group_id} at {start_time}–{end_time}")
+
+            except Exception as e:
+                logger.error(f"Failed to create exam for course {course_id}, group {group_id}: {e}")
+                unscheduled_reasons[group_id] = str(e)
+                partially_scheduled = True
+                remaining_groups.append(group_id)
+
+        # Update groups for this course to only those not scheduled
+        course_dict["groups"] = remaining_groups
+
+    # Clean courses with no groups left
+    course_group["courses"] = [c for c in course_group["courses"] if c["groups"]]
+    
+
+    return exams_created, partially_scheduled, unscheduled_reasons
+
  
 
 
