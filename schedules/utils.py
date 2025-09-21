@@ -2844,6 +2844,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
             remaining_groups.sort(key=lambda g: sum(course["student_count"] for course in g["courses"]))
             
             for group_idx, course_group in enumerate(remaining_groups[date_idx]):  # Copy for safe iteration
+                logger.info(course_group)
                 total_students_needed = sum(course["student_count"] for course in course_group["courses"])
                 
                 # Check if we can fit this group in any slot today
