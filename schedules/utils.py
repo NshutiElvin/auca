@@ -2913,7 +2913,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         
         exams_created = []
         unscheduled_groups = []
-        
+        unused_dates=None
         with transaction.atomic():
             slot_cache = {}
             for date in dates:
