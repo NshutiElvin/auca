@@ -2882,7 +2882,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         compatible_groups, _ = find_compatible_courses_within_group(enrolled_course_ids)
         pprint(compatible_groups)
         unscheduled_reasons = {}
-        unused_dates = None
+        
         if not compatible_groups:
             logger.info("No compatible course groups found")
             return [], "No compatible course groups found", [], {}
@@ -2913,7 +2913,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         
         exams_created = []
         unscheduled_groups = []
-         
+        
         with transaction.atomic():
             slot_cache = {}
             for date in dates:
@@ -2925,7 +2925,6 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
             # Process each date
             for date_idx, current_date in enumerate(dates):
                 if not remaining_groups:
-                    unused_dates= set(dates[date_idx:])
                     break
                 
                 weekday = current_date.strftime("%A")
@@ -3007,226 +3006,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                     if idx < len(remaining_groups):
                         remaining_groups.pop(idx)
 
-            # Add this after the main scheduling loop (around line 3008) and before room allocation:
-
-            # NEW: Recursive scheduling for unscheduled groups on unused days only
-            if remaining_groups:
-                logger.info(f"Starting recursive scheduling for {len(remaining_groups)} unscheduled groups")
-                
-                # Find completely unused days (days with no exams at all)
-               
-                
-             
-                logger.info(f"Found {len(unused_dates)} completely unused days for recursive scheduling")
-                
-                # Try to combine unscheduled groups that don't share students (using find_compatible_courses_within_group logic)
-                compatible_combinations = []
-                used_groups = set()
-                
-                for i, group1 in enumerate(remaining_groups):
-                    if i in used_groups:
-                        continue
-                        
-                    # Get all students in this group
-                    group1_students = set()
-                    for course in group1["courses"]:
-                        for group_id in course["groups"]:
-                            group1_students.update(enrollments_by_group.get(group_id, []))
-                    
-                    # Find compatible groups (no shared students)
-                    compatible_groups = [group1]
-                    used_groups.add(i)
-                    
-                    for j, group2 in enumerate(remaining_groups):
-                        if j in used_groups:
-                            continue
-                            
-                        # Get all students in group2
-                        group2_students = set()
-                        for course in group2["courses"]:
-                            for group_id in course["groups"]:
-                                group2_students.update(enrollments_by_group.get(group_id, []))
-                        
-                        # Check if groups share students
-                        if not (group1_students & group2_students):
-                            compatible_groups.append(group2)
-                            used_groups.add(j)
-                    
-                    if len(compatible_groups) > 1:
-                        compatible_combinations.append(compatible_groups)
-                    elif len(compatible_groups) == 1:
-                        # Single group that couldn't be combined
-                        compatible_combinations.append(compatible_groups)
-                
-                logger.info(f"Found {len(compatible_combinations)} compatible combinations of unscheduled groups")
-                
-                # Try to schedule each combination on unused days
-                for combination in compatible_combinations:
-                    scheduled = False
-                    
-                    for date in unused_dates:
-                        if scheduled:
-                            break
-                            
-                        weekday = date.strftime("%A")
-                        slot_map = slot_cache[date]
-                        all_slots = set(slot_map.keys())
-                        
-                        # Calculate total students for this combination
-                        total_students = sum(
-                            sum(course["student_count"] for course in group["courses"])
-                            for group in combination
-                        )
-                        
-                        # Check if this combination can fit on this date
-                        for slot_name in all_slots:
-                            if slot_name not in slot_map:
-                                continue
-                            
-                            # For unused days, slot_seats_usage starts at 0
-                            slot_seats_usage = {"Morning": 0, "Evening": 0, "Afternoon": 0}
-                            
-                            # Check if we can fit all groups in this slot
-                            if slot_seats_usage[slot_name] + total_students <= total_seats:
-                                # Check for student conflicts across all groups in combination
-                                has_conflicts = False
-                                for group in combination:
-                                    group_students = set()
-                                    for course in group["courses"]:
-                                        for group_id in course["groups"]:
-                                            group_students.update(enrollments_by_group.get(group_id, []))
-                                    
-                                    # Check if any students already have exams on this date
-                                    for student_id in group_students:
-                                        existing_exams = StudentExam.objects.filter(
-                                            student_id=student_id,
-                                            exam__date=date
-                                        )
-                                        if existing_exams.exists():
-                                            has_conflicts = True
-                                            break
-                                    
-                                    if has_conflicts:
-                                        break
-                                
-                                if has_conflicts:
-                                    continue  # Skip this slot if there are conflicts
-                                
-                                # Try to schedule all groups in this combination
-                                combination_exams = []
-                                combination_success = True
-                                
-                                for group in combination:
-                                    group_exams, partially_scheduled, reasons = schedule_group_exams(
-                                        0,
-                                        group,
-                                        date,
-                                        weekday,
-                                        slot_map,
-                                        all_slots,
-                                        total_seats,
-                                        courses_dict,
-                                        groups_dict,
-                                        enrollments_by_group,
-                                        master_timetable,
-                                        slot_seats_usage
-                                    )
-                                    
-                                    if partially_scheduled or any(course["groups"] for course in group["courses"]):
-                                        # This group couldn't be fully scheduled
-                                        combination_success = False
-                                        break
-                                    
-                                    combination_exams.extend(group_exams)
-                                
-                                if combination_success:
-                                    exams_created.extend(combination_exams)
-                                    # Remove successfully scheduled groups from remaining_groups
-                                    for group in combination:
-                                        if group in remaining_groups:
-                                            remaining_groups.remove(group)
-                                    scheduled = True
-                                    logger.info(f"Successfully scheduled {len(combination)} groups on unused day {date}")
-                                    break
-                    
-                    if not scheduled:
-                        # If this combination couldn't be scheduled, add groups back to unscheduled
-                        for group in combination:
-                            if group not in remaining_groups:
-                                remaining_groups.append(group)
-                
-                # For any remaining unscheduled groups, try individual scheduling
-                for group in remaining_groups[:]:  # Copy for safe iteration
-                    scheduled = False
-                    
-                    for date in unused_dates:
-                        if scheduled:
-                            break
-                            
-                        weekday = date.strftime("%A")
-                        slot_map = slot_cache[date]
-                        all_slots = set(slot_map.keys())
-                        
-                        total_students = sum(course["student_count"] for course in group["courses"])
-                        
-                        for slot_name in all_slots:
-                            if slot_name not in slot_map:
-                                continue
-                            
-                            # For unused days, slot_seats_usage starts at 0
-                            slot_seats_usage = {"Morning": 0, "Evening": 0, "Afternoon": 0}
-                            
-                            # Check if we can fit this group in this slot
-                            if slot_seats_usage[slot_name] + total_students <= total_seats:
-                                # Check for student conflicts
-                                group_students = set()
-                                for course in group["courses"]:
-                                    for group_id in course["groups"]:
-                                        group_students.update(enrollments_by_group.get(group_id, []))
-                                
-                                # Check if any students already have exams on this date
-                                has_conflicts = False
-                                for student_id in group_students:
-                                    existing_exams = StudentExam.objects.filter(
-                                        student_id=student_id,
-                                        exam__date=date
-                                    )
-                                    if existing_exams.exists():
-                                        has_conflicts = True
-                                        break
-                                
-                                if has_conflicts:
-                                    continue  # Skip this slot if there are conflicts
-                                
-                                # Try to schedule this group
-                                group_exams, partially_scheduled, reasons = schedule_group_exams(
-                                    0,
-                                    group,
-                                    date,
-                                    weekday,
-                                    slot_map,
-                                    all_slots,
-                                    total_seats,
-                                    courses_dict,
-                                    groups_dict,
-                                    enrollments_by_group,
-                                    master_timetable,
-                                    slot_seats_usage
-                                )
-                                
-                                if not partially_scheduled and not any(course["groups"] for course in group["courses"]):
-                                    exams_created.extend(group_exams)
-                                    remaining_groups.remove(group)
-                                    scheduled = True
-                                    logger.info(f"Successfully scheduled individual group on unused day {date}")
-                                    break
-                    
-                    if not scheduled:
-                        # Mark as unscheduled with reason
-                        for course in group["courses"]:
-                            for group_id in course["groups"]:
-                                if group_id not in unscheduled_reasons:
-                                    unscheduled_reasons[group_id] = "No available unused days for scheduling"
+            
             
             # Handle any remaining groups that couldn't be scheduled
             for group in remaining_groups:
