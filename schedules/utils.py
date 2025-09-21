@@ -742,7 +742,7 @@ def find_compatible_courses_within_group(courses):
                 remaining_groups.remove(group_id)
     
     # Optimize timeslot adjacency for split courses
-    optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_students_per_timeslot)
+    # optimize_timeslot_adjacency(color_course_groups, color_student_counts, max_students_per_timeslot)
     
     # Convert to compatible groups format
     compatible_groups = []
