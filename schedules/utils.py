@@ -591,43 +591,6 @@ def verify_groups_compatibility(groups):
     
     return group_conflicts
  
-def find_compatible_groups(groups):
-    if not groups:
-        return []
-    sample_g=CourseGroup.objects.filter(id=groups[0])
-    location = Course.objects.filter(id=sample_g.course.id).first().department.location.id
-    total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
-    max_students_per_timeslot = total_seats * 3
-    enrollments= Enrollment.objects.filter(group_id__in= groups)
-    compatibles={}
-    count=0
-    for g in groups:
-        if len(compatibles.keys())<1:
-            compatibles[count]=set()
-
-        g_students = enrollments.filter(group_id= g)
-        for ck, cg in compatibles.items():
-            if len(g_students.intersection(cg))>0:
-                compatibles[count]=g_students
-            else:
-                compatibles[ck]= compatibles[ck].union(g_students)
-        count+=1
-    compatible_groups=set()
-    for k,v in compatibles.items():
-        # translate students to groups
-        groups=set()
-        for enrollment in v:
-            grp= enrollment.group
-            groups.add(grp)
-        compatible_groups.add(groups)
-    return compatible_groups
-            
-    
-            
-
-
-
-
 
 def find_compatible_courses_within_group(courses):
     if not courses:
@@ -2806,7 +2769,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         compatible_groups, _ = find_compatible_courses_within_group(enrolled_course_ids)
         pprint(compatible_groups)
         unscheduled_reasons = {}
-     
+        
         if not compatible_groups:
             logger.info("No compatible course groups found")
             return [], "No compatible course groups found", [], {}
@@ -2814,7 +2777,6 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         slots_by_date = get_slots_by_date(slots)
         # Get all available dates (excluding Saturdays) and sort them
         dates = sorted(date for date in slots_by_date if date.strftime("%A") != "Saturday")
-        logger.info(f"dates: {str(dates)}")
         
         if not dates:
             logger.info("No available dates (excluding Saturdays)")
@@ -2846,12 +2808,10 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
             
             # Create a copy of compatible_groups to work with
             remaining_groups = copy.deepcopy(compatible_groups)
-            remaining_days=copy.deepcopy(dates)
             
             # Process each date
             for date_idx, current_date in enumerate(dates):
                 if not remaining_groups:
-                     
                     break
                 
                 weekday = current_date.strftime("%A")
@@ -2932,7 +2892,6 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                 for idx in groups_scheduled_today:
                     if idx < len(remaining_groups):
                         remaining_groups.pop(idx)
-                remaining_days.pop(date_idx)
 
             
             
