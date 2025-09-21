@@ -2882,7 +2882,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         compatible_groups, _ = find_compatible_courses_within_group(enrolled_course_ids)
         pprint(compatible_groups)
         unscheduled_reasons = {}
-        used_dates = set()
+        unused_dates = None
         if not compatible_groups:
             logger.info("No compatible course groups found")
             return [], "No compatible course groups found", [], {}
@@ -2913,7 +2913,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         
         exams_created = []
         unscheduled_groups = []
-        unused_dates=None
+         
         with transaction.atomic():
             slot_cache = {}
             for date in dates:
@@ -2925,7 +2925,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
             # Process each date
             for date_idx, current_date in enumerate(dates):
                 if not remaining_groups:
-                    unused_dates= set(date[date_idx:])
+                    unused_dates= set(dates[date_idx:])
                     break
                 
                 weekday = current_date.strftime("%A")
