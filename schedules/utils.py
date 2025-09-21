@@ -615,25 +615,6 @@ def find_compatible_courses_within_group(courses):
         course_group_students[enrollment.course_id][enrollment.group_id].add(enrollment.student_id)
         course_group_sizes[enrollment.course_id][enrollment.group_id] += 1
     
-    # Find group conflicts (groups that share students - cannot be in same timeslot)
-    group_conflicts = defaultdict(set)
-    all_groups = []
-    
-    for course_id in course_group_students:
-        for group_id in course_group_students[course_id]:
-            all_groups.append((course_id, group_id))
-    
-    # Check every pair of groups for student conflicts
-    for i, (course1, group1) in enumerate(all_groups):
-        for j, (course2, group2) in enumerate(all_groups[i+1:], i+1):
-            students1 = course_group_students[course1][group1]
-            students2 = course_group_students[course2][group2]
-            
-            # If groups share any students, they cannot be scheduled together
-            if students1 & students2:
-                group_conflicts[(course1, group1)].add((course2, group2))
-                group_conflicts[(course2, group2)].add((course1, group1))
-    
     # Find course conflicts (students taking multiple courses)
     course_conflicts = defaultdict(list)
     for course1, course2 in combinations(course_students.keys(), 2):
@@ -644,78 +625,92 @@ def find_compatible_courses_within_group(courses):
             course_conflicts[course1].append(course2)
             course_conflicts[course2].append(course1)
     
-    # Schedule groups using graph coloring approach
-    color_course_groups = defaultdict(lambda: defaultdict(list))
-    color_student_counts = defaultdict(int)
-    color_students = defaultdict(set)  # Track actual students in each timeslot
-    group_coloring = {}  # Track which color each group is assigned
-    
-    # Sort groups by complexity (most conflicted first, then by size)
-    group_priority = []
+    # Key fix: Build comprehensive group conflict map
+    all_group_pairs = []
     for course_id in course_group_students:
         for group_id in course_group_students[course_id]:
-            conflict_count = len(group_conflicts.get((course_id, group_id), set()))
-            group_size = course_group_sizes[course_id][group_id]
-            group_priority.append((course_id, group_id, conflict_count, group_size))
+            all_group_pairs.append((course_id, group_id))
     
-    group_priority.sort(key=lambda x: (-x[2], -x[3]))  # Sort by conflicts desc, then size desc
-    
-    # Color each group
-    for course_id, group_id, _, _ in group_priority:
-        group_students = course_group_students[course_id][group_id]
-        group_size = len(group_students)
-        
-        # Find available colors for this group
-        available_colors = []
-        
-        for color in range(len(all_groups)):  # Maximum possible colors needed
-            is_valid = True
+    # Check every pair of groups for student conflicts
+    group_conflicts = defaultdict(set)
+    for i, (course1, group1) in enumerate(all_group_pairs):
+        for j, (course2, group2) in enumerate(all_group_pairs[i+1:], i+1):
+            students1 = course_group_students[course1][group1]
+            students2 = course_group_students[course2][group2]
             
-            # Check if this color has capacity
-            if color_student_counts[color] + group_size > max_students_per_timeslot:
-                is_valid = False
+            # If groups share students, they cannot be in same timeslot
+            if students1 & students2:
+                group_conflicts[(course1, group1)].add((course2, group2))
+                group_conflicts[(course2, group2)].add((course1, group1))
+    
+    # Enhanced scheduling algorithm with proper conflict checking
+    timeslot_assignments = defaultdict(lambda: defaultdict(list))  # timeslot -> course -> groups
+    timeslot_students = defaultdict(set)  # timeslot -> all student IDs
+    timeslot_student_counts = defaultdict(int)  # timeslot -> total count
+    group_timeslots = {}  # (course, group) -> timeslot
+    
+    # Priority queue: most conflicted groups first, then largest groups
+    group_priority = []
+    for course_id in course_group_students:
+        for group_id, students in course_group_students[course_id].items():
+            conflict_count = len(group_conflicts.get((course_id, group_id), set()))
+            group_size = len(students)
+            group_priority.append((course_id, group_id, conflict_count, group_size, students))
+    
+    group_priority.sort(key=lambda x: (-x[2], -x[3]))  # conflicts desc, size desc
+    
+    # Assign each group to a timeslot
+    current_timeslot = 0
+    
+    for course_id, group_id, conflict_count, group_size, group_students in group_priority:
+        best_timeslot = None
+        
+        # Try existing timeslots first
+        for ts in range(current_timeslot + 1):
+            # Check capacity
+            if timeslot_student_counts[ts] + group_size > max_students_per_timeslot:
                 continue
             
-            # Check for student conflicts with groups already in this color
-            if color_students[color] & group_students:
-                is_valid = False
+            # Check for student overlap (CRITICAL FIX)
+            if timeslot_students[ts] & group_students:
                 continue
             
             # Check for group conflicts
-            for existing_course, existing_groups in color_course_groups[color].items():
+            has_conflict = False
+            for existing_course, existing_groups in timeslot_assignments[ts].items():
                 for existing_group in existing_groups:
                     if (course_id, group_id) in group_conflicts and (existing_course, existing_group) in group_conflicts[(course_id, group_id)]:
-                        is_valid = False
+                        has_conflict = True
                         break
-                if not is_valid:
+                if has_conflict:
                     break
             
-            if is_valid:
-                available_colors.append(color)
+            if not has_conflict:
+                best_timeslot = ts
+                break
         
-        if available_colors:
-            # Choose the color with least remaining capacity to pack efficiently
-            chosen_color = min(available_colors, key=lambda c: max_students_per_timeslot - color_student_counts[c])
-        else:
-            # Create new color
-            chosen_color = max(color_student_counts.keys(), default=-1) + 1
+        # If no existing timeslot works, create new one
+        if best_timeslot is None:
+            best_timeslot = current_timeslot
+            current_timeslot += 1
         
-        # Assign group to chosen color
-        group_coloring[(course_id, group_id)] = chosen_color
-        color_course_groups[chosen_color][course_id].append(group_id)
-        color_student_counts[chosen_color] += group_size
-        color_students[chosen_color].update(group_students)
+        # Assign group to timeslot
+        timeslot_assignments[best_timeslot][course_id].append(group_id)
+        timeslot_students[best_timeslot].update(group_students)
+        timeslot_student_counts[best_timeslot] += group_size
+        group_timeslots[(course_id, group_id)] = best_timeslot
     
-    # Optimize timeslot adjacency for split courses
-    optimize_timeslot_adjacency(color_course_groups, color_student_counts, color_students, max_students_per_timeslot, course_group_students, group_conflicts)
+    # Apply adjacency optimization for split courses
+    optimize_timeslot_adjacency(timeslot_assignments, timeslot_student_counts, timeslot_students, 
+                              max_students_per_timeslot, course_group_students, group_conflicts)
     
-    # Convert to compatible groups format
+    # Convert to required output format
     compatible_groups = []
-    for color in sorted(color_course_groups.keys()):
+    for timeslot in sorted(timeslot_assignments.keys()):
         courses_in_slot = []
         total_students = 0
         
-        for course_id, group_ids in color_course_groups[color].items():
+        for course_id, group_ids in timeslot_assignments[timeslot].items():
             course_student_count = sum(course_group_sizes[course_id][group_id] for group_id in group_ids)
             total_students += course_student_count
             
@@ -728,92 +723,91 @@ def find_compatible_courses_within_group(courses):
             })
         
         compatible_groups.append({
-            "timeslot": color + 1,
+            "timeslot": timeslot + 1,
             "courses": courses_in_slot,
             "student_count": total_students,
             "within_capacity": total_students <= max_students_per_timeslot
         })
     
-    # Sort by timeslot number to maintain adjacency
     compatible_groups.sort(key=lambda x: x["timeslot"])
     
     return compatible_groups, course_conflicts
 
 
-def optimize_timeslot_adjacency(color_course_groups, color_student_counts, color_students, max_capacity, course_group_students, group_conflicts):
+def optimize_timeslot_adjacency(timeslot_assignments, timeslot_student_counts, timeslot_students, 
+                              max_capacity, course_group_students, group_conflicts):
     """Optimize timeslot arrangement to keep split courses adjacent"""
-    # Find courses that are split across multiple timeslots
-    split_courses = defaultdict(set)
-    for color, courses in color_course_groups.items():
+    # Find courses split across multiple timeslots
+    course_timeslots = defaultdict(set)
+    for timeslot, courses in timeslot_assignments.items():
         for course_id in courses:
-            split_courses[course_id].add(color)
+            course_timeslots[course_id].add(timeslot)
     
-    # Only consider courses split across multiple timeslots
-    split_courses = {course: colors for course, colors in split_courses.items() if len(colors) > 1}
+    split_courses = {course: slots for course, slots in course_timeslots.items() if len(slots) > 1}
     
     if not split_courses:
         return
     
-    # For each split course, try to make timeslots more adjacent
-    for course_id, original_colors in split_courses.items():
-        original_colors_list = sorted(list(original_colors))
-        current_spread = max(original_colors_list) - min(original_colors_list)
+    # For each split course, try to compact its timeslots
+    for course_id, original_slots in split_courses.items():
+        original_slots_list = sorted(list(original_slots))
+        current_spread = max(original_slots_list) - min(original_slots_list)
         
-        # Try to find a more compact arrangement
-        min_required_slots = len(original_colors_list)
+        if current_spread <= 1:  # Already adjacent
+            continue
         
-        # Try different starting positions for a more compact arrangement
-        for start_pos in range(max(color_course_groups.keys()) - min_required_slots + 2):
-            target_colors = list(range(start_pos, start_pos + min_required_slots))
+        # Try to find consecutive slots that can accommodate all groups
+        min_slots_needed = len(original_slots_list)
+        max_timeslot = max(timeslot_assignments.keys()) if timeslot_assignments else 0
+        
+        for start_slot in range(max_timeslot - min_slots_needed + 2):
+            target_slots = list(range(start_slot, start_slot + min_slots_needed))
             
-            # Check if we can move groups to these target colors
-            if can_rearrange_groups(course_id, original_colors_list, target_colors, 
-                                  color_course_groups, color_student_counts, color_students, 
+            if can_rearrange_groups(course_id, original_slots_list, target_slots, 
+                                  timeslot_assignments, timeslot_student_counts, timeslot_students,
                                   max_capacity, course_group_students, group_conflicts):
-                
-                new_spread = max(target_colors) - min(target_colors)
+                new_spread = max(target_slots) - min(target_slots)
                 if new_spread < current_spread:
-                    # Perform the rearrangement
-                    perform_group_rearrangement(course_id, original_colors_list, target_colors,
-                                              color_course_groups, color_student_counts, color_students,
-                                              course_group_students)
+                    perform_group_rearrangement(course_id, original_slots_list, target_slots,
+                                              timeslot_assignments, timeslot_student_counts, 
+                                              timeslot_students, course_group_students)
                     break
 
 
-def can_rearrange_groups(course_id, source_colors, target_colors, color_course_groups, 
-                        color_student_counts, color_students, max_capacity, course_group_students, group_conflicts):
-    """Check if groups from source colors can be moved to target colors without conflicts"""
-    
-    # Get all groups that need to be moved
+def can_rearrange_groups(course_id, source_slots, target_slots, timeslot_assignments, 
+                        timeslot_student_counts, timeslot_students, max_capacity, 
+                        course_group_students, group_conflicts):
+    """Check if course groups can be moved to target slots without conflicts"""
+    # Get all groups to move
     groups_to_move = []
-    for color in source_colors:
-        if course_id in color_course_groups[color]:
-            for group_id in color_course_groups[color][course_id]:
-                groups_to_move.append((group_id, color))
+    for slot in source_slots:
+        if course_id in timeslot_assignments[slot]:
+            for group_id in timeslot_assignments[slot][course_id]:
+                groups_to_move.append((group_id, slot))
     
-    # Check if each target color can accommodate the groups
-    for i, (group_id, original_color) in enumerate(groups_to_move):
-        target_color = target_colors[i]
+    # Simulate the move
+    for i, (group_id, original_slot) in enumerate(groups_to_move):
+        if i >= len(target_slots):
+            return False
+            
+        target_slot = target_slots[i]
+        if target_slot == original_slot:
+            continue
+        
         group_students = course_group_students[course_id][group_id]
         group_size = len(group_students)
         
-        if target_color == original_color:
-            continue  # No need to move
-        
-        # Calculate capacity if we remove this group from original and add to target
-        original_capacity_freed = group_size if original_color in color_student_counts else 0
-        target_new_load = color_student_counts.get(target_color, 0) + group_size
-        
-        if target_new_load > max_capacity:
+        # Check capacity
+        new_load = timeslot_student_counts.get(target_slot, 0) + group_size
+        if new_load > max_capacity:
             return False
         
-        # Check for student conflicts in target color
-        target_existing_students = color_students.get(target_color, set())
-        if target_existing_students & group_students:
+        # Check student conflicts
+        if timeslot_students.get(target_slot, set()) & group_students:
             return False
         
-        # Check for group conflicts in target color
-        for existing_course, existing_groups in color_course_groups.get(target_color, {}).items():
+        # Check group conflicts
+        for existing_course, existing_groups in timeslot_assignments.get(target_slot, {}).items():
             for existing_group in existing_groups:
                 if (course_id, group_id) in group_conflicts and (existing_course, existing_group) in group_conflicts[(course_id, group_id)]:
                     return False
@@ -821,57 +815,55 @@ def can_rearrange_groups(course_id, source_colors, target_colors, color_course_g
     return True
 
 
-def perform_group_rearrangement(course_id, source_colors, target_colors, color_course_groups, 
-                               color_student_counts, color_students, course_group_students):
-    """Actually move groups from source colors to target colors"""
-    
-    # Collect groups to move
+def perform_group_rearrangement(course_id, source_slots, target_slots, timeslot_assignments, 
+                               timeslot_student_counts, timeslot_students, course_group_students):
+    """Move groups from source slots to target slots"""
+    # Collect all groups to move
     groups_to_move = []
-    for color in source_colors:
-        if course_id in color_course_groups[color]:
-            for group_id in color_course_groups[color][course_id]:
-                groups_to_move.append((group_id, color))
+    for slot in source_slots:
+        if course_id in timeslot_assignments[slot]:
+            for group_id in timeslot_assignments[slot][course_id]:
+                groups_to_move.append((group_id, slot))
     
-    # Remove groups from original colors
-    for group_id, original_color in groups_to_move:
-        if course_id in color_course_groups[original_color]:
-            if group_id in color_course_groups[original_color][course_id]:
-                color_course_groups[original_color][course_id].remove(group_id)
-                
-                # Update counts
-                group_students = course_group_students[course_id][group_id]
-                group_size = len(group_students)
-                color_student_counts[original_color] -= group_size
-                color_students[original_color] -= group_students
-                
-                # Clean up empty entries
-                if not color_course_groups[original_color][course_id]:
-                    del color_course_groups[original_color][course_id]
-                if not color_course_groups[original_color]:
-                    del color_course_groups[original_color]
-                    if original_color in color_student_counts:
-                        del color_student_counts[original_color]
-                    if original_color in color_students:
-                        del color_students[original_color]
+    # Remove from original slots
+    for group_id, original_slot in groups_to_move:
+        if course_id in timeslot_assignments[original_slot] and group_id in timeslot_assignments[original_slot][course_id]:
+            timeslot_assignments[original_slot][course_id].remove(group_id)
+            group_students = course_group_students[course_id][group_id]
+            timeslot_student_counts[original_slot] -= len(group_students)
+            timeslot_students[original_slot] -= group_students
+            
+            # Clean up empty entries
+            if not timeslot_assignments[original_slot][course_id]:
+                del timeslot_assignments[original_slot][course_id]
+            if not timeslot_assignments[original_slot]:
+                if original_slot in timeslot_assignments:
+                    del timeslot_assignments[original_slot]
+                if original_slot in timeslot_student_counts:
+                    del timeslot_student_counts[original_slot]
+                if original_slot in timeslot_students:
+                    del timeslot_students[original_slot]
     
-    # Add groups to target colors
+    # Add to target slots
     for i, (group_id, _) in enumerate(groups_to_move):
-        target_color = target_colors[i]
+        if i >= len(target_slots):
+            break
+            
+        target_slot = target_slots[i]
         
-        # Initialize target color if needed
-        if target_color not in color_course_groups:
-            color_course_groups[target_color] = defaultdict(list)
-            color_student_counts[target_color] = 0
-            color_students[target_color] = set()
+        # Initialize target slot if needed
+        if target_slot not in timeslot_assignments:
+            timeslot_assignments[target_slot] = defaultdict(list)
+        if target_slot not in timeslot_student_counts:
+            timeslot_student_counts[target_slot] = 0
+        if target_slot not in timeslot_students:
+            timeslot_students[target_slot] = set()
         
-        # Add group to target
-        color_course_groups[target_color][course_id].append(group_id)
-        
-        # Update counts
+        # Add group
+        timeslot_assignments[target_slot][course_id].append(group_id)
         group_students = course_group_students[course_id][group_id]
-        group_size = len(group_students)
-        color_student_counts[target_color] += group_size
-        color_students[target_color].update(group_students)
+        timeslot_student_counts[target_slot] += len(group_students)
+        timeslot_students[target_slot].update(group_students)
 
 # def find_compatible_courses_within_group(courses):
 #     if not courses:
