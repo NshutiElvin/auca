@@ -134,10 +134,10 @@ else:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.getenv("DATABASE_NAME", 'auca'),
-            'USER': os.getenv("DATABASE_USER", 'auca_s9l7'),
-            'PASSWORD': os.getenv("DATABASE_PASSWORD", 'ZJAZNQ9W6M0CxycsCwJ2Jjp33CHniYVa'),
-            'HOST': os.getenv("DATABASE_HOST", 'dpg-d2omup0gjchc73ev4cfg-a.oregon-postgres.render.com'),  # Full domain for local
+            'NAME': os.getenv("DATABASE_NAME", 'auca_erz8'),
+            'USER': os.getenv("DATABASE_USER", 'auca_erz8_user'),
+            'PASSWORD': os.getenv("DATABASE_PASSWORD", 'vd5cP5S47Wm2IrLNrrtdLqCd2P0dzUcO'),
+            'HOST': os.getenv("DATABASE_HOST", 'dpg-d3cs20adbo4c73efcg60-a.oregon-postgres.render.com'),  # Full domain for local
             'PORT': os.getenv("DATABASE_PORT", '5432'),
             
         }
