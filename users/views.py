@@ -101,7 +101,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             user = serializer.user  # Get the authenticated user
         except Exception as e:
             return Response(
-                {"error":f "Invalid credentials: {str(e)}"}, status=status.HTTP_401_UNAUTHORIZED
+                {"error":f"Invalid credentials: {e}"}, status=status.HTTP_401_UNAUTHORIZED
             )
 
         # Now proceed with the token generation
