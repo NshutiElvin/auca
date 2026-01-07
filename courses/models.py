@@ -16,15 +16,7 @@ class TimeStampedModel(models.Model):
 
  
 class Course(TimeStampedModel):
-    GROUP_CHOICES = [
-        ('A', 'Group A'),
-        ('B', 'Group B'),
-        ('C', 'Group C'),
-        ('D', 'Group D'),
-        ('E', 'Group E'),
-        ('F', 'Group F'),
-        
-    ]
+   
     code = models.CharField(max_length=10, unique=True)
     title = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
@@ -49,6 +41,12 @@ class Course(TimeStampedModel):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        ordering = ['code']
+        indexes = [
+            models.Index(fields=['semester', 'department']),
+            models.Index(fields=['code']),
+            models.Index(fields=['created_at']),
+        ]
         ordering = ['code']
 
     def __str__(self):

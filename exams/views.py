@@ -229,7 +229,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 Prefetch(
                     'groups',
                     queryset=UnscheduledExamGroup.objects.all(),
-                    to_attr='prefetched_groups'  # <-- Store prefetched groups here
+                    to_attr='prefetched_groups'   
                 )
             )
 
@@ -240,8 +240,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                     "data": [],
                 })
 
-            # ✅ FAST SERIALIZATION: Serialize exams in bulk, use prefetched groups
-            # We'll manually build the response structure without N+1 serializer calls
+          
             converted_data = []
             exam_serializer = UnscheduledExamSerializer()  # Just for field schema, not per-instance
 
@@ -604,7 +603,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
  
-
+   
     @action(
         detail=False,
         methods=["post"],
@@ -945,6 +944,7 @@ class ExamViewSet(viewsets.ModelViewSet):
 
         # try:
         with transaction.atomic():
+            print(request.data)
             existing_slot = request.data.get("slot")
             date = request.data.get("day")
             new_group_to_add = request.data.get("course_group")
