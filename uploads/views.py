@@ -29,7 +29,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
     def post(self, request, *args, **kwargs):
         with transaction.atomic():
             selectedSemester = request.data.get("selectedSemester")
-            Semester.objects.delete()
+            Semester.objects.all().delete()
             Semester.objects.create(
                 name=selectedSemester,
                 start_date=timezone.now(),
