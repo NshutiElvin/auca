@@ -15,6 +15,7 @@ from schedules.utils import (
     which_suitable_slot_to_schedule_course_group,
     
 )
+from semesters.models import Semester
 
 from django.db.models import Prefetch
 from django.db import connection, transaction
@@ -279,7 +280,6 @@ class ExamViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     @action(detail=False, methods=["post"], url_path="generate-exam-schedule")
     def generate_exam_schedule_view(self, request):
-        import datetime
         from django.db import transaction
         from collections import defaultdict
 
@@ -290,7 +290,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             course_ids = request.data.get("course_ids", None)
             slots = request.data.get("slots")
             client_config = request.data.get("configurations")
-            term = client_config.get("term")
+            term = Semester.objects.filter(is_active=True)
             location = client_config.get("location")
             academic_year = client_config.get("academicYear")
 
@@ -310,7 +310,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 start_date=start_date,
                 end_date=end_date,
                 location_id=int(location),
-                semester_id=int(term)
+                semester_id=int(term.id)
             )
 
             # Generate exam schedule

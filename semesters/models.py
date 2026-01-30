@@ -15,6 +15,7 @@ class Semester(TimeStampedModel):
     name = models.CharField(max_length=50)   
     start_date = models.DateField()
     end_date = models.DateField()
+    is_active = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['-start_date']

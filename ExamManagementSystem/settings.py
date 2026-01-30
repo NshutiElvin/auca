@@ -70,7 +70,8 @@ INSTALLED_APPS = [
     'notifications',
     'channels',
     'uploads',
-    'import_export'
+    'import_export',
+    'claims',
 ]
 
 REST_FRAMEWORK = {
