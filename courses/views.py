@@ -1,5 +1,7 @@
 from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
+
+from semesters.models import Semester
 from .models import  Course
 from .serializers import (
     CourseSerializer,
@@ -82,7 +84,7 @@ class BaseViewSet(viewsets.ModelViewSet):
     def timetable_tables(self, request, *args, **kwargs):
         try:
             client_conf= request.data.get("configurations")
-            semester= client_conf.get("term")
+            semester= Semester.objects.get(is_active=True).id
             location=client_conf.get("location")
             print(semester, location)
             courses= Course.objects.filter(semester__id=int(semester), department__location_id=int(location))
