@@ -29,13 +29,19 @@ class ImportEnrollmentsData(generics.GenericAPIView):
     def post(self, request, *args, **kwargs):
         with transaction.atomic():
             selectedSemester = request.data.get("selectedSemester")
-            Semester.objects.delete()
-            Semester.objects.create(
-                name=selectedSemester,
-                start_date=timezone.now(),
-                end_date=timezone.now(),
-                is_active=True,
-            )
+# create semester if not exists or update is_active to true
+            if selectedSemester:
+                if not Semester.objects.filter(name=selectedSemester).exists():
+                    Semester.objects.create(
+                        name=selectedSemester,
+                        start_date=timezone.now(),
+                        end_date=timezone.now(),
+                        is_active=True,
+                    )
+                else:
+                    Semester.objects.filter(name=selectedSemester).update(is_active=True)
+
+
             file = request.FILES["myFile"]
             df = pd.read_excel(file)
 

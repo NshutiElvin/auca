@@ -2,7 +2,7 @@ from collections import defaultdict
 from datetime import timedelta
 from django.db.models import Min, Max, Prefetch
 from collections import defaultdict 
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, date
 from itertools import combinations
 import logging
 from pprint import pprint
@@ -1900,17 +1900,51 @@ def allocate_shared_rooms(location_id):
     return unaccommodated_students
 
 
-
-def generate_exam_schedule(slots=None, course_ids=None, master_timetable: MasterTimetable = None, location=None):
+def generate_exam_schedule(slots=None, course_ids=None, master_timetable: MasterTimetable = None, location=None, constraints=None):
     """
-    Refactored exam schedule generator that respects:
-    - Max 2 exams per student per day.
-    - Max 1 exam per student per slot.
-    - Friday (Morning/Afternoon only) and Saturday (No exams).
-    - Room capacity with group splitting support in allocate_shared_rooms.
-    - Large group prioritization.
+    Refactored exam schedule generator that respects constraints provided in the constraints dictionary.
     """
     try:
+        # Default constraints if not provided (fallback to reasonable defaults)
+        if not constraints:
+            constraints = {}
+
+        # Extract constraints
+        time_constraints = constraints.get("time_constraints", {})
+        student_constraints = constraints.get("student_constraints", {})
+        room_constraints = constraints.get("room_constraints", {})
+        group_preferences = constraints.get("group_preferences", {})
+        course_constraints = constraints.get("course_constraints", {})
+        
+        # Time slot definitions
+        defined_time_slots = time_constraints.get("time_slots", [])
+        if not defined_time_slots:
+            # Fallback to hardcoded slots if not provided
+            defined_time_slots = [
+                { "name": "Morning", "start_time": "08:00", "end_time": "11:00", "priority": 1 },
+                { "name": "Afternoon", "start_time": "13:00", "end_time": "16:00", "priority": 2 },
+                { "name": "Evening", "start_time": "17:00", "end_time": "20:00", "priority": 3 }
+            ]
+        # Sort by priority
+        defined_time_slots.sort(key=lambda x: x.get("priority", 99))
+        
+        # Day restrictions
+        day_restrictions = time_constraints.get("day_restrictions", {})
+        no_exam_days = day_restrictions.get("no_exam_days", ["Saturday"])
+        special_rules = day_restrictions.get("special_rules", {})
+        holidays = day_restrictions.get("holidays", [])
+        
+        # Parse holidays
+        holiday_dates = set()
+        for h in holidays:
+            if isinstance(h, str):
+                try:
+                    holiday_dates.add(datetime.strptime(h, "%Y-%m-%d").date())
+                except ValueError:
+                    pass
+            elif isinstance(h, (datetime, date)):
+                holiday_dates.add(h if isinstance(h, date) else h.date())
+
         if not course_ids:
             # Get all courses with enrollments if none provided
             course_ids = list(Course.objects.annotate(
@@ -1925,19 +1959,27 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
             return [], "No compatible course groups found", [], {}
 
         # 2. Time Slot Preparation
-        slots_by_date = get_slots_by_date(slots)
-        dates = sorted(date for date in slots_by_date if date.strftime("%A") != "Saturday")
+        slots_by_date = get_slots_by_date(slots) if slots else {}
+        dates = sorted([
+            d for d in slots_by_date 
+            if d.strftime("%A") not in no_exam_days and d not in holiday_dates
+        ])
         
         if not dates:
             unscheduled_reasons = {}
             for group in compatible_groups:
                 for course in group["courses"]:
                     for group_id in course["groups"]:
-                        unscheduled_reasons[group_id] = "No available dates (excluding Saturdays)"
+                        unscheduled_reasons[group_id] = "No available dates based on constraints"
             return [], [], compatible_groups, unscheduled_reasons
 
         # 3. Data Fetching & Pre-processing
         total_seats = Room.objects.filter(location_id=location).aggregate(total=Sum("capacity"))["total"] or 0
+        
+        # Apply capacity buffer
+        buffer_percent = room_constraints.get("capacity_buffer_percent", 0)
+        effective_total_seats = int(total_seats * (1 - buffer_percent / 100.0))
+        
         enrollments_by_group = prefetch_enrollments(compatible_groups)
         
         all_group_ids = set()
@@ -1950,12 +1992,15 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
         # 4. State Tracking for Constraints
         # student_daily_exams[student_id][date] = set of slots
         student_daily_exams = defaultdict(lambda: defaultdict(set))
+        # student_exam_dates[student_id] = set of dates (for gap checking)
+        student_exam_dates = defaultdict(set)
         
         # Load existing exams into tracker to avoid overlaps with manually scheduled exams
         existing_exams = Exam.objects.filter(date__in=dates).prefetch_related('studentexam_set')
         for ex in existing_exams:
             for se in ex.studentexam_set.all():
                 student_daily_exams[se.student_id][ex.date].add(ex.slot_name)
+                student_exam_dates[se.student_id].add(ex.date)
 
         # 5. Scheduling Algorithm
         exams_created = []
@@ -1969,31 +2014,61 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
             scount = ex.studentexam_set.count()
             slot_seats_usage[ex.date][ex.slot_name] += scount
 
+        # Student constraints
+        max_exams_per_day = student_constraints.get("max_exams_per_day", 2)
+        max_exams_per_slot = student_constraints.get("max_exams_per_slot", 1)
+        min_gap_days = student_constraints.get("min_gap_between_exams_days", 0)
+
         with transaction.atomic():
             # Create a copy to work with
             remaining_groups = copy.deepcopy(compatible_groups)
-            # Sort by student count (largest first) to prioritize filling larger rooms
-            remaining_groups.sort(key=lambda g: -g["student_count"])
+            
+            # Sort by student count (largest first) if prioritized
+            if course_constraints.get("prioritize_large_courses", True):
+                remaining_groups.sort(key=lambda g: -g["student_count"])
 
             for course_group in remaining_groups:
                 scheduled = False
                 
+                # Determine preferred slots based on group preferences
+                preferred_slots_order = []
+                first_group_id = None
+                if course_group["courses"] and course_group["courses"][0]["groups"]:
+                    first_group_id = course_group["courses"][0]["groups"][0]
+                
+                if first_group_id and first_group_id in groups_dict:
+                    group_name = groups_dict[first_group_id].group_name
+                    # Check if this group name is in preferences
+                    if group_name in group_preferences:
+                        preferred_slots_order = group_preferences[group_name].get("slots_order", [])
+                
+                # Fallback to default priority if no preference found
+                if not preferred_slots_order:
+                    preferred_slots_order = [s["name"] for s in defined_time_slots]
+
                 # Try each date
                 for current_date in dates:
                     if scheduled: break
                     
                     weekday = current_date.strftime("%A")
-                    available_slots = ["Morning", "Afternoon", "Evening"]
-                    if weekday == "Friday":
-                        available_slots = ["Morning", "Afternoon"] # No Evening on Friday
+                    
+                    # Determine allowed slots for this day
+                    day_allowed_slots = preferred_slots_order
+                    if weekday in special_rules:
+                        rule = special_rules[weekday]
+                        if "allowed_slots" in rule:
+                            # Filter preferred slots to only include allowed ones
+                            day_allowed_slots = [s for s in preferred_slots_order if s in rule["allowed_slots"]]
+                        elif rule.get("no_evening", False):
+                            day_allowed_slots = [s for s in preferred_slots_order if s != "Evening"]
                     
                     # Try each slot
-                    for slot_name in available_slots:
+                    for slot_name in day_allowed_slots:
                         if scheduled: break
                         
                         # A. Check Room Capacity
                         total_needed = course_group["student_count"]
-                        if slot_seats_usage[current_date][slot_name] + total_needed > total_seats:
+                        if slot_seats_usage[current_date][slot_name] + total_needed > effective_total_seats:
                             continue # Too many students for this slot
                         
                         # B. Check Student Constraints (Max 2/day, Max 1/slot)
@@ -2005,12 +2080,30 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                         
                         can_fit_students = True
                         for sid in group_student_ids:
+                            # Max exams per day
                             student_day_slots = student_daily_exams[sid][current_date]
-                            if len(student_day_slots) >= 2: # Max 2 per day
+                            if len(student_day_slots) >= max_exams_per_day:
                                 can_fit_students = False
                                 break
-                            if slot_name in student_day_slots: # Max 1 per slot
-                                can_fit_students = False
+                            
+                            # Max exams per slot
+                            if slot_name in student_day_slots:
+                                if max_exams_per_slot <= 1:
+                                    can_fit_students = False
+                                    break
+                            
+                            # Min gap between exams (days)
+                            if min_gap_days > 0:
+                                # Check if student has exams within min_gap_days
+                                # Optimization: check only if student has exams nearby
+                                for exam_date in student_exam_dates[sid]:
+                                    if exam_date == current_date: continue
+                                    delta = abs((current_date - exam_date).days)
+                                    if delta <= min_gap_days:
+                                        can_fit_students = False
+                                        break
+                            
+                            if not can_fit_students:
                                 break
                         
                         if not can_fit_students:
@@ -2024,18 +2117,17 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                                 g_obj = groups_dict[gid]
                                 s_ids = enrollments_by_group.get(gid, set())
                                 
-                                # Find slot times from input or defaults
-                                day_slots_info = {s["name"]: s for s in slots_by_date.get(current_date, [])}
-                                if slot_name in day_slots_info:
-                                    s_info = day_slots_info[slot_name]
-                                    st_time = time(*map(int, s_info["start"].split(":")))
-                                    en_time = time(*map(int, s_info["end"].split(":")))
+                                # Find slot times
+                                slot_def = next((s for s in defined_time_slots if s["name"] == slot_name), None)
+                                if slot_def:
+                                    st_time = time(*map(int, slot_def["start_time"].split(":")))
+                                    en_time = time(*map(int, slot_def["end_time"].split(":")))
                                 else:
                                     # Fallback to standard slots
                                     fallback_map = {"Morning": (time(8,0), time(11,0)), 
                                                    "Afternoon": (time(13,0), time(16,0)), 
                                                    "Evening": (time(17,0), time(20,0))}
-                                    st_time, en_time = fallback_map[slot_name]
+                                    st_time, en_time = fallback_map.get(slot_name, (time(8,0), time(11,0)))
 
                                 exam = Exam.objects.create(
                                     date=current_date,
@@ -2055,6 +2147,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                                 # Update Trackers
                                 for sid in s_ids:
                                     student_daily_exams[sid][current_date].add(slot_name)
+                                    student_exam_dates[sid].add(current_date)
                                 slot_seats_usage[current_date][slot_name] += len(s_ids)
                         
                         scheduled = True
@@ -2064,7 +2157,7 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                     unscheduled_groups.append(course_group)
                     for course_dict in course_group["courses"]:
                         for gid in course_dict["groups"]:
-                            unscheduled_reasons[gid] = "No suitable slot found (considering capacity and student limits)"
+                            unscheduled_reasons[gid] = "No suitable slot found (constraints)"
 
             # 6. Room Allocation
             try:

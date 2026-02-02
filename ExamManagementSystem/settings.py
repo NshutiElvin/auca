@@ -124,6 +124,7 @@ WSGI_APPLICATION = "ExamManagementSystem.wsgi.application"
 
 # Database Configuration
 DATABASE_URL = os.getenv('DATABASE_URL')
+CONFIG_JSON_PATH = os.path.join(BASE_DIR, 'config', 'config.json')
 
 if DATABASE_URL:
     # For Render - use internal connection

@@ -284,13 +284,17 @@ class ExamViewSet(viewsets.ModelViewSet):
         from collections import defaultdict
 
         with transaction.atomic():
+            print(request.data)
             # Extract and parse request data
             start_date_str = request.data.get("start_date")
             end_date_str = request.data.get("end_date")
             course_ids = request.data.get("course_ids", None)
             slots = request.data.get("slots")
             client_config = request.data.get("configurations")
-            term = Semester.objects.filter(is_active=True)
+            constraints= client_config.get("constraints", {})   
+            term = Semester.objects.filter(is_active=True).first()
+            if not term:
+                return Response({"success": False, "message": "No active semester found"}, status=status.HTTP_400_BAD_REQUEST)
             location = client_config.get("location")
             academic_year = client_config.get("academicYear")
 
@@ -311,6 +315,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 end_date=end_date,
                 location_id=int(location),
                 semester_id=int(term.id)
+
             )
 
             # Generate exam schedule
@@ -319,6 +324,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 course_ids=course_ids, 
                 master_timetable=master_timetable, 
                 location=int(location), 
+                constraints=constraints
                 
             )
 

@@ -448,6 +448,15 @@ class RoomViewSet(viewsets.ModelViewSet):
         recent_timetable = MasterTimetable.objects.order_by("-created_at").first()
         if location:
             recent_timetable=MasterTimetable.objects.filter(location_id=location).order_by("-created_at").first()
+
+        if not recent_timetable:
+            return Response(
+                {
+                    "success": True,
+                    "data": [],
+                    "message": "No timetable found",
+                }
+            )
         student_exams = (
             StudentExam.objects.filter(room__isnull=False, exam__group__course__department__location_id=recent_timetable.location.id)
             .values(
