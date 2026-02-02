@@ -31,6 +31,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
             selectedSemester = request.data.get("selectedSemester")
 # create semester if not exists or update is_active to true
             if selectedSemester:
+                Semester.objects.exclude(name=selectedSemester).update(is_active=False)
                 if not Semester.objects.filter(name=selectedSemester).exists():
                     Semester.objects.create(
                         name=selectedSemester,
