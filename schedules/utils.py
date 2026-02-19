@@ -1810,18 +1810,17 @@ def allocate_shared_rooms(location_id):
     Optimizes room utilization by allowing multiple exams to share a room.
     Splits exams across multiple rooms when they exceed a single room's capacity.
     """
-    # 1. Fetch all students needing room allocation for the given location
-    # We filter by room__isnull=True and only for exams at this location
-    student_exams = (
+    # 1. Fetch distinct slots that need allocation to process iteratively (Memory Optimization)
+    slots_to_allocate = (
         StudentExam.objects.filter(
             room__isnull=True,
             exam__group__course__department__location_id=location_id
         )
-        .select_related("exam", "student")
-        .order_by("exam__date", "exam__start_time")
+        .values_list("exam__date", "exam__start_time", "exam__end_time")
+        .distinct()
     )
     
-    if not student_exams.exists():
+    if not slots_to_allocate:
         logger.info(f"No students needing room allocation for location {location_id}")
         return []
     
@@ -1829,33 +1828,53 @@ def allocate_shared_rooms(location_id):
     rooms = list(Room.objects.filter(location_id=location_id).order_by("-capacity"))
     if not rooms:
         logger.error(f"No rooms found for location {location_id}")
-        return [se.student for se in student_exams]
+        # Return all students as unaccommodated
+        return list(StudentExam.objects.filter(
+            room__isnull=True,
+            exam__group__course__department__location_id=location_id
+        ).values_list('student', flat=True))
 
     unaccommodated_students = []
     
-    # 3. Group student exams by their time slot (date, start, end)
-    slot_exams = defaultdict(lambda: defaultdict(list))
-    for se in student_exams:
-        slot_key = (se.exam.date, se.exam.start_time, se.exam.end_time)
-        slot_exams[slot_key][se.exam].append(se)
+    # 3. Process each slot individually to save memory
+    for date, start, end in slots_to_allocate:
+        # Fetch students for this specific slot
+        student_exams = (
+            StudentExam.objects.filter(
+                room__isnull=True,
+                exam__group__course__department__location_id=location_id,
+                exam__date=date,
+                exam__start_time=start,
+                exam__end_time=end
+            )
+            .select_related("exam", "student")
+        )
         
-    with transaction.atomic():
-        for slot_key, exams_in_slot in slot_exams.items():
-            date, start, end = slot_key
+        # Group by exam
+        exams_in_slot = defaultdict(list)
+        for se in student_exams:
+            exams_in_slot[se.exam].append(se)
             
+        with transaction.atomic():
             # List of (Exam, [StudentExam])
             exam_assignments = list(exams_in_slot.items())
             # Sort exams by size to help with packing
             exam_assignments.sort(key=lambda x: len(x[1]), reverse=True)
             
-            total_needed = sum(len(students) for _, students in exam_assignments)
-            total_available = sum(r.capacity for r in rooms)
-            
             # Track capacity for each room in this slot
             room_capacities = {r.id: r.capacity for r in rooms}
-            room_to_exams = defaultdict(set) # Track which exams are in each room
             
-            # Proportional distribution logic
+            # Check existing occupancy for this slot (if any)
+            for room in rooms:
+                occupied = StudentExam.objects.filter(
+                    room=room,
+                    exam__date=date,
+                    exam__start_time=start,
+                    exam__end_time=end
+                ).count()
+                room_capacities[room.id] -= occupied
+
+            # Distribute students
             for exam, students in exam_assignments:
                 remaining_students = list(students)
                 
@@ -1866,10 +1885,6 @@ def allocate_shared_rooms(location_id):
                     capacity = room_capacities[room.id]
                     if capacity <= 0: continue
                     
-                    # Calculate share: if multiple exams, try to mix
-                    # Here we just take what fits, but we prioritize rooms that already have this exam?
-                    # No, we just fill rooms.
-                    
                     take = min(len(remaining_students), capacity)
                     assigned_students = remaining_students[:take]
                     
@@ -1879,17 +1894,15 @@ def allocate_shared_rooms(location_id):
                     ).update(room=room)
                     
                     room_capacities[room.id] -= take
-                    room_to_exams[room.id].add(exam)
                     remaining_students = remaining_students[take:]
                 
                 if remaining_students:
                     unaccommodated_students.extend([se.student for se in remaining_students])
             
-            # 4. Optional: Update Exam.room if the exam is entirely in one room
-            # This is helpful for UI to show a "primary" room
+            # Update Exam.room if the exam is entirely in one room
             for exam, students in exams_in_slot.items():
                 room_ids = StudentExam.objects.filter(exam=exam).values_list('room_id', flat=True).distinct()
-                if room_ids.count() == 1:
+                if room_ids.count() == 1 and room_ids[0] is not None:
                     exam.room_id = room_ids[0]
                     exam.save(update_fields=['room'])
                 else:
@@ -2054,6 +2067,21 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                     
                     # Determine allowed slots for this day
                     day_allowed_slots = preferred_slots_order
+                    
+                    # Filter by slots configuration for this date if provided
+                    if slots and current_date in slots_by_date:
+                        date_slots_data = slots_by_date[current_date]
+                        configured_slot_names = set()
+                        for s in date_slots_data:
+                            if isinstance(s, dict):
+                                name = s.get('name') or s.get('label')
+                                if name: configured_slot_names.add(name)
+                            elif isinstance(s, (list, tuple)) and len(s) >= 2:
+                                configured_slot_names.add(s[1])
+                        
+                        if configured_slot_names:
+                            day_allowed_slots = [s for s in day_allowed_slots if s in configured_slot_names]
+
                     if weekday in special_rules:
                         rule = special_rules[weekday]
                         if "allowed_slots" in rule:
@@ -2118,12 +2146,37 @@ def generate_exam_schedule(slots=None, course_ids=None, master_timetable: Master
                                 s_ids = enrollments_by_group.get(gid, set())
                                 
                                 # Find slot times
-                                slot_def = next((s for s in defined_time_slots if s["name"] == slot_name), None)
-                                if slot_def:
-                                    st_time = time(*map(int, slot_def["start_time"].split(":")))
-                                    en_time = time(*map(int, slot_def["end_time"].split(":")))
-                                else:
-                                    # Fallback to standard slots
+                                st_time = None
+                                en_time = None
+                                
+                                # Try to get times from specific date configuration first
+                                if slots and current_date in slots_by_date:
+                                    for s in slots_by_date[current_date]:
+                                        s_name = None
+                                        s_start = None
+                                        s_end = None
+                                        if isinstance(s, dict):
+                                            s_name = s.get('name') or s.get('label')
+                                            s_start = s.get('start') or s.get('start_time')
+                                            s_end = s.get('end') or s.get('end_time')
+                                        elif isinstance(s, (list, tuple)) and len(s) >= 4:
+                                            s_name = s[1]
+                                            s_start = s[2]
+                                            s_end = s[3]
+                                        
+                                        if s_name == slot_name and s_start and s_end:
+                                            st_time = time(*map(int, s_start.split(":"))) if isinstance(s_start, str) else s_start
+                                            en_time = time(*map(int, s_end.split(":"))) if isinstance(s_end, str) else s_end
+                                            break
+                                
+                                # Fallback to defined constraints or defaults
+                                if not st_time or not en_time:
+                                    slot_def = next((s for s in defined_time_slots if s["name"] == slot_name), None)
+                                    if slot_def:
+                                        st_time = time(*map(int, slot_def["start_time"].split(":")))
+                                        en_time = time(*map(int, slot_def["end_time"].split(":")))
+                                
+                                if not st_time or not en_time:
                                     fallback_map = {"Morning": (time(8,0), time(11,0)), 
                                                    "Afternoon": (time(13,0), time(16,0)), 
                                                    "Evening": (time(17,0), time(20,0))}
