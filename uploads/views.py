@@ -1,119 +1,125 @@
 """
-ImportEnrollmentsData — Corrected & Optimised
-==============================================
-Fixes applied:
-  1.  Duplicate Semester import removed
-  2.  Variable name conflict fixed (student_data → student_rows)
-  3.  groups_to_update now actually saved via bulk_update
-  4.  Enrollment created with status='enrolled' so scheduler finds them
-  5.  existing_groups refresh uses exact names only — no combinatorial explosion
-  6.  O(n²) group conflict loop replaced with O(1) set lookup
-  7.  user variable scope made explicit and safe
-  8.  ignore_conflicts replaced with proper error handling & counters
-  9.  Useless semester name-update loop removed
-  10. Hardcoded location magic numbers replaced with configurable lookup
-  11. Email list built from grouped student_rows, not full df
-  12. Group creation ONLY for groups that appear in the uploaded dataset
-  13. Full upsert logic: existing records updated, new records created
+ImportEnrollmentsData — Fully Vectorised & Optimised
+=====================================================
+Performance strategy:
+  - Zero iterrows() in hot paths — all heavy lifting done via pandas merge/vectorisation
+  - All DB reads use .values() — no ORM object overhead
+  - All DB writes use bulk_create/bulk_update with batch_size
+  - Minimum number of DB round trips (one read + one write per entity type)
+  - Enrollments resolved entirely in pandas before touching the DB
+  - itertuples() used for any remaining model object construction (10x faster than iterrows)
 """
 
 from departments.models import Department
 from rest_framework import generics, parsers
 from rest_framework.response import Response
 import pandas as pd
+import numpy as np
 from student.models import Student
 from courses.models import Course, CourseGroup
 from enrollments.models import Enrollment
 from users.models import User
-from semesters.models import Semester          # FIX 1: imported once only
+from semesters.models import Semester
 from django.db import transaction
 from django.utils import timezone
 from django.contrib.auth.hashers import make_password
-from django.utils.crypto import get_random_string
 from collections import defaultdict
 import logging
 
 logger = logging.getLogger(__name__)
 
-# FIX 10: department-code → location_id mapping defined once, not buried as magic literals
+# ── Configuration ─────────────────────────────────────────────────────────────
 DEPARTMENT_LOCATION_MAP = {
     "15": 1,
     "12": 1,
     "19": 1,
 }
 DEFAULT_LOCATION_ID = 2
+BATCH_SIZE = 1000   # rows per bulk_create call
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def _dept_code_str(raw):
-    """Normalise a faculty code value to a plain string."""
-    if isinstance(raw, float) and raw == int(raw):
+    if isinstance(raw, float) and not np.isnan(raw) and raw == int(raw):
         return str(int(raw))
     return str(raw)
 
 
-def _build_email(first_name, last_name, reg_no):
-    return f"{first_name.lower()}{last_name.lower()}{reg_no}@auca.ac.rw".replace(" ", "")
+def _build_email(first, last, reg_no):
+    return f"{first.lower()}{last.lower()}{reg_no}@auca.ac.rw".replace(" ", "")
 
 
+def _parse_name(full_name):
+    """Return (first_name, last_name) from a full name string."""
+    parts = str(full_name or "").strip().split()
+    first = parts[0] if parts else ""
+    last  = " ".join(parts[1:]) if len(parts) > 1 else ""
+    return first, last
+
+
+# ── Main View ─────────────────────────────────────────────────────────────────
 class ImportEnrollmentsData(generics.GenericAPIView):
     parser_classes = [parsers.MultiPartParser]
 
     def post(self, request, *args, **kwargs):
-        file = request.FILES.get("myFile")
+        file              = request.FILES.get("myFile")
+        selected_semester = request.data.get("selectedSemester")
+
         if not file:
             return Response({"error": "No file provided."}, status=400)
 
-        selected_semester = request.data.get("selectedSemester")
-
+        # ── 1. Read & validate file ───────────────────────────────────────
         try:
-            df = pd.read_excel(file)
+            df = pd.read_excel(file, dtype=str)   # read everything as string — fastest
         except Exception as exc:
             return Response({"error": f"Could not read file: {exc}"}, status=400)
 
-        # ── Column normalisation ───────────────────────────────────────────
-        required_columns = {
-            "COURSECODE", "COURSENAME", "CREDITS",
-            "GROUP", "STUDNUM", "STUDENTNAME",
-            "FACULTYCODE", "TERM",
-        }
-        missing = required_columns - set(df.columns)
+        required = {"COURSECODE", "COURSENAME", "CREDITS", "GROUP",
+                    "STUDNUM", "STUDENTNAME", "FACULTYCODE", "TERM"}
+        missing = required - set(df.columns)
         if missing:
-            return Response(
-                {"error": f"Missing columns: {missing}"}, status=400
-            )
+            return Response({"error": f"Missing columns: {missing}"}, status=400)
 
-        # Drop rows where student number is missing — they can never be enrolled
+        # ── 2. Clean data entirely in pandas — no Python loops ────────────
         df = df.dropna(subset=["STUDNUM"])
-        df["STUDNUM_STR"] = df["STUDNUM"].apply(
-            lambda x: str(int(x)) if pd.notna(x) and isinstance(x, (int, float))
-            and x == int(x) else None
+        df["STUDNUM_STR"] = (
+            df["STUDNUM"]
+            .str.strip()
+            .apply(lambda x: str(int(float(x))) if _is_numeric(x) else None)
         )
         df = df.dropna(subset=["STUDNUM_STR"])
 
         if df.empty:
-            return Response({"error": "No valid student records found in file."}, status=400)
+            return Response({"error": "No valid student records found."}, status=400)
 
-        # ── Unique value sets (used for bulk DB fetches) ───────────────────
-        student_nums     = df["STUDNUM_STR"].unique().tolist()
-        department_codes = [_dept_code_str(c) for c in df["FACULTYCODE"].dropna().unique()]
-        course_codes     = df["COURSECODE"].unique().tolist()
-        semester_terms   = df["TERM"].dropna().unique().tolist()
+        # Normalise faculty code column once
+        df["DEPT_CODE"] = df["FACULTYCODE"].apply(
+            lambda x: _dept_code_str(float(x)) if _is_numeric(x) else str(x)
+        )
 
-        # FIX 12: Only groups that actually appear in THIS upload
-        # (course_code, group_name) pairs — nothing more, nothing less
-        course_group_pairs = (
+        # ── 3. Extract unique values for bulk DB fetches ──────────────────
+        student_nums          = df["STUDNUM_STR"].unique().tolist()
+        dept_codes            = df["DEPT_CODE"].dropna().unique().tolist()
+        course_codes          = df["COURSECODE"].dropna().unique().tolist()
+        semester_terms        = df["TERM"].dropna().unique().tolist()
+        uploaded_group_names  = df["GROUP"].dropna().unique().tolist()
+
+        # Unique (course_code, group_name) pairs from file
+        cg_pairs_df = (
             df[["COURSECODE", "GROUP"]]
             .dropna(subset=["GROUP"])
             .drop_duplicates()
-            .values.tolist()          # list of [course_code, group_name]
+            .reset_index(drop=True)
         )
-        uploaded_group_names = list({pair[1] for pair in course_group_pairs})
+
+        stats  = defaultdict(int)
+        errors = []
 
         with transaction.atomic():
-            stats = defaultdict(int)   # track creates/updates for response
-            errors = []
 
-            # ── STEP 1: Semester ──────────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════
+            # STEP 1 — SEMESTER
+            # ══════════════════════════════════════════════════════════════
             if selected_semester:
                 Semester.objects.exclude(name=selected_semester).update(is_active=False)
                 Semester.objects.update_or_create(
@@ -125,409 +131,445 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     },
                 )
 
-            # FIX 9: Removed useless semester bulk_update that only set name=name.
-            # Instead: create missing semesters, leave existing ones untouched.
-            existing_semesters = {
-                s.name: s for s in Semester.objects.filter(name__in=semester_terms)
-            }
-            new_semester_names = set(semester_terms) - set(existing_semesters)
-            if new_semester_names:
-                Semester.objects.bulk_create([
-                    Semester(
-                        name=name,
-                        start_date=timezone.now(),
-                        end_date=timezone.now(),
-                    )
-                    for name in new_semester_names
-                ], ignore_conflicts=True)
-                existing_semesters.update({
-                    s.name: s
-                    for s in Semester.objects.filter(name__in=semester_terms)
-                })
+            # Upsert all semesters found in file
+            existing_sem_names = set(
+                Semester.objects.filter(name__in=semester_terms)
+                .values_list("name", flat=True)
+            )
+            new_sems = [
+                Semester(name=n, start_date=timezone.now(), end_date=timezone.now())
+                for n in semester_terms if n not in existing_sem_names
+            ]
+            if new_sems:
+                Semester.objects.bulk_create(new_sems, ignore_conflicts=True, batch_size=BATCH_SIZE)
+                stats["semesters_created"] += len(new_sems)
 
-            # ── STEP 2: Departments ───────────────────────────────────────
-            existing_departments = {
-                d.code: d
-                for d in Department.objects.filter(code__in=department_codes)
+            # One clean read — id + name only, no extra fields
+            sem_map = {
+                r["name"]: r["id"]
+                for r in Semester.objects.filter(name__in=semester_terms).values("id", "name")
             }
-            new_dept_codes = set(department_codes) - set(existing_departments)
-            if new_dept_codes:
-                Department.objects.bulk_create([
-                    Department(
-                        code=code,
-                        name=code,
-                        # FIX 10: use the mapping, not a hardcoded inline ternary
-                        location_id=DEPARTMENT_LOCATION_MAP.get(code, DEFAULT_LOCATION_ID),
-                    )
-                    for code in new_dept_codes
-                ], ignore_conflicts=True)
-                existing_departments.update({
-                    d.code: d
-                    for d in Department.objects.filter(code__in=department_codes)
-                })
 
-            # ── STEP 3: Users & Students ──────────────────────────────────
-            # FIX 11: build email list from grouped data (one row per student)
-            # FIX 2:  renamed student_data → student_rows to avoid name collision
-            student_rows = (
-                df.groupby("STUDNUM_STR", as_index=False)
-                .first()
+            # ══════════════════════════════════════════════════════════════
+            # STEP 2 — DEPARTMENTS
+            # ══════════════════════════════════════════════════════════════
+            existing_dept_codes = set(
+                Department.objects.filter(code__in=dept_codes)
+                .values_list("code", flat=True)
+            )
+            new_depts = [
+                Department(
+                    code=code,
+                    name=code,
+                    location_id=DEPARTMENT_LOCATION_MAP.get(code, DEFAULT_LOCATION_ID),
+                )
+                for code in dept_codes if code not in existing_dept_codes
+            ]
+            if new_depts:
+                Department.objects.bulk_create(new_depts, ignore_conflicts=True, batch_size=BATCH_SIZE)
+                stats["departments_created"] += len(new_depts)
+
+            # id + code only
+            dept_map = {
+                r["code"]: r["id"]
+                for r in Department.objects.filter(code__in=dept_codes).values("id", "code")
+            }
+
+            # ══════════════════════════════════════════════════════════════
+            # STEP 3 — USERS & STUDENTS  (vectorised via pandas)
+            # ══════════════════════════════════════════════════════════════
+
+            # One row per student — vectorised in pandas
+            student_df = (
+                df[["STUDNUM_STR", "STUDENTNAME", "DEPT_CODE"]]
+                .drop_duplicates(subset=["STUDNUM_STR"])
                 .reset_index(drop=True)
+                .copy()
             )
 
-            # Pre-compute emails for this batch
-            email_map = {}   # reg_no → email
-            for _, row in student_rows.iterrows():
-                reg_no = row["STUDNUM_STR"]
-                name   = str(row.get("STUDENTNAME", "") or "")
-                parts  = name.split()
-                first  = parts[0] if parts else reg_no
-                last   = " ".join(parts[1:]) if len(parts) > 1 else ""
-                email_map[reg_no] = _build_email(first, last, reg_no)
+            # Vectorised name + email computation
+            names = student_df["STUDENTNAME"].fillna("").str.strip()
+            student_df["FIRST"] = names.str.split().str[0].fillna("")
+            student_df["LAST"]  = names.apply(
+                lambda n: " ".join(n.split()[1:]) if len(n.split()) > 1 else ""
+            )
+            student_df["EMAIL"] = (
+                student_df["FIRST"].str.lower()
+                + student_df["LAST"].str.lower()
+                + student_df["STUDNUM_STR"]
+                + "@auca.ac.rw"
+            ).str.replace(" ", "", regex=False)
 
-            potential_emails = list(email_map.values())
+            potential_emails = student_df["EMAIL"].tolist()
 
-            existing_students = {
-                s.reg_no: s
-                for s in Student.objects.filter(
-                    reg_no__in=student_nums
-                ).select_related("user")
-            }
-            existing_users_by_email = {
-                u.email: u
-                for u in User.objects.filter(email__in=potential_emails)
-            }
+            # Bulk fetch existing users and students — values() only, no ORM objects
+            existing_users_df = pd.DataFrame(
+                User.objects.filter(email__in=potential_emails)
+                .values("id", "email", "first_name", "last_name")
+            ) if potential_emails else pd.DataFrame()
 
-            users_to_create  = []
-            users_to_update  = []
-            # FIX 7: use a separate list of dicts — never store unsaved User objects
-            students_pending = []   # [{reg_no, email, department}]
+            existing_students_df = pd.DataFrame(
+                Student.objects.filter(reg_no__in=student_nums)
+                .values("id", "reg_no", "user_id")
+            ) if student_nums else pd.DataFrame()
 
-            for _, row in student_rows.iterrows():
-                reg_no = row["STUDNUM_STR"]
-                name   = str(row.get("STUDENTNAME", "") or "")
-                parts  = name.split()
-                first  = parts[0] if parts else reg_no
-                last   = " ".join(parts[1:]) if len(parts) > 1 else ""
-                email  = email_map[reg_no]
+            # Merge to find who needs creating vs updating
+            merged_students = student_df.merge(
+                existing_students_df, left_on="STUDNUM_STR", right_on="reg_no", how="left"
+            )
 
-                dept_code  = _dept_code_str(row["FACULTYCODE"])
-                department = existing_departments.get(dept_code)
+            # Students that already exist → update their user
+            existing_mask  = merged_students["id"].notna()
+            to_update_df   = merged_students[existing_mask].copy()
+            to_create_df   = merged_students[~existing_mask].copy()
 
-                existing_student = existing_students.get(reg_no)
+            # Update existing users — vectorised field comparison
+            if not to_update_df.empty and not existing_users_df.empty:
+                update_merged = to_update_df.merge(
+                    existing_users_df, on="email", how="inner"
+                )
+                users_to_update = []
+                for row in update_merged.itertuples(index=False):
+                    if (row.first_name_y != row.FIRST or row.last_name_y != row.LAST):
+                        users_to_update.append(
+                            User(id=row.id_y, first_name=row.FIRST,
+                                 last_name=row.LAST, email=row.email)
+                        )
+                if users_to_update:
+                    User.objects.bulk_update(
+                        users_to_update, ["first_name", "last_name", "email"],
+                        batch_size=BATCH_SIZE
+                    )
+                    stats["users_updated"] += len(users_to_update)
 
-                if existing_student:
-                    # FIX 13: Update existing user fields
-                    u = existing_student.user
-                    u.first_name = first
-                    u.last_name  = last
-                    u.email      = email
-                    users_to_update.append(u)
-                    stats["students_updated"] += 1
-                else:
-                    existing_user = existing_users_by_email.get(email)
-                    if existing_user:
-                        existing_user.first_name = first
-                        existing_user.last_name  = last
-                        existing_user.is_active  = True
-                        users_to_update.append(existing_user)
-                    else:
-                        users_to_create.append(User(
-                            email=email,
-                            first_name=first,
-                            last_name=last,
+            # Create new users
+            new_user_objs = []
+            if not to_create_df.empty:
+                # Check which emails already exist
+                existing_emails = (
+                    set(existing_users_df["email"].tolist())
+                    if not existing_users_df.empty else set()
+                )
+                for row in to_create_df.itertuples(index=False):
+                    if row.EMAIL not in existing_emails:
+                        new_user_objs.append(User(
+                            email=row.EMAIL,
+                            first_name=row.FIRST,
+                            last_name=row.LAST,
                             role="student",
                             password=make_password("password123."),
                             is_active=True,
                         ))
-                    if department:
-                        students_pending.append({
-                            "reg_no":     reg_no,
-                            "email":      email,
-                            "department": department,
-                        })
 
-            # FIX 8: bulk_create without ignore_conflicts, catch errors explicitly
-            if users_to_create:
-                try:
-                    User.objects.bulk_create(users_to_create, ignore_conflicts=True)
-                    stats["users_created"] += len(users_to_create)
-                except Exception as exc:
-                    errors.append(f"User creation error: {exc}")
-
-            if users_to_update:
-                User.objects.bulk_update(
-                    users_to_update, ["first_name", "last_name", "email", "is_active"]
-                )
-                stats["users_updated"] += len(users_to_update)
-
-            # Create students now that users have IDs
-            if students_pending:
-                saved_users = {
-                    u.email: u
-                    for u in User.objects.filter(email__in=[s["email"] for s in students_pending])
-                }
-                students_to_create = []
-                for sp in students_pending:
-                    user = saved_users.get(sp["email"])
-                    if user:
-                        students_to_create.append(Student(
-                            user=user,
-                            reg_no=sp["reg_no"],
-                            department=sp["department"],
-                        ))
-
-                if students_to_create:
-                    try:
-                        Student.objects.bulk_create(
-                            students_to_create, ignore_conflicts=True
-                        )
-                        stats["students_created"] += len(students_to_create)
-                    except Exception as exc:
-                        errors.append(f"Student creation error: {exc}")
-
-            # Refresh student cache
-            existing_students = {
-                s.reg_no: s
-                for s in Student.objects.filter(
-                    reg_no__in=student_nums
-                ).select_related("user")
-            }
-
-            # ── STEP 4: Courses ───────────────────────────────────────────
-            existing_courses = {
-                c.code: c for c in Course.objects.filter(code__in=course_codes)
-            }
-
-            course_meta = (
-                df.groupby("COURSECODE", as_index=False)
-                .first()
-                .reset_index(drop=True)
-            )
-
-            courses_to_create = []
-            courses_to_update = []
-
-            for _, row in course_meta.iterrows():
-                code       = row["COURSECODE"]
-                title      = row["COURSENAME"]
-                credits    = row["CREDITS"]
-                semester   = existing_semesters.get(row["TERM"])
-                dept_code  = _dept_code_str(row["FACULTYCODE"])
-                department = existing_departments.get(dept_code)
-
-                if not semester or not department:
-                    errors.append(
-                        f"Course {code} skipped — semester or department not found."
+                if new_user_objs:
+                    User.objects.bulk_create(
+                        new_user_objs, ignore_conflicts=True, batch_size=BATCH_SIZE
                     )
-                    continue
+                    stats["users_created"] += len(new_user_objs)
 
-                existing = existing_courses.get(code)
-                if existing:
-                    # FIX 13: Update existing course fields
-                    existing.title      = title
-                    existing.credits    = credits
-                    existing.semester   = semester
-                    existing.department = department
-                    courses_to_update.append(existing)
-                else:
-                    courses_to_create.append(Course(
-                        code=code,
-                        title=title,
-                        credits=credits,
-                        semester=semester,
-                        department=department,
-                    ))
+            # Fresh user fetch — get IDs for student creation
+            all_users_df = pd.DataFrame(
+                User.objects.filter(email__in=potential_emails)
+                .values("id", "email")
+            ) if potential_emails else pd.DataFrame(columns=["id", "email"])
 
-            if courses_to_create:
-                try:
-                    Course.objects.bulk_create(courses_to_create, ignore_conflicts=True)
-                    stats["courses_created"] += len(courses_to_create)
-                except Exception as exc:
-                    errors.append(f"Course creation error: {exc}")
+            # Create missing students
+            if not to_create_df.empty and not all_users_df.empty:
+                create_with_users = to_create_df.merge(
+                    all_users_df, left_on="EMAIL", right_on="email", how="inner"
+                )
+                create_with_users["dept_id"] = create_with_users["DEPT_CODE"].map(dept_map)
+                create_with_users = create_with_users.dropna(subset=["dept_id", "id"])
 
-            if courses_to_update:
+                students_to_create = [
+                    Student(
+                        user_id=int(row.id),
+                        reg_no=row.STUDNUM_STR,
+                        department_id=int(row.dept_id),
+                    )
+                    for row in create_with_users.itertuples(index=False)
+                ]
+                if students_to_create:
+                    Student.objects.bulk_create(
+                        students_to_create, ignore_conflicts=True, batch_size=BATCH_SIZE
+                    )
+                    stats["students_created"] += len(students_to_create)
+
+            # Final student map: reg_no → student_id
+            student_id_map = {
+                r["reg_no"]: r["id"]
+                for r in Student.objects.filter(reg_no__in=student_nums).values("id", "reg_no")
+            }
+
+            # ══════════════════════════════════════════════════════════════
+            # STEP 4 — COURSES  (vectorised)
+            # ══════════════════════════════════════════════════════════════
+            course_meta_df = (
+                df[["COURSECODE", "COURSENAME", "CREDITS", "TERM", "DEPT_CODE"]]
+                .drop_duplicates(subset=["COURSECODE"])
+                .reset_index(drop=True)
+                .copy()
+            )
+            course_meta_df["semester_id"] = course_meta_df["TERM"].map(sem_map)
+            course_meta_df["dept_id"]     = course_meta_df["DEPT_CODE"].map(dept_map)
+
+            # Drop rows where semester or dept is missing
+            course_meta_df = course_meta_df.dropna(subset=["semester_id", "dept_id"])
+            course_meta_df["semester_id"] = course_meta_df["semester_id"].astype(int)
+            course_meta_df["dept_id"]     = course_meta_df["dept_id"].astype(int)
+
+            # Fetch existing courses
+            existing_courses_df = pd.DataFrame(
+                Course.objects.filter(code__in=course_codes)
+                .values("id", "code", "title", "credits", "semester_id", "department_id")
+            ) if course_codes else pd.DataFrame()
+
+            if not existing_courses_df.empty:
+                merged_courses = course_meta_df.merge(
+                    existing_courses_df, left_on="COURSECODE", right_on="code", how="left"
+                )
+            else:
+                merged_courses = course_meta_df.copy()
+                merged_courses["id"] = np.nan
+
+            existing_course_mask = merged_courses["id"].notna() if "id" in merged_courses.columns else pd.Series([False]*len(merged_courses))
+            courses_to_create_df = merged_courses[~existing_course_mask]
+            courses_to_update_df = merged_courses[existing_course_mask]
+
+            # Create new courses
+            if not courses_to_create_df.empty:
+                new_courses = [
+                    Course(
+                        code=row.COURSECODE,
+                        title=row.COURSENAME,
+                        credits=row.CREDITS,
+                        semester_id=row.semester_id,
+                        department_id=row.dept_id,
+                    )
+                    for row in courses_to_create_df.itertuples(index=False)
+                ]
+                Course.objects.bulk_create(new_courses, ignore_conflicts=True, batch_size=BATCH_SIZE)
+                stats["courses_created"] += len(new_courses)
+
+            # Update existing courses
+            if not courses_to_update_df.empty:
+                courses_to_update = [
+                    Course(
+                        id=int(row.id),
+                        code=row.COURSECODE,
+                        title=row.COURSENAME,
+                        credits=row.CREDITS,
+                        semester_id=row.semester_id,
+                        department_id=row.dept_id,
+                    )
+                    for row in courses_to_update_df.itertuples(index=False)
+                ]
                 Course.objects.bulk_update(
-                    courses_to_update, ["title", "credits", "semester", "department"]
+                    courses_to_update,
+                    ["title", "credits", "semester_id", "department_id"],
+                    batch_size=BATCH_SIZE,
                 )
                 stats["courses_updated"] += len(courses_to_update)
 
-            # Refresh course cache
-            existing_courses = {
-                c.code: c for c in Course.objects.filter(code__in=course_codes)
+            # Final course map: code → course_id
+            course_id_map = {
+                r["code"]: r["id"]
+                for r in Course.objects.filter(code__in=course_codes).values("id", "code")
             }
 
-            # ── STEP 5: Course Groups ─────────────────────────────────────
-            # FIX 12: Only create/update groups that appear in the uploaded file.
-            #         No combinatorial name generation. No phantom groups.
-            #
-            # FIX 6: O(n²) loop replaced with O(1) set lookup.
-            #         Build a set of (course_code, group_name) pairs that already
-            #         exist, then check membership in O(1).
-            #
-            # FIX 5: Refresh query is now exact — only fetch groups whose
-            #         (course_code, group_name) pairs appear in the upload.
+            # ══════════════════════════════════════════════════════════════
+            # STEP 5 — COURSE GROUPS  (vectorised)
+            # Only (course_code, group_name) pairs from THIS upload
+            # ══════════════════════════════════════════════════════════════
+            cg_pairs_df["course_id"] = cg_pairs_df["COURSECODE"].map(course_id_map)
+            cg_pairs_df = cg_pairs_df.dropna(subset=["course_id"])
+            cg_pairs_df["course_id"] = cg_pairs_df["course_id"].astype(int)
 
-            # Fetch exactly the groups we care about
-            existing_groups = {}  # (course_code, group_name) → CourseGroup
-            for g in CourseGroup.objects.filter(
-                course__code__in=course_codes,
-                group_name__in=uploaded_group_names,
-            ).select_related("course"):
-                existing_groups[(g.course.code, g.group_name)] = g
+            # Fetch existing groups for these exact (course_id, group_name) pairs
+            existing_groups_df = pd.DataFrame(
+                CourseGroup.objects.filter(
+                    course__code__in=course_codes,
+                    group_name__in=uploaded_group_names,
+                ).values("id", "group_name", "course_id")
+            ) if course_codes and uploaded_group_names else pd.DataFrame()
 
-            groups_to_create = []
-            groups_to_update = []   # FIX 3: this list is now actually saved below
-
-            for course_code, group_name in course_group_pairs:
-                course = existing_courses.get(course_code)
-                if not course:
-                    errors.append(
-                        f"Group '{group_name}' skipped — course '{course_code}' not found."
-                    )
-                    continue
-
-                key      = (course_code, group_name)
-                existing = existing_groups.get(key)
-
-                if existing:
-                    # FIX 13: group already exists for this course — update if needed
-                    # (group_name and course are the identity; nothing else to update
-                    #  at this level, but we keep the object for enrollment matching)
-                    pass
-                else:
-                    # FIX 12: No unique-name mangling. Each group belongs to exactly
-                    # one course. If (course_code, group_name) is not in DB, create it.
-                    groups_to_create.append(
-                        CourseGroup(group_name=group_name, course=course)
-                    )
-
-            if groups_to_create:
-                try:
-                    CourseGroup.objects.bulk_create(
-                        groups_to_create, ignore_conflicts=True
-                    )
-                    stats["groups_created"] += len(groups_to_create)
-                except Exception as exc:
-                    errors.append(f"Group creation error: {exc}")
-
-            # FIX 3: groups_to_update is built above and saved here
-            # (Currently group has no mutable fields beyond name+course which
-            #  form its identity, but the pattern is in place for future fields.)
-            if groups_to_update:
-                CourseGroup.objects.bulk_update(groups_to_update, ["group_name"])
-                stats["groups_updated"] += len(groups_to_update)
-
-            # FIX 5: Refresh with exact query — no combinatorial explosion
-            existing_groups = {}
-            for g in CourseGroup.objects.filter(
-                course__code__in=course_codes,
-                group_name__in=uploaded_group_names,
-            ).select_related("course"):
-                existing_groups[(g.course.code, g.group_name)] = g
-
-            # ── STEP 6: Enrollments ───────────────────────────────────────
-            # FIX 13: Full upsert — update group on existing enrollments,
-            #         create new ones for new student+course combos.
-            # FIX 4:  Always set status='enrolled' so the scheduler finds them.
-
-            existing_enrollments = {}
-            for enr in Enrollment.objects.filter(
-                student__reg_no__in=student_nums,
-                course__code__in=course_codes,
-            ).select_related("student", "course", "group"):
-                key = (enr.student.reg_no, enr.course.code)
-                existing_enrollments[key] = enr
-
-            enrollments_to_create = []
-            enrollments_to_update = []
-
-            for _, row in df.iterrows():
-                reg_no      = row["STUDNUM_STR"]
-                course_code = row["COURSECODE"]
-                group_name  = row.get("GROUP")
-
-                student = existing_students.get(reg_no)
-                course  = existing_courses.get(course_code)
-
-                if not student or not course:
-                    # Skip silently — already logged above during student/course steps
-                    continue
-
-                # FIX 12: Group lookup uses exact (course_code, group_name) key
-                group = (
-                    existing_groups.get((course_code, group_name))
-                    if pd.notna(group_name) else None
+            if not existing_groups_df.empty:
+                merged_cg = cg_pairs_df.merge(
+                    existing_groups_df,
+                    left_on=["course_id", "GROUP"],
+                    right_on=["course_id", "group_name"],
+                    how="left",
                 )
+            else:
+                merged_cg = cg_pairs_df.copy()
+                merged_cg["id"] = np.nan
 
-                if not group:
-                    errors.append(
-                        f"Group '{group_name}' not found for course '{course_code}' "
-                        f"(student {reg_no}) — enrollment skipped."
-                    )
-                    continue
+            new_groups_mask = merged_cg["id"].isna()
+            groups_to_create_df = merged_cg[new_groups_mask]
 
-                enr_key  = (reg_no, course_code)
-                existing = existing_enrollments.get(enr_key)
-
-                if existing:
-                    # FIX 13: Update group and status if they changed
-                    changed = False
-                    if existing.group != group:
-                        existing.group = group
-                        changed = True
-                    if getattr(existing, "status", None) != "enrolled":
-                        existing.status = "enrolled"
-                        changed = True
-                    if changed:
-                        enrollments_to_update.append(existing)
-                        stats["enrollments_updated"] += 1
-                else:
-                    # FIX 4: status='enrolled' set explicitly
-                    enrollments_to_create.append(Enrollment(
-                        student=student,
-                        course=course,
-                        group=group,
-                        status="enrolled",   # ← FIX 4: was missing entirely
-                    ))
-                    stats["enrollments_created"] += 1
-
-            if enrollments_to_create:
-                try:
-                    Enrollment.objects.bulk_create(
-                        enrollments_to_create, ignore_conflicts=True
-                    )
-                except Exception as exc:
-                    errors.append(f"Enrollment creation error: {exc}")
-
-            if enrollments_to_update:
-                Enrollment.objects.bulk_update(
-                    enrollments_to_update, ["group", "status"]
+            if not groups_to_create_df.empty:
+                new_groups = [
+                    CourseGroup(group_name=row.GROUP, course_id=row.course_id)
+                    for row in groups_to_create_df.itertuples(index=False)
+                ]
+                CourseGroup.objects.bulk_create(
+                    new_groups, ignore_conflicts=True, batch_size=BATCH_SIZE
                 )
+                stats["groups_created"] += len(new_groups)
 
-            # ── Response ──────────────────────────────────────────────────
-            summary = {
-                "status": "Import completed successfully" if not errors else
-                          "Import completed with warnings",
-                "stats": {
-                    "users_created":        stats["users_created"],
-                    "users_updated":        stats["users_updated"],
-                    "students_created":     stats["students_created"],
-                    "students_updated":     stats["students_updated"],
-                    "courses_created":      stats["courses_created"],
-                    "courses_updated":      stats["courses_updated"],
-                    "groups_created":       stats["groups_created"],
-                    "enrollments_created":  stats["enrollments_created"],
-                    "enrollments_updated":  stats["enrollments_updated"],
-                },
+            # Final group map: (course_id, group_name) → group_id
+            group_id_map = {
+                (r["course_id"], r["group_name"]): r["id"]
+                for r in CourseGroup.objects.filter(
+                    course__code__in=course_codes,
+                    group_name__in=uploaded_group_names,
+                ).values("id", "group_name", "course_id")
             }
-            if errors:
-                summary["warnings"] = errors[:20]
-                if len(errors) > 20:
-                    summary["warnings"].append(
-                        f"... and {len(errors) - 20} more warnings (check server logs)."
-                    )
-                for err in errors:
-                    logger.warning(err)
 
-            return Response(summary)
+            # ══════════════════════════════════════════════════════════════
+            # STEP 6 — ENROLLMENTS  (fully vectorised — no iterrows)
+            # ══════════════════════════════════════════════════════════════
+
+            # Work only with columns we need
+            enr_df = (
+                df[["STUDNUM_STR", "COURSECODE", "GROUP"]]
+                .dropna(subset=["GROUP"])
+                .drop_duplicates()
+                .reset_index(drop=True)
+                .copy()
+            )
+
+            # Map IDs using pandas — vectorised, no Python loops
+            enr_df["student_id"] = enr_df["STUDNUM_STR"].map(student_id_map)
+            enr_df["course_id"]  = enr_df["COURSECODE"].map(course_id_map)
+            enr_df["group_id"]   = enr_df.apply(
+                lambda r: group_id_map.get((
+                    course_id_map.get(r["COURSECODE"]),
+                    r["GROUP"]
+                )),
+                axis=1,
+            )
+
+            # Drop rows where any ID is missing
+            enr_df = enr_df.dropna(subset=["student_id", "course_id", "group_id"])
+            enr_df[["student_id", "course_id", "group_id"]] = (
+                enr_df[["student_id", "course_id", "group_id"]].astype(int)
+            )
+
+            # Fetch existing enrollments as a flat DataFrame
+            existing_enr_df = pd.DataFrame(
+                Enrollment.objects.filter(
+                    student_id__in=enr_df["student_id"].tolist(),
+                    course_id__in=enr_df["course_id"].tolist(),
+                ).values("id", "student_id", "course_id", "group_id", "status")
+            ) if not enr_df.empty else pd.DataFrame()
+
+            if not existing_enr_df.empty:
+                # Merge to identify new vs existing
+                merged_enr = enr_df.merge(
+                    existing_enr_df,
+                    on=["student_id", "course_id"],
+                    how="left",
+                    suffixes=("_new", "_existing"),
+                )
+                is_new      = merged_enr["id"].isna()
+                is_existing = ~is_new
+            else:
+                merged_enr  = enr_df.copy()
+                merged_enr["id"]           = np.nan
+                merged_enr["group_id_existing"] = np.nan
+                merged_enr["status"]       = np.nan
+                is_new      = pd.Series([True] * len(merged_enr))
+                is_existing = ~is_new
+
+            # ── Create new enrollments ────────────────────────────────────
+            new_enr_df = merged_enr[is_new][
+                ["student_id", "course_id", "group_id_new"]
+            ].drop_duplicates() if "group_id_new" in merged_enr.columns else \
+            merged_enr[is_new][
+                ["student_id", "course_id", "group_id"]
+            ].drop_duplicates()
+
+            group_col = "group_id_new" if "group_id_new" in new_enr_df.columns else "group_id"
+
+            if not new_enr_df.empty:
+                enrollments_to_create = [
+                    Enrollment(
+                        student_id=int(row.student_id),
+                        course_id=int(row.course_id),
+                        group_id=int(getattr(row, group_col)),
+                        status="enrolled",      # always set explicitly
+                    )
+                    for row in new_enr_df.itertuples(index=False)
+                ]
+                Enrollment.objects.bulk_create(
+                    enrollments_to_create,
+                    ignore_conflicts=True,
+                    batch_size=BATCH_SIZE,
+                )
+                stats["enrollments_created"] += len(enrollments_to_create)
+
+            # ── Update existing enrollments ───────────────────────────────
+            if not existing_enr_df.empty and is_existing.any():
+                existing_to_check = merged_enr[is_existing].copy()
+                g_new_col = "group_id_new" if "group_id_new" in existing_to_check.columns else "group_id"
+                g_ext_col = "group_id_existing" if "group_id_existing" in existing_to_check.columns else "group_id"
+
+                # Only update rows where group or status changed
+                needs_update = (
+                    (existing_to_check[g_new_col] != existing_to_check[g_ext_col]) |
+                    (existing_to_check["status"] != "enrolled")
+                )
+                update_df = existing_to_check[needs_update]
+
+                if not update_df.empty:
+                    enrollments_to_update = [
+                        Enrollment(
+                            id=int(row.id),
+                            group_id=int(getattr(row, g_new_col)),
+                            status="enrolled",
+                        )
+                        for row in update_df.itertuples(index=False)
+                    ]
+                    Enrollment.objects.bulk_update(
+                        enrollments_to_update,
+                        ["group_id", "status"],
+                        batch_size=BATCH_SIZE,
+                    )
+                    stats["enrollments_updated"] += len(enrollments_to_update)
+
+            # Log rows that had no matching group
+            missing_groups = enr_df[enr_df["group_id"].isna()]
+            if not missing_groups.empty:
+                for row in missing_groups.itertuples(index=False):
+                    errors.append(
+                        f"Group '{row.GROUP}' not found for course "
+                        f"'{row.COURSECODE}' (student {row.STUDNUM_STR}) — skipped."
+                    )
+
+        # ── Response ──────────────────────────────────────────────────────
+        summary = {
+            "status": "Import completed successfully" if not errors
+                      else "Import completed with warnings",
+            "stats": dict(stats),
+        }
+        if errors:
+            summary["warnings"] = errors[:20]
+            if len(errors) > 20:
+                summary["warnings"].append(
+                    f"... and {len(errors) - 20} more (check server logs)."
+                )
+            for e in errors:
+                logger.warning(e)
+
+        return Response(summary)
+
+
+# ── Utility ───────────────────────────────────────────────────────────────────
+def _is_numeric(val):
+    """Return True if val can be safely converted to a number."""
+    try:
+        float(val)
+        return True
+    except (TypeError, ValueError):
+        return False
