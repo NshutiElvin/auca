@@ -21,6 +21,7 @@ from django.db.models import Min, Max
 from datetime import timedelta, time
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from config.utils import JsonConfigManager
 
 logger = logging.getLogger(__name__)
 SLOTS = [
@@ -2227,13 +2228,10 @@ def generate_exam_schedule(
         course_constraints  = constraints.get("course_constraints", {})
 
         # Time slot definitions (from constraints or hardcoded fallback)
-        defined_time_slots = time_constraints.get("time_slots", [])
-        if not defined_time_slots:
-            defined_time_slots = [
-                {"name": "Morning",   "start_time": "08:00", "end_time": "11:00", "priority": 1},
-                {"name": "Afternoon", "start_time": "13:00", "end_time": "16:00", "priority": 2},
-                {"name": "Evening",   "start_time": "17:00", "end_time": "20:00", "priority": 3},
-            ]
+        config_manager= JsonConfigManager()
+        config= config_manager.read_config()
+        time_config= config.get("time_constraints", {})
+        defined_time_slots = time_config.get("time_slots", [])
         defined_time_slots.sort(key=lambda x: x.get("priority", 99))
 
         day_restrictions = time_constraints.get("day_restrictions", {})
@@ -2421,28 +2419,34 @@ def generate_exam_schedule(
                             for gid in cd["groups"]:
                                 g_obj = groups_dict[gid]
                                 s_ids = enrollments_by_group.get(gid, set())
-
+                                # set start and end_time based on the what saved in database for this group and slot, then fallback to defined_time_slots, then fallback to SLOT_MAP, then default 8-11am
                                 # Resolve slot times
+                                group_start_time= g_obj.start_time
+                                group_end_time= g_obj.end_time
                                 st_time = en_time = None
-                                if slots and current_date in slots_by_date:
-                                    for s in slots_by_date[current_date]:
-                                        sn = ss = se = None
-                                        if isinstance(s, dict):
-                                            sn = s.get("name") or s.get("label")
-                                            ss = s.get("start") or s.get("start_time")
-                                            se = s.get("end") or s.get("end_time")
-                                        elif isinstance(s, (list, tuple)) and len(s) >= 4:
-                                            sn, ss, se = s[1], s[2], s[3]
-                                        if sn == slot_name and ss and se:
-                                            st_time = (
-                                                time(*map(int, ss.split(":")))
-                                                if isinstance(ss, str) else ss
-                                            )
-                                            en_time = (
-                                                time(*map(int, se.split(":")))
-                                                if isinstance(se, str) else se
-                                            )
-                                            break
+                                if group_start_time and group_end_time:
+                                    st_time = group_start_time
+                                    en_time = group_end_time
+                                else:
+                                    if slots and current_date in slots_by_date:
+                                        for s in slots_by_date[current_date]:
+                                            sn = ss = se = None
+                                            if isinstance(s, dict):
+                                                sn = s.get("name") or s.get("label")
+                                                ss = s.get("start") or s.get("start_time")
+                                                se = s.get("end") or s.get("end_time")
+                                            elif isinstance(s, (list, tuple)) and len(s) >= 4:
+                                                sn, ss, se = s[1], s[2], s[3]
+                                            if sn == slot_name and ss and se:
+                                                st_time = (
+                                                    time(*map(int, ss.split(":")))
+                                                    if isinstance(ss, str) else ss
+                                                )
+                                                en_time = (
+                                                    time(*map(int, se.split(":")))
+                                                    if isinstance(se, str) else se
+                                                )
+                                                break
 
                                 if not st_time:
                                     slot_def = next(
