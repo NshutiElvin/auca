@@ -1840,111 +1840,306 @@ def verify_room_capacity():
 
 
 
+# def allocate_shared_rooms(location_id):
+#     """
+#     Allocates available rooms to students for scheduled exams.
+#     Optimizes room utilization by allowing multiple exams to share a room.
+#     Splits exams across multiple rooms when they exceed a single room's capacity.
+#     """
+#     # 1. Fetch distinct slots that need allocation to process iteratively (Memory Optimization)
+#     slots_to_allocate = (
+#         StudentExam.objects.filter(
+#             room__isnull=True,
+#             exam__group__course__department__location_id=location_id
+#         )
+#         .values_list("exam__date", "exam__start_time", "exam__end_time")
+#         .distinct()
+#     )
+    
+#     if not slots_to_allocate:
+#         logger.info(f"No students needing room allocation for location {location_id}")
+#         return []
+    
+#     # 2. Get all rooms at this location, largest first
+#     rooms = list(Room.objects.filter(location_id=location_id).order_by("-capacity"))
+#     if not rooms:
+#         logger.error(f"No rooms found for location {location_id}")
+#         # Return all students as unaccommodated
+#         return list(StudentExam.objects.filter(
+#             room__isnull=True,
+#             exam__group__course__department__location_id=location_id
+#         ).values_list('student', flat=True))
+
+#     unaccommodated_students = []
+    
+#     # 3. Process each slot individually to save memory
+#     for date, start, end in slots_to_allocate:
+#         # Fetch students for this specific slot
+#         student_exams = (
+#             StudentExam.objects.filter(
+#                 room__isnull=True,
+#                 exam__group__course__department__location_id=location_id,
+#                 exam__date=date,
+#                 exam__start_time=start,
+#                 exam__end_time=end
+#             )
+#             .select_related("exam", "student")
+#         )
+        
+#         # Group by exam
+#         exams_in_slot = defaultdict(list)
+#         for se in student_exams:
+#             exams_in_slot[se.exam].append(se)
+            
+#         with transaction.atomic():
+#             # List of (Exam, [StudentExam])
+#             exam_assignments = list(exams_in_slot.items())
+#             # Sort exams by size to help with packing
+#             exam_assignments.sort(key=lambda x: len(x[1]), reverse=True)
+            
+#             # Track capacity for each room in this slot
+#             room_capacities = {r.id: r.capacity for r in rooms}
+            
+#             # Check existing occupancy for this slot (if any)
+#             for room in rooms:
+#                 occupied = StudentExam.objects.filter(
+#                     room=room,
+#                     exam__date=date,
+#                     exam__start_time=start,
+#                     exam__end_time=end
+#                 ).count()
+#                 room_capacities[room.id] -= occupied
+
+#             # Distribute students
+#             for exam, students in exam_assignments:
+#                 remaining_students = list(students)
+                
+#                 # Try to fit in rooms proportionally
+#                 for room in rooms:
+#                     if not remaining_students: break
+                    
+#                     capacity = room_capacities[room.id]
+#                     if capacity <= 0: continue
+                    
+#                     take = min(len(remaining_students), capacity)
+#                     assigned_students = remaining_students[:take]
+                    
+#                     # Bulk update StudentExam.room
+#                     StudentExam.objects.filter(
+#                         id__in=[se.id for se in assigned_students]
+#                     ).update(room=room)
+                    
+#                     room_capacities[room.id] -= take
+#                     remaining_students = remaining_students[take:]
+                
+#                 if remaining_students:
+#                     unaccommodated_students.extend([se.student for se in remaining_students])
+            
+#             # Update Exam.room if the exam is entirely in one room
+#             for exam, students in exams_in_slot.items():
+#                 room_ids = StudentExam.objects.filter(exam=exam).values_list('room_id', flat=True).distinct()
+#                 if room_ids.count() == 1 and room_ids[0] is not None:
+#                     exam.room_id = room_ids[0]
+#                     exam.save(update_fields=['room'])
+#                 else:
+#                     # Exam is split across rooms
+#                     exam.room = None
+#                     exam.save(update_fields=['room'])
+
+#     return unaccommodated_students
+
+
 def allocate_shared_rooms(location_id):
     """
-    Allocates available rooms to students for scheduled exams.
-    Optimizes room utilization by allowing multiple exams to share a room.
-    Splits exams across multiple rooms when they exceed a single room's capacity.
+    Allocates rooms using strict equal-split (half-half) seating.
+
+    RULE:
+        Each room divides its seats EQUALLY across all exams in the slot.
+        Room capacity 70, 2 exams → 35 seats each.
+        Room capacity 70, 4 exams → 17 seats each (+ 2 remainder to largest exams).
+
+        If an exam has fewer students than its share, its unused seats are
+        redistributed equally to the remaining exams that still have students.
+
+        Leftover students (those beyond one room's equal share) go to the
+        next room where the same equal-split rule applies again.
+
+    PRIORITY:
+        1. Fill largest rooms first.
+        2. Equal seats per exam per room wherever possible.
+        3. Redistribute unused shares to exams that still have students.
+        4. Overflow to next room — same rule restarts.
+
+    Example:
+        Slot has Exam 1 (40 students) and Exam 2 (55 students).
+        Room capacity = 70.
+
+        Equal share per exam = floor(70 / 2) = 35
+        Exam 1 takes 35  (has 40, 5 left over → go to next room)
+        Exam 2 takes 35  (has 55, 20 left over → go to next room)
+        Room 1 seated = 70 ✅
+
+        Next room gets:  Exam 1 (5 remaining), Exam 2 (20 remaining)
+        Equal share = floor(room_capacity / 2) each, capped at what's left.
     """
-    # 1. Fetch distinct slots that need allocation to process iteratively (Memory Optimization)
-    slots_to_allocate = (
+
+    # ── 1. Find slots needing allocation ──────────────────────────────────────
+    slots_to_allocate = list(
         StudentExam.objects.filter(
             room__isnull=True,
-            exam__group__course__department__location_id=location_id
+            exam__group__course__department__location_id=location_id,
         )
         .values_list("exam__date", "exam__start_time", "exam__end_time")
         .distinct()
     )
-    
+
     if not slots_to_allocate:
         logger.info(f"No students needing room allocation for location {location_id}")
         return []
-    
-    # 2. Get all rooms at this location, largest first
-    rooms = list(Room.objects.filter(location_id=location_id).order_by("-capacity"))
+
+    # ── 2. Rooms sorted largest first ─────────────────────────────────────────
+    rooms = list(
+        Room.objects.filter(location_id=location_id).order_by("-capacity")
+    )
     if not rooms:
         logger.error(f"No rooms found for location {location_id}")
-        # Return all students as unaccommodated
-        return list(StudentExam.objects.filter(
-            room__isnull=True,
-            exam__group__course__department__location_id=location_id
-        ).values_list('student', flat=True))
+        return list(
+            StudentExam.objects.filter(
+                room__isnull=True,
+                exam__group__course__department__location_id=location_id,
+            ).values_list("student", flat=True)
+        )
 
     unaccommodated_students = []
-    
-    # 3. Process each slot individually to save memory
+
+    # ── 3. Process each time slot ─────────────────────────────────────────────
     for date, start, end in slots_to_allocate:
-        # Fetch students for this specific slot
-        student_exams = (
+
+        student_exams_qs = (
             StudentExam.objects.filter(
                 room__isnull=True,
                 exam__group__course__department__location_id=location_id,
                 exam__date=date,
                 exam__start_time=start,
-                exam__end_time=end
+                exam__end_time=end,
             )
             .select_related("exam", "student")
         )
-        
-        # Group by exam
-        exams_in_slot = defaultdict(list)
-        for se in student_exams:
-            exams_in_slot[se.exam].append(se)
-            
+
+        exams_students = defaultdict(list)
+        for se in student_exams_qs:
+            exams_students[se.exam].append(se)
+
+        if not exams_students:
+            continue
+
+        # Mutable queues — consumed as rooms are filled
+        exam_queues = {exam: list(ses) for exam, ses in exams_students.items()}
+
         with transaction.atomic():
-            # List of (Exam, [StudentExam])
-            exam_assignments = list(exams_in_slot.items())
-            # Sort exams by size to help with packing
-            exam_assignments.sort(key=lambda x: len(x[1]), reverse=True)
-            
-            # Track capacity for each room in this slot
-            room_capacities = {r.id: r.capacity for r in rooms}
-            
-            # Check existing occupancy for this slot (if any)
+
+            # Account for students already seated (re-run safety)
+            room_available = {}
             for room in rooms:
-                occupied = StudentExam.objects.filter(
+                already = StudentExam.objects.filter(
                     room=room,
                     exam__date=date,
                     exam__start_time=start,
-                    exam__end_time=end
+                    exam__end_time=end,
                 ).count()
-                room_capacities[room.id] -= occupied
+                room_available[room.id] = room.capacity - already
 
-            # Distribute students
-            for exam, students in exam_assignments:
-                remaining_students = list(students)
-                
-                # Try to fit in rooms proportionally
-                for room in rooms:
-                    if not remaining_students: break
-                    
-                    capacity = room_capacities[room.id]
-                    if capacity <= 0: continue
-                    
-                    take = min(len(remaining_students), capacity)
-                    assigned_students = remaining_students[:take]
-                    
-                    # Bulk update StudentExam.room
-                    StudentExam.objects.filter(
-                        id__in=[se.id for se in assigned_students]
-                    ).update(room=room)
-                    
-                    room_capacities[room.id] -= take
-                    remaining_students = remaining_students[take:]
-                
-                if remaining_students:
-                    unaccommodated_students.extend([se.student for se in remaining_students])
-            
-            # Update Exam.room if the exam is entirely in one room
-            for exam, students in exams_in_slot.items():
-                room_ids = StudentExam.objects.filter(exam=exam).values_list('room_id', flat=True).distinct()
-                if room_ids.count() == 1 and room_ids[0] is not None:
-                    exam.room_id = room_ids[0]
-                    exam.save(update_fields=['room'])
-                else:
-                    # Exam is split across rooms
-                    exam.room = None
-                    exam.save(update_fields=['room'])
+            # ── 4. Fill rooms largest-first, equal split per exam ─────────────
+            for room in rooms:
+                seats_left = room_available[room.id]
+                if seats_left <= 0:
+                    continue
+
+                # Only exams that still have unassigned students
+                active = {e: q for e, q in exam_queues.items() if q}
+                if not active:
+                    break
+
+                n_exams = len(active)
+
+                # ── Equal share calculation ───────────────────────────────────
+                # Base equal share per exam
+                base_share = seats_left // n_exams
+                remainder  = seats_left % n_exams   # leftover seats from floor division
+
+                # Each exam gets base_share seats, capped by how many it has left.
+                # If an exam has fewer students than base_share, the unused seats
+                # are pooled and redistributed equally to exams that still need more.
+                allocation = {}
+                for exam, queue in active.items():
+                    allocation[exam] = min(base_share, len(queue))
+
+                # Redistribute unused seats from small exams
+                # (those that had fewer students than base_share)
+                unused = sum(
+                    base_share - allocation[e]
+                    for e in active
+                    if len(active[e]) < base_share
+                )
+
+                # Also add the floor-division remainder seats
+                pool = unused + remainder
+
+                if pool > 0:
+                    # Give extra seats to exams that can still absorb them
+                    # (those whose queue > base_share), largest queue first
+                    can_absorb = sorted(
+                        [e for e in active if len(active[e]) > base_share],
+                        key=lambda e: -len(active[e]),
+                    )
+                    for exam in can_absorb:
+                        if pool <= 0:
+                            break
+                        extra = min(pool, len(active[exam]) - allocation[exam])
+                        allocation[exam] += extra
+                        pool -= extra
+
+                # ── Assign students to this room ──────────────────────────────
+                ids_to_update = []
+                for exam, take in allocation.items():
+                    if take <= 0:
+                        continue
+                    actual            = min(take, len(exam_queues[exam]))
+                    assigned          = exam_queues[exam][:actual]
+                    exam_queues[exam] = exam_queues[exam][actual:]
+                    ids_to_update.extend(se.id for se in assigned)
+
+                if ids_to_update:
+                    StudentExam.objects.filter(id__in=ids_to_update).update(room=room)
+                    logger.debug(
+                        f"Room '{room.name}' ({room.capacity} seats) | "
+                        f"{date} [{start}–{end}] | "
+                        f"Seated {len(ids_to_update)} students | "
+                        f"Split: { {str(e.id): v for e, v in allocation.items()} }"
+                    )
+
+            # ── 5. Collect overflow ───────────────────────────────────────────
+            for exam, leftover in exam_queues.items():
+                if leftover:
+                    logger.warning(
+                        f"Exam {exam.id} | {date} [{start}–{end}] | "
+                        f"{len(leftover)} students could not be seated"
+                    )
+                    unaccommodated_students.extend(se.student for se in leftover)
+
+            # ── 6. Update Exam.room ───────────────────────────────────────────
+            for exam in exams_students:
+                distinct_rooms = list(
+                    StudentExam.objects.filter(exam=exam)
+                    .values_list("room_id", flat=True)
+                    .distinct()
+                )
+                exam.room_id = (
+                    distinct_rooms[0]
+                    if len(distinct_rooms) == 1 and distinct_rooms[0]
+                    else None
+                )
+                exam.save(update_fields=["room"])
 
     return unaccommodated_students
 
