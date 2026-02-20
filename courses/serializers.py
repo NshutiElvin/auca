@@ -54,6 +54,16 @@ class CourseSerializer(serializers.ModelSerializer):
         ]
     def get_students_enrolled(self, obj):
         return obj.enrollments.filter(status='active').count()
+    
+class CourseGroupSerializer(serializers.ModelSerializer):
+    course = CourseSerializer(read_only=True)
+    course_id = serializers.PrimaryKeyRelatedField(
+        queryset=Course.objects.all(), source='course', write_only=True
+    )
+
+    class Meta:
+        model = CourseGroup
+        fields = ['id', 'course', 'course_id', 'group_name', 'max_member', 'current_member', 'start_time', 'end_time']
 
 
 

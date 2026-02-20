@@ -59,6 +59,8 @@ class CourseGroup(models.Model):
     max_member= models.IntegerField(default=0)
     group_name= models.CharField(max_length=255, null=False, blank=False)
     current_member= models.IntegerField(default=0)
+    start_time = models.TimeField( null=True, blank=True)
+    end_time = models.TimeField( null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
