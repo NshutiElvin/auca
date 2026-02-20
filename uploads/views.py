@@ -289,7 +289,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     if not to_update_df.empty and not existing_users_df.empty:
                         update_merged = to_update_df.merge(
                             existing_users_df[["id", "email", "first_name", "last_name"]],
-                            on="email", how="inner",
+                            left_on="EMAIL", right_on="email", how="inner", # <--- Fixed KeyError bug here
                             suffixes=("_student", "_user"),
                         )
                         users_to_update = []
@@ -351,7 +351,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         create_with_users = create_with_users.dropna(subset=["dept_id"])
                         students_to_create = [
                             Student(
-                                user_id=int(row.id),
+                                user_id=int(row.id_user),  # <--- Fixed NaN issue here
                                 reg_no=row.STUDNUM_STR,
                                 department_id=int(row.dept_id),
                             )
@@ -589,7 +589,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
             event_stream(),
             content_type="text/event-stream",
         )
-        response["Cache-Control"]               = "no-cache"
-        response["X-Accel-Buffering"]           = "no"   # disable nginx buffering
+        response["Cache-Control"]              = "no-cache"
+        response["X-Accel-Buffering"]          = "no"   # disable nginx buffering
         response["Access-Control-Allow-Origin"]  = "*"
         return response
