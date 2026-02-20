@@ -2141,14 +2141,19 @@ def generate_exam_schedule(
 
                 # Determine preferred slot order for this group
                 preferred_slots = []
-                if course_group["courses"] and course_group["courses"][0]["groups"]:
-                    first_gid = course_group["courses"][0]["groups"][0]
-                    if first_gid in groups_dict:
-                        gname = groups_dict[first_gid].group_name
-                        if gname in group_preferences:
-                            preferred_slots = group_preferences[gname].get(
-                                "slots_order", []
-                            )
+                best_priority = float("inf")
+
+                for cd in course_group["courses"]:
+                    for gid in cd["groups"]:
+                        if gid in groups_dict:
+                            gname = groups_dict[gid].group_name
+                            if gname in group_preferences:
+                                pref = group_preferences[gname]
+                                priority = pref.get("priority", 99)
+                                if priority < best_priority and pref.get("slots_order"):
+                                    best_priority = priority
+                                    preferred_slots = pref["slots_order"]
+
                 if not preferred_slots:
                     preferred_slots = [s["name"] for s in defined_time_slots]
 

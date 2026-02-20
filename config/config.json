@@ -1,69 +1,35 @@
 {
-    "time_constraints": {
-      "time_slots": [
-        { "name": "Morning", "start_time": "08:00", "end_time": "11:00", "priority": 1 },
-        { "name": "Afternoon", "start_time": "13:00", "end_time": "16:00", "priority": 2 },
-        { "name": "Evening", "start_time": "17:00", "end_time": "20:00", "priority": 3 }
-      ],
-      "day_restrictions": {
-        "no_exam_days": ["Saturday"],
-        "special_rules": {
-          "Friday": { "no_evening": true, "allowed_slots": ["Morning", "Afternoon"] }
-        },
-        "holidays": []
-      }
-    },
-    "student_constraints": {
-      "max_exams_per_day": 2,
-      "max_exams_per_slot": 1,
-      "min_gap_between_exams_days": 2,
-      "allow_consecutive_exams": false,
-      "max_total_exams": 10,
-      "verify_conflicts_before_scheduling": true,
-      "enforce_enrollment_status": true
-    },
-    "room_constraints": {
-      "capacity_buffer_percent": 0,
-      "allow_room_sharing": true,
-      "max_exams_per_room_per_slot": 999,
-      "prefer_large_rooms_for_large_groups": true,
-      "room_utilization_threshold": 1.0,
-      "enable_proportional_distribution": true,
-      "enable_cross_room_exam_split": true
-    },
-    "group_preferences": {
-      "A": { "preferred_time": "mostly morning", "slots_order": ["Morning", "Afternoon", "Evening"], "priority": 1 },
-      "B": { "preferred_time": "mostly morning", "slots_order": ["Morning", "Afternoon", "Evening"], "priority": 2 },
-      "C": { "preferred_time": "mixed", "slots_order": ["Morning", "Afternoon", "Evening"], "priority": 3 },
-      "D": { "preferred_time": "mixed", "slots_order": ["Morning", "Afternoon", "Evening"], "priority": 1 },
-      "E": { "preferred_time": "evening", "slots_order": ["Evening", "Afternoon", "Morning"], "priority": 2 },
-      "F": { "preferred_time": "evening", "slots_order": ["Evening", "Afternoon", "Morning"], "priority": 3 }
-    },
-    "course_constraints": {
-      "prioritize_large_courses": true,
-      "allow_split_groups": true,
-      "allow_course_group_combinations": true,
-      "detect_student_conflicts_automatically": true,
-      "build_compatibility_graph": true,
-      "use_greedy_coloring_algorithm": true
-    },
-    "scheduling_strategy": {
-      "optimization_goal": "minimize_student_conflicts",
-      "sorting_strategy": "size_and_conflicts",
-      "backtracking_enabled": true,
-      "max_scheduling_attempts": 5,
-      "prefer_slot_order": true,
-      "spread_exams_evenly": true,
-      "try_same_date_first": true,
-      "search_range_days": 14,
-      "enable_adjacency_optimization": true
-    } ,
-    "validation_constraints": {
-      "verify_no_student_conflicts": true,
-      "verify_room_capacity": true,
-      "verify_day_off_constraints": true,
-      "check_semester_compatibility": false,
-      "verify_schedule_after_creation": true
+  "time_constraints": {
+    "time_slots": [
+      { "name": "Morning", "start_time": "08:00", "end_time": "11:00", "priority": 1 },
+      { "name": "Afternoon", "start_time": "13:00", "end_time": "16:00", "priority": 2 },
+      { "name": "Evening", "start_time": "17:00", "end_time": "20:00", "priority": 3 }
+    ],
+    "day_restrictions": {
+      "no_exam_days": ["Saturday"],
+      "special_rules": {
+        "Friday": { "allowed_slots": ["Morning", "Afternoon"] }
+      },
+      "holidays": []
     }
-     
+  },
+  "student_constraints": {
+    "max_exams_per_day": 1,
+    "max_exams_per_slot": 1,
+    "min_gap_between_exams_days": 0
+  },
+  "room_constraints": {
+    "capacity_buffer_percent": 0
+  },
+  "group_preferences": {
+    "A": { "slots_order": ["Morning", "Afternoon", "Evening"], "priority": 1 },
+    "B": { "slots_order": ["Morning", "Afternoon", "Evening"], "priority": 2 },
+    "C": { "slots_order": ["Morning", "Afternoon", "Evening"], "priority": 3 },
+    "D": { "slots_order": ["Morning", "Afternoon", "Evening"], "priority": 1 },
+    "E": { "slots_order": ["Evening", "Afternoon", "Morning"], "priority": 2 },
+    "F": { "slots_order": ["Evening", "Afternoon", "Morning"], "priority": 3 }
+  },
+  "course_constraints": {
+    "prioritize_large_courses": true
   }
+}
