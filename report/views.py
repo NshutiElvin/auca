@@ -20,7 +20,7 @@ from django.utils import timezone
 from collections import defaultdict
 
 from exams.models import Exam, StudentExam
-from schedules.models import MasterTimetable   # adjust to your app name
+from schedules.models import MasterTimetable    
 
 
 # ── Font Registration ─────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ def _sb(name, **kwargs):
 def _logo_and_header(timetable_name: str, faculty: str) -> list:
     """
     Returns story elements for the AUCA header:
-      - Logo perfectly centered horizontally
+      - Logo centered
       - University name centered below logo
       - Faculty line centered
       - Blue banner with timetable title
@@ -146,8 +146,6 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
 
     # ── Logo + university name — all horizontally centered ───────────────────
     if os.path.isfile(LOGO_PATH):
-        # FIX 1: Removed hAlign='CENTER' from the Image. 
-        # The TableStyle will handle centering the image within its cell.
         logo_img = Image(LOGO_PATH, width=2.5 * cm, height=2.5 * cm)
     else:
         logo_img = Paragraph("", _s("NoLogo"))
@@ -160,13 +158,10 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
                                _s("UniSub", fontSize=8, textColor=TEXT_DARK,
                                   alignment=TA_CENTER))]]
 
-    # FIX 2: Removed colWidths=["100%"]. 
-    # Passing None (or omitting it) forces the table to auto-size to your 
-    # widest text block and center properly on the page.
-    header_tbl = Table(header_data, hAlign="CENTER")
+    header_tbl = Table(header_data, colWidths=["100%"])
     header_tbl.setStyle(TableStyle([
-        ("ALIGN",         (0, 0), (-1, -1), "CENTER"), # Centers the logo and text inside the cells
-        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING",   (0, 0), (-1, -1), 0),
         ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
         ("TOPPADDING",    (0, 0), (0, 0),   4),
@@ -189,13 +184,9 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
         (timetable_name or "Exam Timetable").upper(),
         _sb("Banner", fontSize=13, textColor=TEXT_WHITE, alignment=TA_CENTER),
     )]]
-    
-    # Applied the same colWidths fix here
-    banner_tbl = Table(banner_data, hAlign="CENTER")
+    banner_tbl = Table(banner_data, colWidths=["100%"])
     banner_tbl.setStyle(TableStyle([
         ("BACKGROUND",    (0, 0), (-1, -1), BLUE_HEADER),
-        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN",        (0, 0), (-1, -1), "TOP"),    
         ("TOPPADDING",    (0, 0), (-1, -1), 8),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
         ("LEFTPADDING",   (0, 0), (-1, -1), 6),
@@ -208,18 +199,144 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  REPORT 1 — EXAM TIMETABLE  (matches the AUCA image format exactly)
+#  HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+def _dept_banner(dept_name: str) -> Table:
+    """Blue department separator banner — same style as the title banner."""
+    data = [[Paragraph(
+        dept_name.upper(),
+        _sb("DeptBanner", fontSize=11, textColor=TEXT_WHITE, alignment=TA_CENTER),
+    )]]
+    tbl = Table(data, colWidths=["100%"])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), BLUE_HEADER),
+        ("TOPPADDING",    (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+    ]))
+    return tbl
+
+
+def _build_dept_table(dept_exams: list) -> Table:
+    """
+    Build one exam table for a single department.
+    Grouping: date → time slot → merge same-course rows (groups as A, B, C).
+    """
+    from collections import OrderedDict
+
+    hdr  = _sb("TH",  fontSize=9, textColor=TEXT_DARK, alignment=TA_LEFT)
+    cell = _s("TD",   fontSize=8, textColor=TEXT_DARK, alignment=TA_LEFT,   leading=11)
+    celc = _s("TDC",  fontSize=8, textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
+    COL_W = [2.5*cm, 2.0*cm, 6.0*cm, 8.5*cm, 3.5*cm]
+
+    tbl_data = [[
+        Paragraph("Day&amp;Date", hdr),
+        Paragraph("Time",         hdr),
+        Paragraph("Teacher",      hdr),
+        Paragraph("Course",       hdr),
+        Paragraph("Group",        hdr),
+    ]]
+    style_cmds = [
+        ("BACKGROUND",    (0, 0), (-1, 0), COL_HEADER),
+        ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_COL),
+        ("INNERGRID",     (0, 0), (-1, -1), 0.3, colors.HexColor("#93A8C8")),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
+    ]
+
+    by_date = defaultdict(list)
+    for exam in dept_exams:
+        by_date[exam.date or "No Date"].append(exam)
+
+    row_idx = 1
+
+    for date_key in sorted(by_date.keys(),
+                           key=lambda d: d if d != "No Date" else "9999-99-99"):
+        by_time = defaultdict(list)
+        for exam in by_date[date_key]:
+            by_time[exam.start_time].append(exam)
+
+        try:
+            day_name = date_key.strftime("%A")
+            date_str = f"{date_key.day}-{date_key.strftime('%b')}"
+        except AttributeError:
+            day_name = str(date_key)
+            date_str = ""
+
+        date_shown = False
+
+        for time_key in sorted(by_time.keys(),
+                               key=lambda t: t if t else "99:99"):
+            slot_exams = by_time[time_key]
+            time_str   = time_key.strftime("%I:%M%p").lstrip("0") if time_key else "–"
+
+            course_rows = OrderedDict()
+            for exam in slot_exams:
+                course    = exam.group.course if exam.group else None
+                c_id      = course.id if course else 0
+                inst      = course.instructor if course else None
+                inst_id   = inst.id if inst else 0
+                merge_key = (c_id, inst_id)
+                if merge_key not in course_rows:
+                    course_rows[merge_key] = {
+                        "course_title": course.title if course else "–",
+                        "instructor":   inst,
+                        "groups":       [],
+                    }
+                course_rows[merge_key]["groups"].append(
+                    exam.group.group_name if exam.group else "–"
+                )
+
+            for slot_i, row_data in enumerate(course_rows.values()):
+                inst        = row_data["instructor"]
+                teacher_str = inst.get_full_name() if inst else "–"
+                groups_str  = ", ".join(row_data["groups"])
+
+                if not date_shown and slot_i == 0:
+                    day_cell_text = f"<b>{day_name}</b><br/>{date_str}"
+                    date_shown = True
+                elif slot_i == 0:
+                    day_cell_text = date_str
+                else:
+                    day_cell_text = ""
+
+                tbl_data.append([
+                    Paragraph(day_cell_text, celc),
+                    Paragraph(time_str if slot_i == 0 else "", celc),
+                    Paragraph(teacher_str, cell),
+                    Paragraph(f"<b>{row_data['course_title']}</b>", cell),
+                    Paragraph(groups_str, celc),
+                ])
+                row_idx += 1
+
+        # Separator row after each date block
+        tbl_data.append([Paragraph("", cell)] * 5)
+        style_cmds.append(("BACKGROUND", (0, row_idx), (-1, row_idx), SPACER_ROW))
+        style_cmds.append(("ROWHEIGHT",  (0, row_idx), (-1, row_idx), 8))
+        row_idx += 1
+
+    tbl = Table(tbl_data, colWidths=COL_W, repeatRows=1)
+    tbl.setStyle(TableStyle(style_cmds))
+    return tbl
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  REPORT 1 — EXAM TIMETABLE grouped by DEPARTMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
     """
-    Landscape A4 timetable in the AUCA format.
+    Landscape A4 timetable grouped by Department.
 
-    Grouping logic (matches the reference image):
-      1. Exams are grouped by DATE
-      2. Within each date, grouped by TIME SLOT
-      3. Within each time slot, exams with the SAME COURSE are merged into
-         one row — groups listed as "A, B, C"
-      4. Orange separator row between each DATE group
+    Layout per department:
+      [Blue department banner]
+      [Table: Day&Date | Time | Teacher | Course | Group]
+        — rows grouped by date then time slot
+        — same course at same time → one merged row, groups as "A, B, C"
+        — orange separator between date blocks
     """
     buffer = io.BytesIO()
 
@@ -235,131 +352,43 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
         exams.select_related(
             "group",
             "group__course",
+            "group__course__department",
             "group__course__instructor",
             "room",
-        ).order_by("date", "start_time", "group__course__title", "group__group_name")
+        ).order_by(
+            "group__course__department__name",
+            "date",
+            "start_time",
+            "group__course__title",
+            "group__group_name",
+        )
     )
 
-    # ── Column styles ─────────────────────────────────────────────────────────
-    hdr  = _sb("TH",   fontSize=9,  textColor=TEXT_DARK, alignment=TA_LEFT)
-    cell = _s("TD",    fontSize=8,  textColor=TEXT_DARK, alignment=TA_LEFT,   leading=11)
-    celc = _s("TDC",   fontSize=8,  textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
-
-    # Compact column widths matching the reference image
-    # Day&Date | Time | Teacher | Course | Group
-    COL_W = [2.5*cm, 2.0*cm, 6.0*cm, 8.5*cm, 3.5*cm]
-
-    # ── Column header row ─────────────────────────────────────────────────────
-    tbl_data = [[
-        Paragraph("Day&amp;Date", hdr),
-        Paragraph("Time",         hdr),
-        Paragraph("Teacher",      hdr),
-        Paragraph("Course",       hdr),
-        Paragraph("Group",        hdr),
-    ]]
-    style_cmds = [
-        ("BACKGROUND",    (0, 0), (-1, 0), COL_HEADER),
-        ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_COL),
-        ("INNERGRID",     (0, 0), (-1, -1), 0.3, colors.HexColor("#AAAAAA")),
-        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING",    (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
-    ]
-
-    # ── Build grouped structure ───────────────────────────────────────────────
-    # Step 1: group by date
-    by_date = defaultdict(list)
+    # ── Group exams by department ─────────────────────────────────────────────
+    by_dept = defaultdict(list)
     for exam in exams:
-        by_date[exam.date or "No Date"].append(exam)
-
-    row_idx = 1  # 0 = header
-
-    for date_key in sorted(by_date.keys(),
-                           key=lambda d: d if d != "No Date" else "9999-99-99"):
-
-        # Step 2: within each date, group by time slot
-        by_time = defaultdict(list)
-        for exam in by_date[date_key]:
-            by_time[exam.start_time].append(exam)
-
-        # Date label computed once
-        try:
-            day_name = date_key.strftime("%A")
-            date_str = f"{date_key.day}-{date_key.strftime('%b')}"
-        except AttributeError:
-            day_name = str(date_key)
-            date_str = ""
-
-        date_shown = False   # print day/date only on first row of this date
-
-        for time_key in sorted(by_time.keys(),
-                               key=lambda t: t if t else "99:99"):
-
-            slot_exams = by_time[time_key]
-            time_str   = time_key.strftime("%I:%M%p").lstrip("0") if time_key else "–"
-
-            # Step 3: within each time slot, merge exams with the same course
-            # key = (course_id, instructor_id) → accumulate group names
-            from collections import OrderedDict
-            course_rows = OrderedDict()
-            for exam in slot_exams:
-                course   = exam.group.course if exam.group else None
-                c_id     = course.id if course else 0
-                inst     = course.instructor if course else None
-                inst_id  = inst.id if inst else 0
-                merge_key = (c_id, inst_id)
-
-                if merge_key not in course_rows:
-                    course_rows[merge_key] = {
-                        "course_title": course.title if course else "–",
-                        "instructor":   inst,
-                        "groups":       [],
-                    }
-                grp_name = exam.group.group_name if exam.group else "–"
-                course_rows[merge_key]["groups"].append(grp_name)
-
-            # Step 4: emit one row per unique course in this time slot
-            for slot_i, row_data in enumerate(course_rows.values()):
-                inst        = row_data["instructor"]
-                teacher_str = inst.get_full_name() if inst else "–"
-                groups_str  = ", ".join(row_data["groups"])
-
-                # Day&Date cell: show day bold + date on first row of date,
-                # show only date on second row (like image), blank after
-                if not date_shown and slot_i == 0:
-                    day_cell_text = f"<b>{day_name}</b><br/>{date_str}"
-                    date_shown = True
-                elif slot_i == 0 and date_shown:
-                    day_cell_text = date_str
-                else:
-                    day_cell_text = ""
-
-                tbl_data.append([
-                    Paragraph(day_cell_text, celc),
-                    Paragraph(time_str if slot_i == 0 else "", celc),
-                    Paragraph(teacher_str, cell),
-                    Paragraph(f"<b>{row_data['course_title']}</b>", cell),
-                    Paragraph(groups_str, celc),
-                ])
-                row_idx += 1
-
-        # Orange separator after each date block
-        tbl_data.append([Paragraph("", cell)] * 5)
-        style_cmds.append(("BACKGROUND", (0, row_idx), (-1, row_idx), SPACER_ROW))
-        style_cmds.append(("ROWHEIGHT",  (0, row_idx), (-1, row_idx), 8))
-        row_idx += 1
-
-    main_tbl = Table(tbl_data, colWidths=COL_W, repeatRows=1)
-    main_tbl.setStyle(TableStyle(style_cmds))
+        dept = (
+            exam.group.course.department
+            if exam.group and exam.group.course and exam.group.course.department
+            else None
+        )
+        dept_name = dept.name if dept else "No Department"
+        by_dept[dept_name].append(exam)
 
     # ── Assemble story ────────────────────────────────────────────────────────
     faculty_name  = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
     timetable_lbl = getattr(timetable, "name", None) or f"Exam Timetable ID {timetable.id}"
 
     story = _logo_and_header(timetable_lbl, faculty_name)
-    story.append(main_tbl)
+
+    for dept_name in sorted(by_dept.keys()):
+        # Department banner
+        story.append(Spacer(1, 0.3 * cm))
+        story.append(_dept_banner(dept_name))
+        story.append(Spacer(1, 0.1 * cm))
+
+        # Department exam table
+        story.append(_build_dept_table(by_dept[dept_name]))
 
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
