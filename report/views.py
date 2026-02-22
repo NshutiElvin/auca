@@ -222,9 +222,10 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
     )
 
     exams = exams.select_related(
-        "group", "group__course", "room",
-    ).prefetch_related(
-        "mastertimetableexam_set__instructor",
+        "group",
+        "group__course",
+        "group__course__instructor",   # Course.instructor → User
+        "room",
     ).order_by("date", "start_time", "group__group_name")
 
     # ── Column styles ─────────────────────────────────────────────────────────
@@ -274,7 +275,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
             if i == 0:
                 try:
                     day_name = date_key.strftime("%A")
-                    date_str = date_key.strftime("%-d-%b")   # e.g. 27-Feb
+                    date_str = f"{date_key.day}-{date_key.strftime('%b')}"  # e.g. 27-Feb
                 except AttributeError:
                     day_name = str(date_key)
                     date_str = ""
@@ -282,13 +283,12 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
                 day_name = ""
                 date_str = ""
 
-            # Teacher(s)
-            instructors = exam.mastertimetableexam_set.values_list(
-                "instructor__first_name", "instructor__last_name"
+            # Teacher — pulled from Course.instructor (FK to User)
+            instructor  = (
+                exam.group.course.instructor
+                if exam.group and exam.group.course else None
             )
-            teacher_str = ", ".join(
-                f"{fn} {ln}".strip() for fn, ln in instructors if fn or ln
-            ) or "–"
+            teacher_str = instructor.get_full_name() if instructor else "–"
 
             course_title = (
                 exam.group.course.title if exam.group and exam.group.course else "–"
