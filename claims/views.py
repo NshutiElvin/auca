@@ -158,31 +158,18 @@ class ClaimResponseViewSet(BaseViewSet):
     filterset_fields = ["claim", "responder"]
 
     def get_queryset(self):
-        """
-        Filter queryset based on user permissions and query parameters.
-        """
         queryset = super().get_queryset()
         user = self.request.user
-        
-        # Get claim_id from query parameters for filtering
-        claim_id = self.request.query_params.get('claim')
-        print("Filtering by claim_id for admin:", claim_id)
-        
+
         if not user.is_staff:
             try:
                 student = Student.objects.get(user=user)
-                # Filter through claim -> student relationship
-                queryset = queryset.filter(claim__student=student)  # <-- fix here
-                
-                if claim_id:
-                    try:
-                        claim = StudentClaim.objects.get(id=claim_id, student=student)
-                        queryset = queryset.filter(claim=claim)
-                    except StudentClaim.DoesNotExist:
-                        queryset = ClaimResponse.objects.none()
+                # Students only see their own claims
+                queryset = queryset.filter(claim__student=student)
             except Student.DoesNotExist:
                 queryset = ClaimResponse.objects.none()
-                return queryset
+
+        return queryset
 
     def get_permissions(self):
         """
