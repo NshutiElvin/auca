@@ -137,7 +137,7 @@ def _sb(name, **kwargs):
 def _logo_and_header(timetable_name: str, faculty: str) -> list:
     """
     Returns story elements for the AUCA header:
-      - Logo centered horizontally
+      - Logo perfectly centered horizontally
       - University name centered below logo
       - Faculty line centered
       - Blue banner with timetable title
@@ -146,8 +146,9 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
 
     # ── Logo + university name — all horizontally centered ───────────────────
     if os.path.isfile(LOGO_PATH):
-        # Added hAlign='CENTER' directly to the Image to force horizontal centering
-        logo_img = Image(LOGO_PATH, width=2.5 * cm, height=2.5 * cm, hAlign='CENTER')
+        # FIX 1: Removed hAlign='CENTER' from the Image. 
+        # The TableStyle will handle centering the image within its cell.
+        logo_img = Image(LOGO_PATH, width=2.5 * cm, height=2.5 * cm)
     else:
         logo_img = Paragraph("", _s("NoLogo"))
 
@@ -159,11 +160,13 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
                                _s("UniSub", fontSize=8, textColor=TEXT_DARK,
                                   alignment=TA_CENTER))]]
 
-    # Added hAlign="CENTER" to ensure the table itself centers on the page
-    header_tbl = Table(header_data, colWidths=["100%"], hAlign="CENTER")
+    # FIX 2: Removed colWidths=["100%"]. 
+    # Passing None (or omitting it) forces the table to auto-size to your 
+    # widest text block and center properly on the page.
+    header_tbl = Table(header_data, hAlign="CENTER")
     header_tbl.setStyle(TableStyle([
-        ("ALIGN",         (0, 0), (-1, -1), "CENTER"), # Horizontal center
-        ("VALIGN",        (0, 0), (-1, -1), "TOP"),    # Changed from MIDDLE to TOP
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"), # Centers the logo and text inside the cells
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING",   (0, 0), (-1, -1), 0),
         ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
         ("TOPPADDING",    (0, 0), (0, 0),   4),
@@ -187,12 +190,12 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
         _sb("Banner", fontSize=13, textColor=TEXT_WHITE, alignment=TA_CENTER),
     )]]
     
-    # Also added hAlign="CENTER" here for consistency
-    banner_tbl = Table(banner_data, colWidths=["100%"], hAlign="CENTER")
+    # Applied the same colWidths fix here
+    banner_tbl = Table(banner_data, hAlign="CENTER")
     banner_tbl.setStyle(TableStyle([
         ("BACKGROUND",    (0, 0), (-1, -1), BLUE_HEADER),
-        ("ALIGN",         (0, 0), (-1, -1), "CENTER"), # Ensure text inside banner is centered
-        ("VALIGN",        (0, 0), (-1, -1), "TOP"),    # Removed vertical centering here as well
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),    
         ("TOPPADDING",    (0, 0), (-1, -1), 8),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
         ("LEFTPADDING",   (0, 0), (-1, -1), 6),
