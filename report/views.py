@@ -33,7 +33,7 @@ from schedules.models import MasterTimetable   # adjust to your app name
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
 # Logo path — place your university logo here
-LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.jpeg")
 
 
 def _register_century_gothic() -> tuple:
