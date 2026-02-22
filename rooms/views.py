@@ -443,11 +443,16 @@ class RoomViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="occupancies")
     def room_occupancies(self, request):
         location= request.GET.get("location")
+        timetable= request.GET.get("timetable")
        
 
-        recent_timetable = MasterTimetable.objects.order_by("-created_at").first()
-        if location:
+        recent_timetable =  None
+        if timetable and location:
+            recent_timetable=MasterTimetable.objects.filter(id=timetable, location_id=location).order_by("-created_at").first()
+        elif location:
             recent_timetable=MasterTimetable.objects.filter(location_id=location).order_by("-created_at").first()
+        elif timetable:
+            recent_timetable=MasterTimetable.objects.filter(id=timetable).order_by("-created_at").first()
 
         if not recent_timetable:
             return Response(
