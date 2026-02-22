@@ -57,7 +57,6 @@ class ExamViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         timetable_id = request.GET.get('id') 
         location= request.GET.get("location")
-        print(location)
           
         queryset = self.filter_queryset(self.get_queryset())
         
@@ -283,8 +282,7 @@ class ExamViewSet(viewsets.ModelViewSet):
         from collections import defaultdict
 
         with transaction.atomic():
-            print(request.data)
-            # Extract and parse request data
+             
             start_date_str = request.data.get("start_date")
             end_date_str = request.data.get("end_date")
             course_ids = request.data.get("course_ids", None)
@@ -296,6 +294,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 return Response({"success": False, "message": "No active semester found"}, status=status.HTTP_400_BAD_REQUEST)
             location = client_config.get("location")
             academic_year = client_config.get("academicYear")
+            category = client_config.get("category", "Provisional")
 
             # Parse dates more efficiently
             if start_date_str and "T" in start_date_str:
@@ -312,6 +311,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 generated_by=request.user,
                 start_date=start_date,
                 end_date=end_date,
+                category=category,
                 location_id=int(location),
                 semester_id=int(term.id)
 
