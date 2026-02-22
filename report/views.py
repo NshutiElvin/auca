@@ -379,7 +379,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
 
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
-
+ 
 def _build_seating_pdf(
     timetable: MasterTimetable,
     exams,
@@ -389,6 +389,7 @@ def _build_seating_pdf(
     end_time=None
 ) -> bytes:
     import datetime as dt
+    from collections import OrderedDict
 
     buffer = io.BytesIO()
 
@@ -412,31 +413,27 @@ def _build_seating_pdf(
         exams = exams.filter(start_time=start_time, end_time=end_time)
 
     exams = exams.select_related(
-        "group", "group__course", "room",
+        "group", "group__course",
     ).order_by("date", "start_time", "group__course__title")
 
     # ── Styles ────────────────────────────────────────────────────────────────
-    hdr   = _sb("SH",   fontSize=9,  textColor=TEXT_DARK, alignment=TA_CENTER, leading=12)
-    cell  = _s("SC",    fontSize=8,  textColor=TEXT_DARK, alignment=TA_LEFT,   leading=11)
-    celc  = _s("SCC",   fontSize=8,  textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
-    exam_title_s  = _sb("ExTitle",   fontSize=11, textColor=BLUE_HEADER,
-                         spaceBefore=12, spaceAfter=6, leading=14)
-    room_header_s = _sb("RoomHeader",fontSize=10, textColor=PRIMARY,
-                         alignment=TA_LEFT, spaceBefore=8, spaceAfter=4)
+    hdr           = _sb("SH",         fontSize=9,  textColor=TEXT_DARK,   alignment=TA_CENTER, leading=12)
+    cell          = _s("SC",          fontSize=8,  textColor=TEXT_DARK,   alignment=TA_LEFT,   leading=11)
+    celc          = _s("SCC",         fontSize=8,  textColor=TEXT_DARK,   alignment=TA_CENTER, leading=11)
+    exam_title_s  = _sb("ExTitle",    fontSize=11, textColor=BLUE_HEADER, spaceBefore=12, spaceAfter=6, leading=14)
+    room_header_s = _sb("RoomHeader", fontSize=10, textColor=PRIMARY,     alignment=TA_LEFT, spaceBefore=8, spaceAfter=4)
 
-    faculty_name   = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
-    timetable_lbl  = getattr(timetable, "name",    None) or f"Exam Timetable ID {timetable.id}"
+    faculty_name  = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
+    timetable_lbl = getattr(timetable, "name",    None) or f"Exam Timetable ID {timetable.id}"
 
     # ── Build report title ────────────────────────────────────────────────────
     report_title = f"STUDENT SEATING REPORT – {timetable_lbl}"
     if room_id:
-        first_exam = exams.first()
-        if first_exam:
-            room_obj = first_exam.studentexam_set.filter(room_id=room_id).first()
-            if room_obj and room_obj.room:
-                report_title += f" - Room: {room_obj.room.name}"
-            else:
-                report_title += f" - Room ID: {room_id}"
+        first_se = StudentExam.objects.filter(room_id=room_id).select_related("room").first()
+        if first_se and first_se.room:
+            report_title += f" - Room: {first_se.room.name}"
+        else:
+            report_title += f" - Room ID: {room_id}"
     if date:
         try:
             formatted_date = dt.datetime.strptime(str(date), "%Y-%m-%d").strftime("%d %b %Y")
@@ -480,13 +477,22 @@ def _build_seating_pdf(
         ))
         story.append(Spacer(1, 0.2 * cm))
 
-    # ── Track current room for grouping (full timetable reports) ──────────────
+    # ── Group exams by date+time slot for merged tables ───────────────────────
+    slot_groups = OrderedDict()
+    for exam in exams:
+        key = (exam.date, exam.start_time, exam.end_time)
+        if key not in slot_groups:
+            slot_groups[key] = []
+        slot_groups[key].append(exam)
+
+    # ── Track current room for full timetable reports ─────────────────────────
     current_room = None
 
-    for exam in exams:
+    for (slot_date, slot_start, slot_end), slot_exams in slot_groups.items():
+
         # Room separator for full timetable (no room_id filter)
         if not room_id:
-            exam_room = exam.studentexam_set.values_list("room__name", flat=True).first()
+            exam_room = slot_exams[0].studentexam_set.values_list("room__name", flat=True).first()
             if exam_room != current_room:
                 if current_room is not None:
                     story.append(Spacer(1, 0.4 * cm))
@@ -502,31 +508,42 @@ def _build_seating_pdf(
                     ))
                     story.append(Spacer(1, 0.1 * cm))
 
-        # ── Exam header ───────────────────────────────────────────────────────
-        course_title  = exam.group.course.title if exam.group and exam.group.course else "–"
-        group_name    = exam.group.group_name   if exam.group else "–"
-        date_str      = exam.date.strftime("%d %b %Y")       if exam.date       else "–"
-        time_str      = exam.start_time.strftime("%I:%M %p").lstrip("0") if exam.start_time else "–"
-        end_time_str  = exam.end_time.strftime("%I:%M %p").lstrip("0")   if exam.end_time   else "–"
+        # ── Slot header ───────────────────────────────────────────────────────
+        date_str     = slot_date.strftime("%d %b %Y")               if slot_date  else "–"
+        time_str     = slot_start.strftime("%I:%M %p").lstrip("0")  if slot_start else "–"
+        end_time_str = slot_end.strftime("%I:%M %p").lstrip("0")    if slot_end   else "–"
+
+        course_labels = []
+        for exam in slot_exams:
+            title      = exam.group.course.title if exam.group and exam.group.course else "–"
+            group_name = exam.group.group_name   if exam.group else "–"
+            course_labels.append(f"{title} (Group {group_name})")
+        courses_str = " | ".join(course_labels)
 
         story.append(Paragraph(
-            f"<b>{course_title}</b> | Group: {group_name} | {date_str} | {time_str} – {end_time_str}",
+            f"<b>{courses_str}</b><br/>{date_str} | {time_str} – {end_time_str}",
             exam_title_s,
         ))
 
-        # ── Student list ──────────────────────────────────────────────────────
-        student_exams = (
-            StudentExam.objects
-            .filter(exam=exam)
-            .select_related("student__user", "room")
-            .order_by("student__reg_no")
-        )
-        if room_id:
-            student_exams = student_exams.filter(room_id=room_id)
+        # ── Collect ALL students from ALL exams in this slot ──────────────────
+        all_student_exams = []
+        for exam in slot_exams:
+            se_qs = (
+                StudentExam.objects
+                .filter(exam=exam)
+                .select_related("student__user", "room", "exam__group__course")
+                .order_by("student__reg_no")
+            )
+            if room_id:
+                se_qs = se_qs.filter(room_id=room_id)
+            all_student_exams.extend(list(se_qs))
 
-        if not student_exams.exists():
+        # Sort merged list by reg_no
+        all_student_exams.sort(key=lambda se: se.student.reg_no if se.student else "")
+
+        if not all_student_exams:
             story.append(Paragraph(
-                "No students assigned to this exam.",
+                "No students assigned to this slot.",
                 _s("NoStudents", fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
             ))
             story.append(Spacer(1, 0.3 * cm))
@@ -534,30 +551,33 @@ def _build_seating_pdf(
 
         # ── Column config ─────────────────────────────────────────────────────
         if room_id:
-            headers    = ["#", "Reg No", "Student Name", "Signature (In)", "Signature (Out)", "Status"]
-            col_widths = [0.8*cm, 2.5*cm, 6.0*cm, 3.5*cm, 3.5*cm, 2.5*cm]
+            headers    = ["#", "Reg No", "Student Name", "Course", "Signature (In)", "Signature (Out)"]
+            col_widths = [0.8*cm, 2.5*cm, 5.0*cm, 4.5*cm, 3.0*cm, 3.0*cm]
         else:
-            headers    = ["#", "Reg No", "Student Name", "Room", "Status"]
-            col_widths = [0.8*cm, 2.5*cm, 6.5*cm, 3.5*cm, 2.5*cm]
+            headers    = ["#", "Reg No", "Student Name", "Course", "Room"]
+            col_widths = [0.8*cm, 2.5*cm, 5.0*cm, 4.5*cm, 3.0*cm]
 
         s_data = [[Paragraph(h, hdr) for h in headers]]
 
-        for idx, se in enumerate(student_exams, start=1):
+        for idx, se in enumerate(all_student_exams, start=1):
             full_name = (
                 f"{se.student.user.first_name} {se.student.user.last_name}".strip()
                 if se.student and se.student.user else "–"
             )
-            reg_no = se.student.reg_no if se.student else "–"
-            status_str = (se.status or "–").capitalize()
+            reg_no       = se.student.reg_no if se.student else "–"
+            course_title = (
+                se.exam.group.course.title
+                if se.exam and se.exam.group and se.exam.group.course else "–"
+            )
 
             if room_id:
                 s_data.append([
                     Paragraph(str(idx), celc),
                     Paragraph(reg_no, cell),
                     Paragraph(full_name, cell),
+                    Paragraph(course_title, cell),
                     Paragraph("___________________", celc),
                     Paragraph("___________________", celc),
-                    Paragraph(status_str, celc),
                 ])
             else:
                 s_room = se.room.name if se.room else "–"
@@ -565,8 +585,8 @@ def _build_seating_pdf(
                     Paragraph(str(idx), celc),
                     Paragraph(reg_no, cell),
                     Paragraph(full_name, cell),
+                    Paragraph(course_title, cell),
                     Paragraph(s_room, celc),
-                    Paragraph(status_str, celc),
                 ])
 
         # ── Table style ───────────────────────────────────────────────────────
@@ -584,8 +604,7 @@ def _build_seating_pdf(
         ]
         if room_id:
             table_style.extend([
-                ("BACKGROUND", (3, 0), (4, 0), colors.HexColor("#E6F0FA")),
-                ("TEXTCOLOR",  (3, 1), (4, -1), colors.HexColor("#666666")),
+                ("BACKGROUND", (4, 0), (5, 0), colors.HexColor("#E6F0FA")),
             ])
 
         s_tbl = Table(s_data, colWidths=col_widths, repeatRows=1)
@@ -614,6 +633,10 @@ def format_time(time_str):
         return time_obj.strftime("%I:%M %p").lstrip("0")
     except Exception:
         return time_str
+
+
+
+ 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
