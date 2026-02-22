@@ -169,34 +169,20 @@ class ClaimResponseViewSet(BaseViewSet):
         print("Filtering by claim_id for admin:", claim_id)
         
         if not user.is_staff:
-            # Non-admin users (students) can only see responses to their own claims
             try:
                 student = Student.objects.get(user=user)
-                # Get all claims belonging to this student
-                student_claims = StudentClaim.objects.filter(student=student)
+                # Filter through claim -> student relationship
+                queryset = queryset.filter(claim__student=student)  # <-- fix here
                 
-                # Filter responses to only those belonging to student's claims
-                queryset = queryset.filter(claim__in=student_claims)
-                
-                # Further filter by claim_id if provided
                 if claim_id:
-                    # Ensure the claim belongs to this student
                     try:
-                        claim = student_claims.get(id=claim_id)
+                        claim = StudentClaim.objects.get(id=claim_id, student=student)
                         queryset = queryset.filter(claim=claim)
                     except StudentClaim.DoesNotExist:
-                        # Claim doesn't exist or doesn't belong to student
                         queryset = ClaimResponse.objects.none()
             except Student.DoesNotExist:
-                # User doesn't have a Student record
                 queryset = ClaimResponse.objects.none()
-        else:
-            # Admin users can see all responses
-            if claim_id:
-                
-                queryset = queryset.filter(claim_id=claim_id)
-        
-        return queryset
+                return queryset
 
     def get_permissions(self):
         """
