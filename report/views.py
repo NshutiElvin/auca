@@ -401,20 +401,30 @@ def _build_seating_pdf(
         title=f"Seating Report – {timetable.id}",
     )
 
-    # ── Apply filters ─────────────────────────────────────────────────────────
-    # Room is on StudentExam, NOT on Exam — filter via reverse relation
+    # ── Build base StudentExam queryset directly ───────────────────────────────
+    # Start from StudentExam since room is on StudentExam, not Exam
+    student_exams_qs = StudentExam.objects.filter(
+        exam__mastertimetableexam__master_timetable_id=timetable.id
+    ).select_related(
+        "student__user",
+        "room",
+        "exam",
+        "exam__group",
+        "exam__group__course",
+    ).order_by("exam__date", "exam__start_time", "student__reg_no")
+
+    # ── Apply filters directly on StudentExam ─────────────────────────────────
     if room_id:
-        exams = exams.filter(studentexam__room_id=room_id).distinct()
+        student_exams_qs = student_exams_qs.filter(room_id=room_id)
 
     if date:
-        exams = exams.filter(date=date)
+        student_exams_qs = student_exams_qs.filter(exam__date=date)
 
     if start_time and end_time:
-        exams = exams.filter(start_time=start_time, end_time=end_time)
-
-    exams = exams.select_related(
-        "group", "group__course",
-    ).order_by("date", "start_time", "group__course__title")
+        student_exams_qs = student_exams_qs.filter(
+            exam__start_time=start_time,
+            exam__end_time=end_time,
+        )
 
     # ── Styles ────────────────────────────────────────────────────────────────
     hdr           = _sb("SH",         fontSize=9,  textColor=TEXT_DARK,   alignment=TA_CENTER, leading=12)
@@ -445,8 +455,8 @@ def _build_seating_pdf(
 
     story = _logo_and_header(report_title, faculty_name)
 
-    # ── No exams found ────────────────────────────────────────────────────────
-    if not exams.exists():
+    # ── No data found ─────────────────────────────────────────────────────────
+    if not student_exams_qs.exists():
         error_msg = "No exams found"
         if room_id:
             error_msg += f" for Room ID: {room_id}"
@@ -472,82 +482,59 @@ def _build_seating_pdf(
         story.append(Spacer(1, 0.2 * cm))
     elif room_id and date:
         story.append(Paragraph(
-            f"<b>FULL DAY REPORT – {exams.count()} exam session(s)</b>",
+            f"<b>FULL DAY REPORT</b>",
             _sb("Summary", fontSize=10, textColor=PRIMARY, alignment=TA_CENTER)
         ))
         story.append(Spacer(1, 0.2 * cm))
 
-    # ── Group exams by date+time slot for merged tables ───────────────────────
+    # ── Group StudentExams by (room, date, start_time, end_time) ─────────────
     slot_groups = OrderedDict()
-    for exam in exams:
-        key = (exam.date, exam.start_time, exam.end_time)
+    for se in student_exams_qs:
+        room_name = se.room.name if se.room else "No Room"
+        key = (room_name, se.exam.date, se.exam.start_time, se.exam.end_time)
         if key not in slot_groups:
             slot_groups[key] = []
-        slot_groups[key].append(exam)
+        slot_groups[key].append(se)
 
-    # ── Track current room for full timetable reports ─────────────────────────
+    # ── Render each slot group ────────────────────────────────────────────────
     current_room = None
 
-    for (slot_date, slot_start, slot_end), slot_exams in slot_groups.items():
+    for (room_name, slot_date, slot_start, slot_end), slot_student_exams in slot_groups.items():
 
-        # Room separator for full timetable (no room_id filter)
+        # Room separator header for full timetable reports
         if not room_id:
-            exam_room = slot_exams[0].studentexam_set.values_list("room__name", flat=True).first()
-            if exam_room != current_room:
+            if room_name != current_room:
                 if current_room is not None:
                     story.append(Spacer(1, 0.4 * cm))
                     story.append(HRFlowable(
                         width="100%", thickness=1, color=PRIMARY,
                         spaceBefore=2, spaceAfter=2
                     ))
-                current_room = exam_room
-                if current_room:
-                    story.append(Paragraph(
-                        f"ROOM: {current_room.upper()}",
-                        room_header_s
-                    ))
-                    story.append(Spacer(1, 0.1 * cm))
+                current_room = room_name
+                story.append(Paragraph(
+                    f"ROOM: {room_name.upper()}",
+                    room_header_s
+                ))
+                story.append(Spacer(1, 0.1 * cm))
 
         # ── Slot header ───────────────────────────────────────────────────────
-        date_str     = slot_date.strftime("%d %b %Y")               if slot_date  else "–"
-        time_str     = slot_start.strftime("%I:%M %p").lstrip("0")  if slot_start else "–"
-        end_time_str = slot_end.strftime("%I:%M %p").lstrip("0")    if slot_end   else "–"
+        date_str     = slot_date.strftime("%d %b %Y")              if slot_date  else "–"
+        time_str     = slot_start.strftime("%I:%M %p").lstrip("0") if slot_start else "–"
+        end_time_str = slot_end.strftime("%I:%M %p").lstrip("0")   if slot_end   else "–"
 
-        course_labels = []
-        for exam in slot_exams:
-            title      = exam.group.course.title if exam.group and exam.group.course else "–"
-            group_name = exam.group.group_name   if exam.group else "–"
-            course_labels.append(f"{title} (Group {group_name})")
-        courses_str = " | ".join(course_labels)
+        # Collect unique courses in this slot
+        seen_courses = {}
+        for se in slot_student_exams:
+            if se.exam.id not in seen_courses:
+                title      = se.exam.group.course.title if se.exam.group and se.exam.group.course else "–"
+                group_name = se.exam.group.group_name   if se.exam.group else "–"
+                seen_courses[se.exam.id] = f"{title} (Group {group_name})"
+        courses_str = " | ".join(seen_courses.values())
 
         story.append(Paragraph(
             f"<b>{courses_str}</b><br/>{date_str} | {time_str} – {end_time_str}",
             exam_title_s,
         ))
-
-        # ── Collect ALL students from ALL exams in this slot ──────────────────
-        all_student_exams = []
-        for exam in slot_exams:
-            se_qs = (
-                StudentExam.objects
-                .filter(exam=exam)
-                .select_related("student__user", "room", "exam__group__course")
-                .order_by("student__reg_no")
-            )
-            if room_id:
-                se_qs = se_qs.filter(room_id=room_id)
-            all_student_exams.extend(list(se_qs))
-
-        # Sort merged list by reg_no
-        all_student_exams.sort(key=lambda se: se.student.reg_no if se.student else "")
-
-        if not all_student_exams:
-            story.append(Paragraph(
-                "No students assigned to this slot.",
-                _s("NoStudents", fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
-            ))
-            story.append(Spacer(1, 0.3 * cm))
-            continue
 
         # ── Column config ─────────────────────────────────────────────────────
         if room_id:
@@ -559,7 +546,7 @@ def _build_seating_pdf(
 
         s_data = [[Paragraph(h, hdr) for h in headers]]
 
-        for idx, se in enumerate(all_student_exams, start=1):
+        for idx, se in enumerate(slot_student_exams, start=1):
             full_name = (
                 f"{se.student.user.first_name} {se.student.user.last_name}".strip()
                 if se.student and se.student.user else "–"
@@ -622,6 +609,9 @@ def _build_seating_pdf(
 
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
+
+
+ 
 
 
 def format_time(time_str):
