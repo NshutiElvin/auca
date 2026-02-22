@@ -174,25 +174,12 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
 
     # ── Faculty line ──────────────────────────────────────────────────────────
     story.append(Paragraph(
-        faculty,
+        timetable_name,
         _sb("Faculty", fontSize=13, alignment=TA_CENTER, textColor=TEXT_DARK),
     ))
     story.append(Spacer(1, 0.2 * cm))
 
-    # ── Blue banner ───────────────────────────────────────────────────────────
-    banner_data = [[Paragraph(
-        (timetable_name or "Exam Timetable").upper(),
-        _sb("Banner", fontSize=13, textColor=TEXT_WHITE, alignment=TA_CENTER),
-    )]]
-    banner_tbl = Table(banner_data, colWidths=["100%"])
-    banner_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, -1), BLUE_HEADER),
-        ("TOPPADDING",    (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
-    ]))
-    story.append(banner_tbl)
+    
     story.append(Spacer(1, 0.1 * cm))
 
     return story
@@ -377,7 +364,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
 
     # ── Assemble story ────────────────────────────────────────────────────────
     faculty_name  = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
-    timetable_lbl = getattr(timetable, "name", None) or f"Exam Timetable ID {timetable.id}"
+    timetable_lbl = f"Campus: {timetable.location.name.capitalize} Semester: {timetable.semester.name.capitalize()}"
 
     story = _logo_and_header(timetable_lbl, faculty_name)
 
