@@ -21,7 +21,7 @@ from collections import defaultdict
 
 from exams.models import Exam, StudentExam
 from schedules.models import MasterTimetable    
-
+import datetime
 
 # ── Font Registration ─────────────────────────────────────────────────────────
 #
@@ -380,21 +380,28 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  REPORT 2 — STUDENT SEATING REPORT  (separate PDF)
-# ═══════════════════════════════════════════════════════════════════════════════
-def _build_seating_pdf(timetable: MasterTimetable, exams, room_id=None) -> bytes:
+def _build_seating_pdf(
+    timetable: MasterTimetable, 
+    exams, 
+    room_id=None, 
+    date=None,           # Add date parameter
+    start_time=None,     # Add start_time parameter
+    end_time=None        # Add end_time parameter
+) -> bytes:
     """
     Portrait A4 seating report.
     
-    If room_id is provided, generates report for that specific room only with signature columns.
-    Otherwise generates report for all rooms in the timetable.
+    Parameters:
+    - timetable: The master timetable
+    - exams: QuerySet of exams
+    - room_id: If provided, filter for specific room
+    - date: If provided with room_id, filter for specific date (full day report)
+    - start_time/end_time: If provided with room_id and date, filter for specific slot
     
     Features:
     - Professional table design with headers
     - Signature columns (sign in/out) ONLY for single room reports
-    - Room-specific filtering
+    - Date and time filtering for room-specific reports
     - Status tracking for attendance
     - Clean, professional layout
     """
@@ -408,9 +415,20 @@ def _build_seating_pdf(timetable: MasterTimetable, exams, room_id=None) -> bytes
         title=f"Seating Report – {timetable.id}",
     )
 
-    # Filter exams by room if room_id is provided
+    # Apply filters based on parameters
     if room_id:
         exams = exams.filter(room_id=room_id)
+    
+    # Apply date filter for room-specific reports
+    if date:
+        exams = exams.filter(date=date)
+    
+    # Apply time slot filter for specific slot reports
+    if start_time and end_time:
+        exams = exams.filter(
+            start_time=start_time,
+            end_time=end_time
+        )
     
     exams = exams.select_related(
         "group", "group__course", "room",
@@ -422,9 +440,21 @@ def _build_seating_pdf(timetable: MasterTimetable, exams, room_id=None) -> bytes
             f"STUDENT SEATING REPORT – {getattr(timetable, 'name', '') or f'Timetable ID {timetable.id}'}",
             getattr(timetable, "faculty", "Faculty of Information Technology"),
         )
-        room_info = f" for Room: {room_id}" if room_id else ""
+        
+        # Build detailed error message based on filters
+        error_msg = "No exams found"
+        if room_id:
+            room = exams.first().room if exams.exists() else None
+            room_name = room.name if room else f"ID {room_id}"
+            error_msg += f" for Room: {room_name}"
+        if date:
+            error_msg += f" on {date}"
+        if start_time and end_time:
+            error_msg += f" at {start_time}-{end_time}"
+        error_msg += " in this timetable."
+        
         story.append(Paragraph(
-            f"No exams found{room_info} in this timetable.",
+            error_msg,
             _s("NoData", fontSize=12, alignment=TA_CENTER, textColor=colors.grey)
         ))
         doc.build(story, canvasmaker=_NumberedCanvas)
@@ -447,17 +477,38 @@ def _build_seating_pdf(timetable: MasterTimetable, exams, room_id=None) -> bytes
     faculty_name = getattr(timetable, "faculty", "Faculty of Information Technology")
     timetable_lbl = getattr(timetable, "name", None) or f"Exam Timetable ID {timetable.id}"
     
-    # Add room info to title if filtering by room
+    # Build dynamic title based on filters
     report_title = f"STUDENT SEATING REPORT – {timetable_lbl}"
     if room_id:
         first_exam = exams.first()
         if first_exam and first_exam.room:
-            report_title += f" (Room: {first_exam.room.name})"
+            report_title += f" - Room: {first_exam.room.name}"
+    if date:
+        formatted_date = datetime.strptime(date, "%Y-%m-%d").strftime("%d %b %Y") if date else ""
+        report_title += f" - Date: {formatted_date}"
+    if start_time and end_time:
+        report_title += f" - Time: {start_time} to {end_time}"
 
     story = _logo_and_header(report_title, faculty_name)
 
     # Track current room for grouping in full timetable reports
     current_room = None
+    
+    # Add summary info for filtered reports
+    if room_id and date and not (start_time and end_time):
+        # Full day report - show summary
+        story.append(Paragraph(
+            f"<b>FULL DAY REPORT - {len(exams)} exam sessions</b>",
+            _sb("Summary", fontSize=10, textColor=PRIMARY, alignment=TA_CENTER)
+        ))
+        story.append(Spacer(1, 0.2 * cm))
+    elif room_id and date and start_time and end_time:
+        # Slot report - show slot info
+        story.append(Paragraph(
+            f"<b>SLOT REPORT - {format_time(start_time)} to {format_time(end_time)}</b>",
+            _sb("Summary", fontSize=10, textColor=PRIMARY, alignment=TA_CENTER)
+        ))
+        story.append(Spacer(1, 0.2 * cm))
     
     for exam in exams:
         # Add room separator if room changes and we're not filtering by a specific room
@@ -486,10 +537,11 @@ def _build_seating_pdf(timetable: MasterTimetable, exams, room_id=None) -> bytes
         room_name = exam.room.name if exam.room else "–"
         date_str = exam.date.strftime("%d %b %Y") if exam.date else "–"
         time_str = exam.start_time.strftime("%I:%M %p").lstrip("0") if exam.start_time else "–"
+        end_time_str = exam.end_time.strftime("%I:%M %p").lstrip("0") if exam.end_time else "–"
         
         # Add exam header with professional styling
         exam_header = Paragraph(
-            f"{course_title}  |  Group: {group_name}  |  {date_str}  |  {time_str}",
+            f"<b>{course_title}</b> | Group: {group_name} | {date_str} | {time_str} - {end_time_str}",
             exam_title_s,
         )
         story.append(exam_header)
@@ -607,6 +659,16 @@ def _build_seating_pdf(timetable: MasterTimetable, exams, room_id=None) -> bytes
     return buffer.getvalue()
 
 
+def format_time(time_str):
+    """Helper function to format time string"""
+    if not time_str:
+        return ""
+    try:
+        time_obj = datetime.strptime(time_str, "%H:%M:%S")
+        return time_obj.strftime("%I:%M %p").lstrip("0")
+    except:
+        return time_str
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  VIEWS
@@ -670,6 +732,9 @@ class TimetablePDFView(generics.GenericAPIView):
 
         report_type = request.GET.get("report", "timetable").lower()
         room_id = request.GET.get("room_id")
+        date = request.GET.get("date")
+        start_time = request.GET.get("start_time")
+        end_time = request.GET.get("end_time")
 
         # Validate room_id if provided
         if room_id:
@@ -683,11 +748,23 @@ class TimetablePDFView(generics.GenericAPIView):
 
         try:
             if report_type == "seating":
-                pdf_bytes = _build_seating_pdf(timetable, exams, room_id)
+                pdf_bytes = _build_seating_pdf(
+                    timetable, 
+                    exams, 
+                    room_id=room_id,
+                    date=date,
+                    start_time=start_time,
+                    end_time=end_time
+                )
                 
-                # Generate filename based on report type
+                # Generate filename based on parameters
                 if room_id:
-                    filename = f"seating_report_room{room_id}_{timetable.id}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
+                    if date and start_time and end_time:
+                        filename = f"room{room_id}_slot_{date}_{start_time.replace(':','')}-{end_time.replace(':','')}.pdf"
+                    elif date:
+                        filename = f"room{room_id}_fullday_{date}.pdf"
+                    else:
+                        filename = f"room{room_id}_report_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
                 else:
                     filename = f"seating_report_{timetable.id}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
             else:
