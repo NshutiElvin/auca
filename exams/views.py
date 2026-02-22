@@ -204,10 +204,10 @@ class ExamViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["GET"], url_path="unscheduled_exams")
     def unscheduled_exams(self, request):
         try:
-            location = request.GET.get("location")
+            location = request.GET.get("id")
 
             # Get recent timetable efficiently
-            timetable_filter = {"location_id": location} if location else {}
+            timetable_filter = {"id": location} if location else {}
             recent_timetable = MasterTimetable.objects.filter(
                 **timetable_filter
             ).order_by("-created_at").first()
