@@ -35,7 +35,7 @@ class MasterTimetableSerializer(serializers.ModelSerializer):
     class Meta:
         model = MasterTimetable
         fields = [
-            "id","academic_year","location", "generated_by", "generated_at", "published_at", "start_date", "end_date", "status", "user", "semester"
+            "id","academic_year","category", "location", "generated_by", "generated_at", "published_at", "start_date", "end_date", "status", "user", "semester"
 ,         ]
 
  

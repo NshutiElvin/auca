@@ -50,6 +50,7 @@ class MasterTimetable( TimeStampedModel):
     name= models.CharField(max_length=255, null=True)
     academic_year= models.CharField(max_length=255, null=False)
     generated_by= models.ForeignKey(User, on_delete=models.CASCADE, null=False)
+    category= models.CharField(max_length=255, null=True, blank=True)
     generated_at=models.DateTimeField(auto_now_add=True)
     published_at= models.DateTimeField(auto_now=True)
     start_date = models.DateField()

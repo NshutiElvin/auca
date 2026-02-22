@@ -19,4 +19,5 @@ urlpatterns = [
     path("api/uploads/", include("uploads.urls")),
     path("api/claims/", include("claims.urls")),
     path("api/config/", include("config.urls")),
+    path("api/report/", include("report.urls")),
 ]

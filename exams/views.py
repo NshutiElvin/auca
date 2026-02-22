@@ -100,7 +100,6 @@ class ExamViewSet(viewsets.ModelViewSet):
             if location:
                     print("location found", location, sep=" ")
                     recent_timetable=MasterTimetable.objects.filter(location_id=location).order_by("-created_at").first()
-                    print(recent_timetable.id)
                     queryset = queryset.filter(
                     mastertimetableexam__master_timetable_id=recent_timetable.id
                 )     

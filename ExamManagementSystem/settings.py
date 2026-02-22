@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     'uploads',
     'import_export',
     'claims',
+    'report'
 ]
 
 REST_FRAMEWORK = {
