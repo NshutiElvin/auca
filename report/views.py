@@ -384,10 +384,19 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  REPORT 2 — STUDENT SEATING REPORT  (separate PDF)
 # ═══════════════════════════════════════════════════════════════════════════════
-def _build_seating_pdf(timetable: MasterTimetable, exams) -> bytes:
+def _build_seating_pdf(timetable: MasterTimetable, exams, room_id=None) -> bytes:
     """
-    Portrait A4 seating report — one section per exam showing every student,
-    their assigned room, sign-in/out times, and attendance status.
+    Portrait A4 seating report.
+    
+    If room_id is provided, generates report for that specific room only with signature columns.
+    Otherwise generates report for all rooms in the timetable.
+    
+    Features:
+    - Professional table design with headers
+    - Signature columns (sign in/out) ONLY for single room reports
+    - Room-specific filtering
+    - Status tracking for attendance
+    - Clean, professional layout
     """
     buffer = io.BytesIO()
 
@@ -399,39 +408,93 @@ def _build_seating_pdf(timetable: MasterTimetable, exams) -> bytes:
         title=f"Seating Report – {timetable.id}",
     )
 
+    # Filter exams by room if room_id is provided
+    if room_id:
+        exams = exams.filter(room_id=room_id)
+    
     exams = exams.select_related(
         "group", "group__course", "room",
-    ).order_by("date", "start_time")
+    ).order_by("date", "start_time", "room__name")
 
-    # Styles
-    hdr   = _sb("SH",  fontSize=8,  textColor=TEXT_DARK, alignment=TA_LEFT)
-    cell  = _s("SC",   fontSize=8,  textColor=TEXT_DARK, alignment=TA_LEFT,   leading=11)
-    celc  = _s("SCC",  fontSize=8,  textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
-    celbc = _sb("SCBC",fontSize=8,  textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
-    exam_title_s = _sb("ExTitle", fontSize=10, textColor=BLUE_HEADER,
-                        spaceBefore=10, spaceAfter=4)
+    if not exams.exists():
+        # Create a simple PDF with message
+        story = _logo_and_header(
+            f"STUDENT SEATING REPORT – {getattr(timetable, 'name', '') or f'Timetable ID {timetable.id}'}",
+            getattr(timetable, "faculty", "Faculty of Information Technology"),
+        )
+        room_info = f" for Room: {room_id}" if room_id else ""
+        story.append(Paragraph(
+            f"No exams found{room_info} in this timetable.",
+            _s("NoData", fontSize=12, alignment=TA_CENTER, textColor=colors.grey)
+        ))
+        doc.build(story, canvasmaker=_NumberedCanvas)
+        return buffer.getvalue()
 
-    faculty_name  = getattr(timetable, "faculty",  "Faculty of Information Technology")
+    # Styles with professional typography
+    hdr = _sb("SH", fontSize=9, textColor=TEXT_DARK, alignment=TA_CENTER, leading=12)
+    cell = _s("SC", fontSize=8, textColor=TEXT_DARK, alignment=TA_LEFT, leading=11)
+    celc = _s("SCC", fontSize=8, textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
+    celbc = _sb("SCBC", fontSize=8, textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
+    
+    # Enhanced exam title style
+    exam_title_s = _sb("ExTitle", fontSize=11, textColor=BLUE_HEADER,
+                       spaceBefore=12, spaceAfter=6, leading=14)
+    
+    # Room header style (for room-specific reports)
+    room_header_s = _sb("RoomHeader", fontSize=10, textColor=PRIMARY,
+                        alignment=TA_LEFT, spaceBefore=8, spaceAfter=4)
+
+    faculty_name = getattr(timetable, "faculty", "Faculty of Information Technology")
     timetable_lbl = getattr(timetable, "name", None) or f"Exam Timetable ID {timetable.id}"
+    
+    # Add room info to title if filtering by room
+    report_title = f"STUDENT SEATING REPORT – {timetable_lbl}"
+    if room_id:
+        first_exam = exams.first()
+        if first_exam and first_exam.room:
+            report_title += f" (Room: {first_exam.room.name})"
 
-    story = _logo_and_header(
-        f"STUDENT SEATING REPORT – {timetable_lbl}",
-        faculty_name,
-    )
+    story = _logo_and_header(report_title, faculty_name)
 
+    # Track current room for grouping in full timetable reports
+    current_room = None
+    
     for exam in exams:
+        # Add room separator if room changes and we're not filtering by a specific room
+        if not room_id and exam.room != current_room:
+            if current_room is not None:
+                story.append(Spacer(1, 0.4 * cm))
+                story.append(HRFlowable(
+                    width="100%",
+                    thickness=1,
+                    color=PRIMARY,
+                    spaceBefore=2,
+                    spaceAfter=2
+                ))
+            current_room = exam.room
+            if current_room:
+                story.append(Paragraph(
+                    f"ROOM: {current_room.name.upper()}",
+                    room_header_s
+                ))
+                story.append(Spacer(1, 0.1 * cm))
+
+        # Exam header information
         course_title = (exam.group.course.title
                         if exam.group and exam.group.course else "–")
-        group_name   = exam.group.group_name if exam.group else "–"
-        room_name    = exam.room.name        if exam.room  else "–"
-        date_str     = exam.date.strftime("%d %b %Y") if exam.date else "–"
-        time_str     = exam.start_time.strftime("%I:%M %p").lstrip("0") if exam.start_time else "–"
-
-        story.append(Paragraph(
-            f"{course_title}  |  Group: {group_name}  |  {date_str}  |  {time_str}  |  Room: {room_name}",
+        group_name = exam.group.group_name if exam.group else "–"
+        room_name = exam.room.name if exam.room else "–"
+        date_str = exam.date.strftime("%d %b %Y") if exam.date else "–"
+        time_str = exam.start_time.strftime("%I:%M %p").lstrip("0") if exam.start_time else "–"
+        
+        # Add exam header with professional styling
+        exam_header = Paragraph(
+            f"{course_title}  |  Group: {group_name}  |  {date_str}  |  {time_str}",
             exam_title_s,
-        ))
+        )
+        story.append(exam_header)
 
+        # Get student assignments for this exam
         student_exams = (
             StudentExam.objects
             .filter(exam=exam)
@@ -440,58 +503,109 @@ def _build_seating_pdf(timetable: MasterTimetable, exams) -> bytes:
         )
 
         if not student_exams.exists():
-            story.append(Paragraph("No students assigned to this exam.", cell))
+            story.append(Paragraph(
+                "No students assigned to this exam.",
+                _s("NoStudents", fontSize=8, textColor=colors.grey, alignment=TA_CENTER)
+            ))
             story.append(Spacer(1, 0.3 * cm))
             continue
 
-        s_data = [[
-            Paragraph(h, hdr)
-            for h in ["#", "Reg No", "Student Name", "Room", "Sign In", "Sign Out", "Status"]
-        ]]
+        # Determine column configuration based on report type
+        if room_id:
+            # SINGLE ROOM REPORT - Include signature columns
+            headers = ["#", "Reg No", "Student Name", "Signature (In)", "Signature (Out)", "Status"]
+            col_widths = [0.8*cm, 2.5*cm, 6.0*cm, 3.5*cm, 3.5*cm, 2.5*cm]
+            
+            s_data = [[Paragraph(h, hdr) for h in headers]]
+            
+            for idx, se in enumerate(student_exams, start=1):
+                full_name = (
+                    f"{se.student.user.first_name} {se.student.user.last_name}".strip()
+                    if se.student and se.student.user else "–"
+                )
+                reg_no = se.student.reg_no if se.student else "–"
+                status = (se.status or "–").capitalize()
+                
+                # Add empty signature fields with placeholder lines
+                s_data.append([
+                    Paragraph(str(idx), celc),
+                    Paragraph(reg_no, cell),
+                    Paragraph(full_name, cell),
+                    Paragraph("___________________", celc),  # Signature line
+                    Paragraph("___________________", celc),  # Signature line
+                    Paragraph(status, celc),
+                ])
+        else:
+            # FULL TIMETABLE REPORT - Standard columns without signatures
+            headers = ["#", "Reg No", "Student Name", "Room", "Status"]
+            col_widths = [0.8*cm, 2.5*cm, 6.5*cm, 3.5*cm, 2.5*cm]
+            
+            s_data = [[Paragraph(h, hdr) for h in headers]]
+            
+            for idx, se in enumerate(student_exams, start=1):
+                full_name = (
+                    f"{se.student.user.first_name} {se.student.user.last_name}".strip()
+                    if se.student and se.student.user else "–"
+                )
+                reg_no = se.student.reg_no if se.student else "–"
+                s_room = se.room.name if se.room else "–"
+                status = (se.status or "–").capitalize()
+                
+                s_data.append([
+                    Paragraph(str(idx), celc),
+                    Paragraph(reg_no, cell),
+                    Paragraph(full_name, cell),
+                    Paragraph(s_room, celc),
+                    Paragraph(status, celc),
+                ])
 
-        for idx, se in enumerate(student_exams, start=1):
-            full_name = (
-                f"{se.student.user.first_name} {se.student.user.last_name}".strip()
-                if se.student and se.student.user else "–"
-            )
-            reg_no    = se.student.reg_no if se.student else "–"
-            s_room    = se.room.name if se.room else "–"
-            sign_in   = se.signin_attendance.strftime("%H:%M")  if se.signin_attendance  else "–"
-            sign_out  = se.signout_attendance.strftime("%H:%M") if se.signout_attendance else "–"
-            status    = (se.status or "–").capitalize()
-
-            s_data.append([
-                Paragraph(str(idx),  celc),
-                Paragraph(reg_no,    cell),
-                Paragraph(full_name, cell),
-                Paragraph(s_room,    celc),
-                Paragraph(sign_in,   celc),
-                Paragraph(sign_out,  celc),
-                Paragraph(status,    celc),
-            ])
-
+        # Create table with professional styling
         s_tbl = Table(
             s_data,
-            colWidths=[1*cm, 2.8*cm, 5.5*cm, 2.8*cm, 2.2*cm, 2.2*cm, 2.2*cm],
+            colWidths=col_widths,
             repeatRows=1,
         )
-        s_tbl.setStyle(TableStyle([
-            ("BACKGROUND",     (0, 0), (-1, 0), COL_HEADER),
+        
+        # Enhanced table styling
+        table_style = [
+            ("BACKGROUND", (0, 0), (-1, 0), COL_HEADER),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1),
-             [colors.white, colors.HexColor("#EBF5FB")]),
-            ("BOX",            (0, 0), (-1, -1), 0.5, BORDER_COL),
-            ("INNERGRID",      (0, 0), (-1, -1), 0.3, colors.HexColor("#AAAAAA")),
-            ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING",     (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
-            ("LEFTPADDING",    (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING",   (0, 0), (-1, -1), 5),
-        ]))
+             [colors.white, colors.HexColor("#F8F9FC")]),  # Subtle alternating rows
+            ("BOX", (0, 0), (-1, -1), 0.5, BORDER_COL),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ]
+        
+        # Add signature column specific styling for single room reports
+        if room_id:
+            table_style.extend([
+                ("BACKGROUND", (3, 0), (4, 0), colors.HexColor("#E6F0FA")),  # Light blue for signature headers
+                ("FONTNAME", (3, 1), (4, -1), FONT_REGULAR),
+                ("TEXTCOLOR", (3, 1), (4, -1), colors.HexColor("#666666")),  # Grey text for signature lines
+            ])
+        
+        s_tbl.setStyle(TableStyle(table_style))
+        
+        # Add table with keep together to prevent splitting across pages
         story.append(KeepTogether(s_tbl))
         story.append(Spacer(1, 0.4 * cm))
+        
+        # Add signature instructions for single room reports
+        if room_id:
+            story.append(Paragraph(
+                "<i>Note: Students must sign in before exam and sign out after completion.</i>",
+                _s("Note", fontSize=7, textColor=colors.grey, alignment=TA_RIGHT)
+            ))
+            story.append(Spacer(1, 0.2 * cm))
 
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -555,14 +669,30 @@ class TimetablePDFView(generics.GenericAPIView):
             })
 
         report_type = request.GET.get("report", "timetable").lower()
+        room_id = request.GET.get("room_id")
+
+        # Validate room_id if provided
+        if room_id:
+            try:
+                room_id = int(room_id)
+            except ValueError:
+                return Response({
+                    "success": False,
+                    "message": "Invalid room ID — must be an integer."
+                }, status=400)
 
         try:
             if report_type == "seating":
-                pdf_bytes = _build_seating_pdf(timetable, exams)
-                filename  = f"seating_report_{timetable.id}_{timezone.now().strftime('%Y%m%d')}.pdf"
+                pdf_bytes = _build_seating_pdf(timetable, exams, room_id)
+                
+                # Generate filename based on report type
+                if room_id:
+                    filename = f"seating_report_room{room_id}_{timetable.id}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
+                else:
+                    filename = f"seating_report_{timetable.id}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
             else:
                 pdf_bytes = _build_timetable_pdf(timetable, exams)
-                filename  = f"exam_timetable_{timetable.id}_{timezone.now().strftime('%Y%m%d')}.pdf"
+                filename = f"exam_timetable_{timetable.id}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
         except Exception as exc:
             return Response(
                 {"success": False, "message": f"PDF generation failed: {exc}"},
