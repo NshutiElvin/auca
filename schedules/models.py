@@ -1,12 +1,10 @@
 from django.db import models
 from courses.models import Course
 from courses.models import Course
-from django.contrib.auth import get_user_model
-
+from django.conf import settings
 from rooms.models import Location
 from semesters.models import Semester
 
-User= get_user_model()
 class TimeStampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)   
     updated_at = models.DateTimeField(auto_now=True)       
@@ -49,7 +47,7 @@ class MasterTimetable( TimeStampedModel):
     ]
     name= models.CharField(max_length=255, null=True)
     academic_year= models.CharField(max_length=255, null=False)
-    generated_by= models.ForeignKey(User, on_delete=models.CASCADE, null=False)
+    generated_by= models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=False)
     category= models.CharField(max_length=255, null=True, blank=True)
     generated_at=models.DateTimeField(auto_now_add=True)
     published_at= models.DateTimeField(auto_now=True)
