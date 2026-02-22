@@ -422,7 +422,7 @@ def _build_seating_pdf(
     room_header_s = _sb("RoomHeader", fontSize=10, textColor=PRIMARY,     alignment=TA_LEFT, spaceBefore=8, spaceAfter=4)
 
     faculty_name  = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
-    timetable_lbl = getattr(timetable, "name",    None) or f"Exam Timetable ID {timetable.id}"
+    timetable_lbl = f"Campus: {timetable.location.name.capitalize()}, Academic year: {timetable.academic_year}, Semester: {timetable.semester.name.capitalize()}"
 
     # ── Build report title ────────────────────────────────────────────────────
     report_title = f"STUDENT SEATING REPORT – {timetable_lbl}"
