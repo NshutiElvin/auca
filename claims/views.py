@@ -7,6 +7,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter
 from student.models import Student
+from rest_framework.exceptions import PermissionDenied
 
 
 class BaseViewSet(viewsets.ModelViewSet):
@@ -36,6 +37,20 @@ class BaseViewSet(viewsets.ModelViewSet):
             "message": f"{self._resource_name().title()}s fetched successfully"
         })
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+
+        if not user.is_staff:
+            try:
+                student = Student.objects.get(user=user)
+                # Students only see their own claims
+                queryset = queryset.filter(student=student)
+            except Student.DoesNotExist:
+                queryset = StudentClaim.objects.none()
+
+        return queryset
+
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
@@ -46,11 +61,7 @@ class BaseViewSet(viewsets.ModelViewSet):
         })
 
     def create(self, request, *args, **kwargs):
-        # update request data to include student from request.user
-        request_data = request.data.copy()
-        requestStudent= Student.objects.get(user=request.user)
-        request_data['student'] =requestStudent.id
-        serializer = self.get_serializer(data=request_data)
+        serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
@@ -59,6 +70,13 @@ class BaseViewSet(viewsets.ModelViewSet):
             "data": serializer.data,
             "message": f"{self._resource_name().title()} created successfully"
         }, status=status.HTTP_201_CREATED, headers=headers)
+    
+    def perform_create(self, serializer):
+        try:
+            student_instance = Student.objects.get(user=self.request.user)
+            serializer.save(student=student_instance)
+        except Student.DoesNotExist:
+            raise PermissionDenied("No student record found for this user.")
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
