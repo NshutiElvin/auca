@@ -328,7 +328,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
     main_tbl.setStyle(TableStyle(style_cmds))
 
     # ── Assemble story ────────────────────────────────────────────────────────
-    faculty_name  = getattr(timetable, "faculty",  "Faculty of Information Technology")
+    faculty_name  =  "Faculty of Information Technology"
     timetable_lbl = getattr(timetable, "name",     f"Exam Timetable ID {timetable.id}")
 
     story = _logo_and_header(timetable_lbl, faculty_name)
