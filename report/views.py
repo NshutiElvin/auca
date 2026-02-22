@@ -37,15 +37,15 @@ LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "
 
 
 def _register_century_gothic() -> tuple:
-    alias_reg      = "CenturyGothic"
-    alias_bold     = "CenturyGothic-Bold"
-    alias_italic   = "CenturyGothic-Italic"
-    alias_bold_ita = "CenturyGothic-BoldItalic"
+    alias_reg      = "centurygothic"
+    alias_bold     = "centurygothic_bold"
+    alias_italic   = "centurygothic"
+    alias_bold_ita = "centurygothic"
 
     reg_path      = os.path.join(FONT_DIR, "centurygothic.ttf")
     bold_path     = os.path.join(FONT_DIR, "centurygothic_bold.ttf")
     italic_path   = os.path.join(FONT_DIR, "centurygothic.ttf")
-    bold_ita_path = os.path.join(FONT_DIR, "centurygothic_bold.ttf")
+    bold_ita_path = os.path.join(FONT_DIR, "centurygothic.ttf")
 
     for label, path in [("Regular  → centurygothic.ttf",  reg_path),
                          ("Bold     → centurygothic_bold.ttf", bold_path)]:
@@ -76,13 +76,14 @@ def _register_century_gothic() -> tuple:
 FONT_REGULAR, FONT_BOLD = _register_century_gothic()
 
 
-# ── Colours (matching the image exactly) ──────────────────────────────────────
-BLUE_HEADER  = colors.HexColor("#4472C4")   # blue title banner
-COL_HEADER   = colors.HexColor("#D9D9D9")   # grey column header row
-DAY_ROW      = colors.HexColor("#FFFFFF")   # day name row (white, bold)
-DATE_ROW     = colors.HexColor("#FFFFFF")   # date row (white)
-SPACER_ROW   = colors.HexColor("#F4B183")   # salmon/orange separator row
-BORDER_COL   = colors.HexColor("#000000")   # table border
+# ── Colours ───────────────────────────────────────────────────────────────────
+PRIMARY      = colors.HexColor("#004594")   # AUCA primary blue
+BLUE_HEADER  = colors.HexColor("#004594")   # title banner
+COL_HEADER   = colors.HexColor("#D9E1F2")   # tinted column header (light primary)
+DAY_ROW      = colors.HexColor("#FFFFFF")
+DATE_ROW     = colors.HexColor("#FFFFFF")
+SPACER_ROW   = colors.HexColor("#B8CCE4")   # light-blue separator (tint of primary)
+BORDER_COL   = colors.HexColor("#004594")   # border matches primary
 TEXT_DARK    = colors.HexColor("#000000")
 TEXT_WHITE   = colors.HexColor("#FFFFFF")
 
@@ -135,56 +136,53 @@ def _sb(name, **kwargs):
 # ── Logo helper ───────────────────────────────────────────────────────────────
 def _logo_and_header(timetable_name: str, faculty: str) -> list:
     """
-    Returns story elements that reproduce the AUCA header:
-      [logo + university name]
-      Faculty of ...
-      [blue banner: timetable title]
+    Returns story elements for the AUCA header:
+      - Logo centered
+      - University name centered below logo
+      - Faculty line centered
+      - Blue banner with timetable title
     """
     story = []
 
-    # University logo + name side by side
+    # ── Logo + university name — all horizontally centered ───────────────────
     if os.path.isfile(LOGO_PATH):
-        logo = Image(LOGO_PATH, width=2.2 * cm, height=2.2 * cm)
+        logo_img = Image(LOGO_PATH, width=2.5 * cm, height=2.5 * cm)
     else:
-        logo = Paragraph("", _s("NoLogo"))
+        logo_img = Paragraph("", _s("NoLogo"))
 
-    uni_name_style = _sb("UniName", fontSize=16, textColor=TEXT_DARK,
-                          alignment=TA_LEFT, leading=20)
-    uni_sub_style  = _s("UniSub",  fontSize=8,  textColor=TEXT_DARK,
-                         alignment=TA_LEFT)
+    header_data = [[logo_img],
+                   [Paragraph("Adventist University of Central Africa",
+                               _sb("UniName", fontSize=16, textColor=TEXT_DARK,
+                                   alignment=TA_CENTER, leading=22))],
+                   [Paragraph("P.O. Box 2461 Kigali, Rwanda  |  www.auca.ac.rw  |  info@auca.ac.rw",
+                               _s("UniSub", fontSize=8, textColor=TEXT_DARK,
+                                  alignment=TA_CENTER))]]
 
-    uni_block = [
-        [
-            logo,
-            [
-                Paragraph("Adventist University of Central Africa", uni_name_style),
-                Paragraph("P.O. Box 2461 Kigali, Rwanda  |  www.auca.ac.rw  |  info@auca.ac.rw",
-                          uni_sub_style),
-            ],
-        ]
-    ]
-    logo_tbl = Table(uni_block, colWidths=[2.5 * cm, None])
-    logo_tbl.setStyle(TableStyle([
-        ("VALIGN",  (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING",   (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
+    header_tbl = Table(header_data, colWidths=["100%"])
+    header_tbl.setStyle(TableStyle([
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+        ("TOPPADDING",    (0, 0), (0, 0),   4),
+        ("BOTTOMPADDING", (0, 0), (0, 0),   6),
+        ("TOPPADDING",    (0, 1), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
     ]))
-    story.append(logo_tbl)
-    story.append(Spacer(1, 0.3 * cm))
+    story.append(header_tbl)
+    story.append(Spacer(1, 0.25 * cm))
 
-    # Faculty line
+    # ── Faculty line ──────────────────────────────────────────────────────────
     story.append(Paragraph(
         faculty,
-        _sb("Faculty", fontSize=13, alignment=TA_CENTER, textColor=TEXT_DARK)
+        _sb("Faculty", fontSize=13, alignment=TA_CENTER, textColor=TEXT_DARK),
     ))
     story.append(Spacer(1, 0.2 * cm))
 
-    # Blue banner
+    # ── Blue banner ───────────────────────────────────────────────────────────
     banner_data = [[Paragraph(
         (timetable_name or "Exam Timetable").upper(),
-        _sb("Banner", fontSize=13, textColor=TEXT_WHITE, alignment=TA_CENTER)
+        _sb("Banner", fontSize=13, textColor=TEXT_WHITE, alignment=TA_CENTER),
     )]]
     banner_tbl = Table(banner_data, colWidths=["100%"])
     banner_tbl.setStyle(TableStyle([
