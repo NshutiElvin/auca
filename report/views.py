@@ -364,7 +364,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
 
     # ── Assemble story ────────────────────────────────────────────────────────
     faculty_name  = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
-    timetable_lbl = f"Campus: {timetable.location.name.capitalize()} Semester: {timetable.semester.name.capitalize()}"
+    timetable_lbl = f"Campus: {timetable.location.name.capitalize()}, Academic year: {timetable.academic_year}  Semester: {timetable.semester.name.capitalize()} ({timetable.category.capitalize()})"
 
     story = _logo_and_header(timetable_lbl, faculty_name)
 
