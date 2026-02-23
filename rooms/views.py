@@ -5,15 +5,20 @@ from django.shortcuts import render
 from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 
+from backend.config.utils import JsonConfigManager
 from courses.serializers import CourseSerializer, SemesterSerializer
 from enrollments.models import Enrollment
 from exams.serializers import StudentExamSerializer
 from schedules.models import MasterTimetable
- 
+
 from semesters.models import Semester
 from .models import Location, Room, RoomAllocationSwitch
 from rest_framework.decorators import action, permission_classes
-from .serializers import LocationSerializer, RoomSerializer, RoomAllocationSwitchSerializer
+from .serializers import (
+    LocationSerializer,
+    RoomSerializer,
+    RoomAllocationSwitchSerializer,
+)
 from django.contrib.auth import get_user_model
 from exams.models import Exam, StudentExam
 from django.db.models import Count
@@ -35,7 +40,13 @@ class RoomViewSet(viewsets.ModelViewSet):
     serializer_class = RoomSerializer
 
     def get_permissions(self):
-        if self.action in["verify_room", "verify_room_qr", "instructor_room_qr", "verify_room_student", "verify", ]:
+        if self.action in [
+            "verify_room",
+            "verify_room_qr",
+            "instructor_room_qr",
+            "verify_room_student",
+            "verify",
+        ]:
             return [permissions.AllowAny()]  # No permissions required
         elif self.action in ["list", "retrieve", "get_configurations", "get_locations"]:
             return [permissions.IsAuthenticated()]
@@ -442,17 +453,28 @@ class RoomViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="occupancies")
     def room_occupancies(self, request):
-        location= request.GET.get("location")
-        timetable= request.GET.get("timetable")
-       
+        location = request.GET.get("location")
+        timetable = request.GET.get("timetable")
 
-        recent_timetable =  None
+        recent_timetable = None
         if timetable and location:
-            recent_timetable=MasterTimetable.objects.filter(id=timetable, location_id=location).order_by("-created_at").first()
+            recent_timetable = (
+                MasterTimetable.objects.filter(id=timetable, location_id=location)
+                .order_by("-created_at")
+                .first()
+            )
         elif location:
-            recent_timetable=MasterTimetable.objects.filter(location_id=location).order_by("-created_at").first()
+            recent_timetable = (
+                MasterTimetable.objects.filter(location_id=location)
+                .order_by("-created_at")
+                .first()
+            )
         elif timetable:
-            recent_timetable=MasterTimetable.objects.filter(id=timetable).order_by("-created_at").first()
+            recent_timetable = (
+                MasterTimetable.objects.filter(id=timetable)
+                .order_by("-created_at")
+                .first()
+            )
 
         if not recent_timetable:
             return Response(
@@ -463,7 +485,10 @@ class RoomViewSet(viewsets.ModelViewSet):
                 }
             )
         student_exams = (
-            StudentExam.objects.filter(room__isnull=False, exam__group__course__department__location_id=recent_timetable.location.id)
+            StudentExam.objects.filter(
+                room__isnull=False,
+                exam__group__course__department__location_id=recent_timetable.location.id,
+            )
             .values(
                 "room__id",
                 "room__name",
@@ -499,12 +524,16 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "room_name": item["room__name"],
                     "room_capacity": item["room__capacity"],
                     "schedules": [],
-                      "instructor": {
-                        "id": item["instructor__id"],
-                        "first_name": item["instructor__first_name"],
-                        "last_name": item["instructor__last_name"],
-                        "email": item["instructor__email"],
-                    } if item["instructor__id"] else None,
+                    "instructor": (
+                        {
+                            "id": item["instructor__id"],
+                            "first_name": item["instructor__first_name"],
+                            "last_name": item["instructor__last_name"],
+                            "email": item["instructor__email"],
+                        }
+                        if item["instructor__id"]
+                        else None
+                    ),
                     "slot_name": item["exam__slot_name"],
                 }
 
@@ -536,10 +565,9 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "course_code": item["exam__group__course__code"],
                     "course_title": item["exam__group__course__title"],
                     "course_department": item["exam__group__course__department__name"],
-                    "course_group": item["exam__group__group_name"],  
+                    "course_group": item["exam__group__group_name"],
                     "course_semester": item["exam__group__course__semester__name"],
                     "student_count": item["student_count"],
-                  
                 }
             )
 
@@ -594,59 +622,55 @@ class RoomViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
     @action(detail=False, methods=["get"], url_path="configurations")
     @permission_classes([])
     def get_configurations(self, request, *args, **kwargs):
         try:
-            locations= Location.objects.all()
-            serializer= LocationSerializer(locations, many=True)
-            semesters= Semester.objects.all()
-            semesterSerializer= SemesterSerializer(semesters, many=True)
-            configuration={
-                "locations":serializer.data,
-                "semesters":semesterSerializer.data
+            locations = Location.objects.all()
+            serializer = LocationSerializer(locations, many=True)
+            semesters = Semester.objects.all()
+            semesterSerializer = SemesterSerializer(semesters, many=True)
+            configuration = {
+                "locations": serializer.data,
+                "semesters": semesterSerializer.data,
             }
             return Response(
                 {
-                    "data":configuration,
+                    "data": configuration,
                     "success": True,
                     "message": "Exam configurations found successfully",
                 },
                 status=status.HTTP_200_OK,
             )
 
-
-
         except Exception as e:
-              return Response(
+            return Response(
                 {
                     "success": False,
                     "message": "An error occurred while fetching auca universtion default configurations.",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
     @action(detail=False, methods=["get"], url_path="locations")
     @permission_classes([])
     def get_locations(self, request, *args, **kwargs):
         try:
-            locations= Location.objects.all()
-            serializer= LocationSerializer(locations, many=True)
-           
-          
+            locations = Location.objects.all()
+            serializer = LocationSerializer(locations, many=True)
+
             return Response(
                 {
-                    "data":serializer.data,
+                    "data": serializer.data,
                     "success": True,
                     "message": "Locations found successfully found successfully",
                 },
                 status=status.HTTP_200_OK,
             )
 
-
-
         except Exception as e:
-              return Response(
+            return Response(
                 {
                     "success": False,
                     "message": "An error occurred while fetching auca universtion default locations.",
@@ -696,7 +720,8 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "message": "An error occurred while changing room occupancy",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
-                )
+            )
+
     @action(detail=False, methods=["post"], url_path="assign_instructor")
     @permission_classes([])
     def assign_instructor(self, request, *args, **kwargs):
@@ -704,65 +729,99 @@ class RoomViewSet(viewsets.ModelViewSet):
             # Extract and validate required fields
             instructor_id = request.data.get("instructor_id")
             room_id = request.data.get("room_id")
-            date= request.data.get("date")
-            slot_name= request.data.get("slot_name")
+            date = request.data.get("date")
+            slot_name = request.data.get("slot_name")
             date = parse_date(date) if date else None
+            start_time = None
+            end_time = None
 
-            
+            config_manager = JsonConfigManager()
+            config = config_manager.read_config()
+            time_config = config.get("time_constraints", {})
+            time_slots = time_config.get("time_slots", [])
+            for slot in time_slots:
+                if slot.get("name").lower() == slot_name.lower():
+                    start_time = slot.get("start_time")
+                    end_time = slot.get("end_time")
+                    break
+
             if not instructor_id or not room_id or not date or not slot_name:
-                return Response({
-                    "success": False,
-                    "message": "Instructor ID, Room ID, Date, and Slot Name are required",
-                }, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Instructor ID, Room ID, Date, and Slot Name are required",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             # Use select_related to optimize database queries and check existence
             try:
                 instructor = User.objects.get(id=instructor_id)
             except User.DoesNotExist:
-                return Response({
-                    "success": False,
-                    "message": "Invalid instructor",
-                }, status=status.HTTP_404_NOT_FOUND)
-        
-            
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Invalid instructor",
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
             already_assigned = StudentExam.objects.filter(
-                 exam__date=date, exam__slot_name=slot_name, instructor=instructor
+                exam__date=date,
+                exam__start_time=start_time,
+                exam__end_time=end_time,
+                instructor=instructor,
             ).exists()
             if already_assigned:
-                return Response({
-                    "success": False,
-                    "message": "This instructor is already assigned to this exam in the specified room",
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Check if student exams exist and update in bulk
-            student_exams_count = StudentExam.objects.filter(room__id= int(room_id), exam__date=date, exam__slot_name=slot_name).update(
-                instructor=instructor
-            )
-            
-            if student_exams_count == 0:
-                return Response({
-                    "success": False,
-                    "message": "No student exams found for the specified exam",
-                }, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {
+                        "success": False,
+                        "message": "This instructor is already assigned to this exam in the specified room",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-            return Response({
-                "success": True,
-                "message": f"Successfully assigned instructor to {student_exams_count} student exam(s)",
-                "updated_count": student_exams_count,
-            }, status=status.HTTP_200_OK)
+            # Check if student exams exist and update in bulk
+            student_exams_count = StudentExam.objects.filter(
+                room__id=int(room_id),
+                exam__date=date,
+                exam__start_time=start_time,
+                exam__end_time=end_time,
+            ).update(instructor=instructor)
+
+            if student_exams_count == 0:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "No student exams found for the specified exam",
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            return Response(
+                {
+                    "success": True,
+                    "message": f"Successfully assigned instructor to {student_exams_count} student exam(s)",
+                    "updated_count": student_exams_count,
+                },
+                status=status.HTTP_200_OK,
+            )
 
         except Exception as e:
             # Log the actual error for debugging (consider using proper logging)
-            return Response({
-                "success": False,
-                "message": "An error occurred while assigning instructor",
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {
+                    "success": False,
+                    "message": "An error occurred while assigning instructor",
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
     @action(detail=False, methods=["post"], url_path="instructor_check_qr")
     @permission_classes([])
     def instructor_room_qr(self, request, *args, **kwargs):
         try:
-           
+
             room = request.data.get("name")
             tz = pytz_timezone(settings.TIME_ZONE)
             now = timezone.now().astimezone(tz)
@@ -775,7 +834,9 @@ class RoomViewSet(viewsets.ModelViewSet):
             )
             students_info = []
             for student_exam in student_exams:
-                enrollments = Enrollment.objects.filter(student_id=student_exam.student.id)
+                enrollments = Enrollment.objects.filter(
+                    student_id=student_exam.student.id
+                )
                 total_to_pay = sum(
                     enrollment.amount_to_pay for enrollment in enrollments
                 )
@@ -784,11 +845,12 @@ class RoomViewSet(viewsets.ModelViewSet):
                 students_info.append(
                     {
                         "id": student_exam.student.user.id,
-                        "reg_no": student_exam.student.reg_no, "first_name": student_exam.student.user.first_name,
-                        "last_name":student_exam.student.user.last_name,
-                        "amount_to_pay":total_to_pay,
-                        "amount_paid":total_paid,
-                        "all_paid":all_paid
+                        "reg_no": student_exam.student.reg_no,
+                        "first_name": student_exam.student.user.first_name,
+                        "last_name": student_exam.student.user.last_name,
+                        "amount_to_pay": total_to_pay,
+                        "amount_paid": total_paid,
+                        "all_paid": all_paid,
                     }
                 )
 
@@ -802,10 +864,7 @@ class RoomViewSet(viewsets.ModelViewSet):
 
         except Exception as e:
             return Response(
-                {
-                    "success": False,
-                     "message": str(e)
-                },
+                {"success": False, "message": str(e)},
                 status=500,
             )
 
@@ -897,7 +956,6 @@ class RoomViewSet(viewsets.ModelViewSet):
                 )
                 total_paid = sum(enrollment.amount_paid for enrollment in enrollments)
                 all_paid = total_to_pay == total_paid
- 
 
                 if all_paid:
                     return Response(
@@ -907,7 +965,8 @@ class RoomViewSet(viewsets.ModelViewSet):
                                 "status": False,
                                 "studentName": f"{student.user.first_name} {student.user.last_name}",
                                 "studentRegNumber": student.reg_no,
-                                "message": f"Now you have {student_exam.exam.group.course.title} in room {student_exam.room.name} but you've scanned on Wrong room", },
+                                "message": f"Now you have {student_exam.exam.group.course.title} in room {student_exam.room.name} but you've scanned on Wrong room",
+                            },
                         },
                         status=200,
                     )

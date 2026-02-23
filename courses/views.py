@@ -140,8 +140,6 @@ class BaseViewSet(viewsets.ModelViewSet):
             wanted_instructor= None
             start_time = None
             end_time = None
-            if selected_instructor:
-                wanted_instructor=User.objects.get(id=int(selected_instructor))
             config_manager = JsonConfigManager()
             config = config_manager.read_config()
             time_config = config.get("time_constraints", {})
@@ -151,6 +149,8 @@ class BaseViewSet(viewsets.ModelViewSet):
                     start_time = slot.get("start_time")
                     end_time = slot.get("end_time")
                     break
+            if selected_instructor:
+                wanted_instructor=User.objects.get(id=int(selected_instructor))
             course_group = CourseGroup.objects.get(id=group_id, course__id=course_id)
             course_group.start_time = start_time
             course_group.end_time = end_time
