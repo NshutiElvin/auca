@@ -5,7 +5,7 @@ from django.shortcuts import render
 from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 
-from backend.config.utils import JsonConfigManager
+from config.utils import JsonConfigManager
 from courses.serializers import CourseSerializer, SemesterSerializer
 from enrollments.models import Enrollment
 from exams.serializers import StudentExamSerializer
