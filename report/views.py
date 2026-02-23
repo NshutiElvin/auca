@@ -277,7 +277,7 @@ def _build_dept_table(dept_exams: list) -> Table:
                     exam.group.group_name if exam.group else "–"
                 )
                 course_rows[merge_key]["teachers"].append(
-                    exam.group.instructor.get_full_name()  if exam.group else "–"
+                    exam.group.instructor.get_full_name()  if exam.group.instructor else "–"
                 )
                 # Optional: deduplicate teachers if needed
 
