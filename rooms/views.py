@@ -28,23 +28,13 @@ from django.utils import timezone
 from django.db.models import Sum
 from django.utils.dateparse import parse_date
 from pytz import timezone as pytz_timezone
+from datetime import time
 import logging
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
-def format_time(time_str):
-        import datetime as dt
-        if not time_str:
-            return ""
-        for fmt in ("%H:%M:%S", "%H:%M"):
-            try:
-                time_obj = dt.datetime.strptime(time_str, fmt)
-                formatted = time_obj.strftime("%I:%M %p")
-                return formatted[1:] if formatted.startswith("0") else formatted
-            except ValueError:
-                continue
-        return time_str
+
 # Create your views here.
 class RoomViewSet(viewsets.ModelViewSet):
     queryset = Room.objects.all()
@@ -495,6 +485,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "message": "No timetable found",
                 }
             )
+
         student_exams = (
             StudentExam.objects.filter(
                 room__isnull=False,
@@ -505,18 +496,15 @@ class RoomViewSet(viewsets.ModelViewSet):
                 "room__name",
                 "room__capacity",
                 "exam__id",
-                # COURSE FIELDS
                 "exam__group__course__code",
                 "exam__group__course__title",
                 "exam__group__course__department__name",
-                "exam__group__group_name",  # ← use the exam’s own group
+                "exam__group__group_name",
                 "exam__group__course__semester__name",
-                # SCHEDULING
                 "exam__date",
                 "exam__start_time",
                 "exam__end_time",
                 "exam__slot_name",
-                # Instructor
                 "instructor__id",
                 "instructor__first_name",
                 "instructor__last_name",
@@ -535,20 +523,8 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "room_name": item["room__name"],
                     "room_capacity": item["room__capacity"],
                     "schedules": [],
-                    "instructor": (
-                        {
-                            "id": item["instructor__id"],
-                            "first_name": item["instructor__first_name"],
-                            "last_name": item["instructor__last_name"],
-                            "email": item["instructor__email"],
-                        }
-                        if item["instructor__id"]
-                        else None
-                    ),
-                    "slot_name": item["exam__slot_name"],
                 }
 
-            # find or create this slot
             sched_list = rooms[rid]["schedules"]
             match = next(
                 (
@@ -566,6 +542,17 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "date": item["exam__date"],
                     "start_time": item["exam__start_time"],
                     "end_time": item["exam__end_time"],
+                    "slot_name": item["exam__slot_name"],
+                    "instructor": (
+                        {
+                            "id": item["instructor__id"],
+                            "first_name": item["instructor__first_name"],
+                            "last_name": item["instructor__last_name"],
+                            "email": item["instructor__email"],
+                        }
+                        if item["instructor__id"]
+                        else None
+                    ),
                     "exams": [],
                 }
                 sched_list.append(match)
@@ -733,7 +720,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-   
+    
 
 
     @action(detail=False, methods=["post"], url_path="assign_instructor")
@@ -754,11 +741,12 @@ class RoomViewSet(viewsets.ModelViewSet):
             time_slots = time_config.get("time_slots", [])
             for slot in time_slots:
                 if slot.get("name", "").lower() == (slot_name or "").lower():
-                    start_time = slot.get("start_time")
+                    start_time = slot.get("start_time")  # e.g. "09:00" or "09:00:00"
                     end_time = slot.get("end_time")
+                    start_time = time.fromisoformat(start_time)  # works for both "09:00" and "09:00:00"
+                    end_time = time.fromisoformat(end_time)
                     break
 
-            # Validate required fields
             if not instructor_id or not room_id or not date or not slot_name:
                 return Response(
                     {
@@ -768,7 +756,6 @@ class RoomViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Validate that the slot was actually found in config
             if not start_time or not end_time:
                 return Response(
                     {
@@ -789,31 +776,28 @@ class RoomViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            # Format times for consistent comparison
-            formatted_start = format_time(start_time)
-            formatted_end = format_time(end_time)
-
             already_assigned = StudentExam.objects.filter(
                 exam__date=date,
-                exam__start_time=formatted_start,
-                exam__end_time=formatted_end,
-                room__id=int(room_id),
+                exam__start_time=start_time,
+                exam__end_time=end_time,
                 instructor=instructor,
             ).exists()
             if already_assigned:
                 return Response(
                     {
                         "success": False,
-                        "message": "This instructor is already assigned to this exam in the specified room",
+                        "message": "This instructor has already been assigned to another exam during the specified date and time slot",
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            
+            print(f"Assigning instructor {instructor.get_full_name()} to exams in room ID {room_id} on {date} during slot '{slot_name}' ({start_time} - {end_time})")
 
             student_exams_count = StudentExam.objects.filter(
                 room__id=int(room_id),
                 exam__date=date,
-                exam__start_time=formatted_start,
-                exam__end_time=formatted_end,
+                exam__start_time=start_time,
+                exam__end_time=end_time,
             ).update(instructor=instructor)
 
             if student_exams_count == 0:
