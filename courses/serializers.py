@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 from departments.serializers import DepartmentSerializer
 from schedules.models import CourseSchedule
 from semesters.serializers import SemesterSerializer
+from users.serializers import UserSerializer
 User = get_user_model()
 
 
@@ -55,7 +56,7 @@ class CourseGroupSerializer(serializers.ModelSerializer):
     course_id = serializers.PrimaryKeyRelatedField(
         queryset=Course.objects.all(), source='course', write_only=True
     )
-    instructor = serializers.StringRelatedField(read_only=True)
+    instructor = UserSerializer(read_only=True)
     instructor_id = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.filter(role='instructor'), source='instructor', write_only=True
     )
