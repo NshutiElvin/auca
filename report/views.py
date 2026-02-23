@@ -270,7 +270,6 @@ def _build_dept_table(dept_exams: list) -> Table:
                 if merge_key not in course_rows:
                     course_rows[merge_key] = {
                         "course_title": course.title if course else "–",
-                        "instructor":   inst,
                         "groups":       [],
                         "teachers":[]
                     }
@@ -282,7 +281,7 @@ def _build_dept_table(dept_exams: list) -> Table:
                 )
 
             for slot_i, row_data in enumerate(course_rows.values()):
-                inst        = row_data["instructor"]
+                 
                 teacher_str = ", ".join(row_data["teachers"])
                 groups_str  = ", ".join(row_data["groups"])
 
