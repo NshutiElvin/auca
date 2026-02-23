@@ -33,7 +33,18 @@ import logging
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
-
+def format_time(time_str):
+        import datetime as dt
+        if not time_str:
+            return ""
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                time_obj = dt.datetime.strptime(time_str, fmt)
+                formatted = time_obj.strftime("%I:%M %p")
+                return formatted[1:] if formatted.startswith("0") else formatted
+            except ValueError:
+                continue
+        return time_str
 # Create your views here.
 class RoomViewSet(viewsets.ModelViewSet):
     queryset = Room.objects.all()
@@ -722,11 +733,13 @@ class RoomViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+   
+
+
     @action(detail=False, methods=["post"], url_path="assign_instructor")
     @permission_classes([])
     def assign_instructor(self, request, *args, **kwargs):
         try:
-            # Extract and validate required fields
             instructor_id = request.data.get("instructor_id")
             room_id = request.data.get("room_id")
             date = request.data.get("date")
@@ -740,11 +753,12 @@ class RoomViewSet(viewsets.ModelViewSet):
             time_config = config.get("time_constraints", {})
             time_slots = time_config.get("time_slots", [])
             for slot in time_slots:
-                if slot.get("name").lower() == slot_name.lower():
+                if slot.get("name", "").lower() == (slot_name or "").lower():
                     start_time = slot.get("start_time")
                     end_time = slot.get("end_time")
                     break
 
+            # Validate required fields
             if not instructor_id or not room_id or not date or not slot_name:
                 return Response(
                     {
@@ -754,7 +768,16 @@ class RoomViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Use select_related to optimize database queries and check existence
+            # Validate that the slot was actually found in config
+            if not start_time or not end_time:
+                return Response(
+                    {
+                        "success": False,
+                        "message": f"Slot '{slot_name}' not found in configuration",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             try:
                 instructor = User.objects.get(id=instructor_id)
             except User.DoesNotExist:
@@ -766,10 +789,15 @@ class RoomViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
+            # Format times for consistent comparison
+            formatted_start = format_time(start_time)
+            formatted_end = format_time(end_time)
+
             already_assigned = StudentExam.objects.filter(
                 exam__date=date,
-                exam__start_time=start_time,
-                exam__end_time=end_time,
+                exam__start_time=formatted_start,
+                exam__end_time=formatted_end,
+                room__id=int(room_id),
                 instructor=instructor,
             ).exists()
             if already_assigned:
@@ -781,12 +809,11 @@ class RoomViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Check if student exams exist and update in bulk
             student_exams_count = StudentExam.objects.filter(
                 room__id=int(room_id),
                 exam__date=date,
-                exam__start_time=start_time,
-                exam__end_time=end_time,
+                exam__start_time=formatted_start,
+                exam__end_time=formatted_end,
             ).update(instructor=instructor)
 
             if student_exams_count == 0:
@@ -808,7 +835,6 @@ class RoomViewSet(viewsets.ModelViewSet):
             )
 
         except Exception as e:
-            # Log the actual error for debugging (consider using proper logging)
             return Response(
                 {
                     "success": False,

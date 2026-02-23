@@ -611,17 +611,6 @@ def format_time(time_str):
         return time_str
 
 
-def format_time(time_str):
-    import datetime as dt
-    if not time_str:
-        return ""
-    try:
-        time_obj = dt.datetime.strptime(time_str, "%H:%M:%S")
-        return time_obj.strftime("%I:%M %p").lstrip("0")
-    except Exception:
-        return time_str
-
-
 
  
 
