@@ -20,4 +20,5 @@ urlpatterns = [
     path("api/claims/", include("claims.urls")),
     path("api/config/", include("config.urls")),
     path("api/report/", include("report.urls")),
+    path("api/webhooks/", include("webhooks.urls")),
 ]
