@@ -673,8 +673,8 @@ class TimetablePDFView(generics.GenericAPIView):
             return err
 
         exams = Exam.objects.filter(
-            mastertimetableexam__master_timetable_id=timetable.id
-        ).distinct()
+            mastertimetableexam__master_timetable_id=timetable.id, master_timetable=timetable
+        ).all()
 
         if not exams.exists():
             return Response({
