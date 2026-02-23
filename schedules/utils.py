@@ -2301,7 +2301,7 @@ def generate_exam_schedule(
         # FIX #8: keep sorted list per student for O(log n) gap check
         student_sorted_dates = defaultdict(list)
 
-        existing_exams = Exam.objects.filter(date__in=dates).prefetch_related(
+        existing_exams = Exam.objects.filter(date__in=dates,master_timetable=master_timetable ).prefetch_related(
             "studentexam_set"
         )
         for ex in existing_exams:
@@ -2469,6 +2469,7 @@ def generate_exam_schedule(
                                     end_time=en_time,
                                     group=g_obj,
                                     slot_name=slot_name,
+                                    master_timetable=master_timetable
                                 )
                                 if master_timetable:
                                     master_timetable.exams.add(exam)

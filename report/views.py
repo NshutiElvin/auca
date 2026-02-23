@@ -638,6 +638,7 @@ class TimetablePDFView(generics.GenericAPIView):
     permission_classes     = []
 
     def _resolve_timetable(self, request):
+        """Return (timetable, error_response). One of them will be None."""
         timetable_id = request.GET.get("id")
 
         if timetable_id:
@@ -646,22 +647,18 @@ class TimetablePDFView(generics.GenericAPIView):
             except ValueError:
                 return None, Response(
                     {"success": False,
-                    "message": "Invalid timetable ID — must be an integer."},
+                     "message": "Invalid timetable ID — must be an integer."},
                     status=400,
                 )
-            timetable = MasterTimetable.objects.select_related(
-                "location", "semester"
-            ).filter(pk=timetable_id).first()
+            timetable = MasterTimetable.objects.filter(pk=timetable_id).first()
             if not timetable:
                 return None, Response(
                     {"success": False,
-                    "message": f"No MasterTimetable found with ID {timetable_id}."},
+                     "message": f"No MasterTimetable found with ID {timetable_id}."},
                     status=404,
                 )
         else:
-            timetable = MasterTimetable.objects.select_related(
-                "location", "semester"
-            ).order_by("-created_at").first()
+            timetable = MasterTimetable.objects.order_by("-created_at").first()
             if not timetable:
                 return None, Response(
                     {"success": False, "message": "No timetables exist yet."},

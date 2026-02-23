@@ -25,6 +25,7 @@ class Exam(TimeStampedModel):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='SCHEDULED')
     group= models.ForeignKey("courses.CourseGroup", on_delete=models.DO_NOTHING, null=True)
     slot_name=  models.CharField(max_length=10, default='Morning')
+    master_timetable = models.ForeignKey(MasterTimetable, on_delete=models.CASCADE, null=True)
     
 
      
