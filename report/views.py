@@ -343,7 +343,6 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
             "group",
             "group__course",
             "group__course__department",
-            "group__course__instructor",
             "room",
         ).order_by(
             "group__course__department__name",
