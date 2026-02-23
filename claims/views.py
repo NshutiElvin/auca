@@ -149,7 +149,7 @@ class StudentClaimViewSet(BaseViewSet):
         }, status=status.HTTP_201_CREATED)
 
 
-class ClaimResponseViewSet(BaseViewSet):
+class ClaimResponseViewSet(viewsets.ModelViewSet):
     queryset = ClaimResponse.objects.all()
     serializer_class = ClaimResponseSerializer
     basename = "claim response"
