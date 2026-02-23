@@ -199,7 +199,7 @@ class CourseViewSet(BaseViewSet):
     basename = "course"
     filter_backends = [DjangoFilterBackend, SearchFilter]
     search_fields = ["code", "title"]
-    filterset_fields = ["semester", "department", "instructor"]
+    filterset_fields = ["semester", "department"]
     ordering_fields = ["code", "title", "semester", "created_at"]
     ordering = ["code"]
 
