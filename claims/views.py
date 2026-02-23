@@ -157,6 +157,35 @@ class ClaimResponseViewSet(viewsets.ModelViewSet):
     search_fields = ["response_text"]  # Changed from "message" to "response_text"
     filterset_fields = ["claim", "responder"]
 
+
+    def _resource_name(self):
+        try:
+            return getattr(self, "basename")
+        except Exception:
+            return self.get_queryset().model.__name__.lower()
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            data = serializer.data
+            return self.get_paginated_response({"success": True, "data": data})
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            "success": True,
+            "data": serializer.data,
+            "message": f"{self._resource_name().title()}s fetched successfully"
+        })
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response({
+            "success": True,
+            "data": serializer.data,
+            "message": f"{self._resource_name().title()} fetched successfully"
+        })
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
