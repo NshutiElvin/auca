@@ -286,7 +286,7 @@ def _build_dept_table(dept_exams: list) -> Table:
                     badge = " | ".join(row_data["cross_codes"])
                     course_display += (
                         f'<br/><font size="7" color="{CROSS_BADGE}">'
-                        
+                        f' </font>'
                     )
 
                 tbl_data.append([
@@ -428,7 +428,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
             width="100%", thickness=0.5, color=colors.grey,
             spaceBefore=2, spaceAfter=2,
         ))
-       
+        
 
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
