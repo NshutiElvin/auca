@@ -48,7 +48,7 @@ class Course(TimeStampedModel):
     @property
     def all_departments(self):
         """Returns all departments associated with this course"""
-        depts = [self.primary_department]
+        depts = [self.department]
         if self.is_cross_departmental:
             depts.extend(self.associated_departments.all())
         return depts
