@@ -188,12 +188,21 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
-def _dept_banner(dept_name: str, is_cross_listed: bool = False) -> Table:
-    """Blue department separator banner — with optional cross-listed indicator."""
+def _dept_banner(dept_name: str, is_cross_listed: bool = False, associated_depts: list = None) -> Table:
+    """
+    Blue department separator banner — shows primary department and associated departments.
+    """
     display_name = dept_name.upper()
-    if is_cross_listed:
+    
+    # Remove the "(Cross-listed)" suffix if present
+    if display_name.endswith(" (CROSS-LISTED)"):
         display_name = display_name.replace(" (CROSS-LISTED)", "")
-        display_name += " †"  # Add a dagger symbol to indicate cross-listed courses
+    
+    # Add associated departments if this is a cross-listed section
+    if is_cross_listed and associated_depts:
+        dept_names = [d.name for d in associated_depts if d]
+        if dept_names:
+            display_name += f" (also: {', '.join(dept_names)})"
     
     data = [[Paragraph(
         display_name,
@@ -290,7 +299,7 @@ def _build_dept_table(dept_exams: list, is_cross_listed: bool = False) -> Table:
                         course_rows[merge_key]["teachers"].append(instructor_name)
 
             for slot_i, row_data in enumerate(course_rows.values()):
-                teacher_str = ", ".join(row_data["teachers"]) if row_data["teachers"] else "TBA"
+                teacher_str = ", ".join(sorted(set(row_data["teachers"]))) if row_data["teachers"] else ""
                 groups_str = ", ".join(sorted(set(row_data["groups"]))) if row_data["groups"] else "–"
 
                 if not date_shown and slot_i == 0:
@@ -403,8 +412,12 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
             if dept_info.get('is_cross', False):
                 for dept in dept_info.get('all', [])[1:]:  # Skip primary, take associated
                     if dept:
-                        # Create a reference for cross-listed view
-                        by_dept[f"{dept.name} (Cross-listed)"].append(exam)
+                        # Create a reference for cross-listed view with associated depts info
+                        by_dept[f"{dept.name} (Cross-listed)"].append({
+                            'exam': exam,
+                            'primary_dept': dept_info['primary'],
+                            'associated_depts': dept_info['all'][1:]  # All except primary
+                        })
         else:
             # Fallback for exams without proper course association
             by_dept["No Department"].append(exam)
@@ -420,14 +433,26 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
     has_cross_listed = False
 
     for dept_name in sorted(by_dept.keys()):
-        # Filter out duplicate exams if a course appears in multiple departments
-        dept_exams = []
+        dept_items = by_dept[dept_name]
         is_cross_listed = dept_name.endswith("(Cross-listed)")
         
-        for exam in by_dept[dept_name]:
-            if exam.id not in processed_exam_ids or is_cross_listed:
-                dept_exams.append(exam)
-                if not is_cross_listed:
+        # Extract exams and associated info for this department
+        dept_exams = []
+        associated_depts = None
+        
+        for item in dept_items:
+            if is_cross_listed:
+                # Item is a dict with exam and dept info
+                exam = item['exam']
+                if exam.id not in processed_exam_ids:  # Still track to avoid duplicates in tables
+                    dept_exams.append(exam)
+                if not associated_depts:
+                    associated_depts = item.get('associated_depts', [])
+            else:
+                # Item is just an exam
+                exam = item
+                if exam.id not in processed_exam_ids:
+                    dept_exams.append(exam)
                     processed_exam_ids.add(exam.id)
         
         if not dept_exams:
@@ -436,12 +461,12 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
         if is_cross_listed:
             has_cross_listed = True
             
-        # Department banner with cross-listed indicator
+        # Department banner with cross-listed info
         story.append(Spacer(1, 0.3 * cm))
-        story.append(_dept_banner(dept_name, is_cross_listed))
+        story.append(_dept_banner(dept_name, is_cross_listed, associated_depts))
         story.append(Spacer(1, 0.1 * cm))
 
-        # Department exam table
+        # Department exam table (without extra column)
         story.append(_build_dept_table(dept_exams, is_cross_listed))
 
     # Add footnote if there are cross-listed courses
@@ -452,8 +477,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
             spaceBefore=2, spaceAfter=2
         ))
         story.append(Paragraph(
-            "† Cross-listed courses appear in multiple department sections "
-            "but are scheduled once by the primary (offering) department.",
+            "† Cross-listed courses appear in multiple department sections.",
             _s("Footnote", fontSize=7, textColor=colors.grey, alignment=TA_LEFT)
         ))
 
