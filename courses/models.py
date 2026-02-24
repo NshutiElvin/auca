@@ -20,17 +20,12 @@ class Course(TimeStampedModel):
     description = models.TextField(blank=True, null=True)
     credits = models.PositiveIntegerField(default=3)
 
-    # instructor = models.ForeignKey(
-    #     settings.AUTH_USER_MODEL,
-    #     on_delete=models.SET_NULL,
-    #     null=True,
-    #     related_name='courses_taught',
-    #     limit_choices_to={'role': 'instructor'}
-    # )
+    
 
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='courses')
     semester = models.ForeignKey(Semester, on_delete=models.CASCADE, related_name='courses')
-
+    is_cross_departmental = models.BooleanField(default=False)
+    associated_departments= models.ManyToManyField(Department, blank=True, related_name='associated_courses')
     prerequisites = models.ManyToManyField('self', blank=True, symmetrical=True, null=True)
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
@@ -49,6 +44,14 @@ class Course(TimeStampedModel):
 
     def __str__(self):
         return f"{self.code} - {self.title}"
+    
+    @property
+    def all_departments(self):
+        """Returns all departments associated with this course"""
+        depts = [self.primary_department]
+        if self.is_cross_departmental:
+            depts.extend(self.associated_departments.all())
+        return depts
     
 
 class CourseGroup(models.Model):
