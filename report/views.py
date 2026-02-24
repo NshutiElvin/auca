@@ -286,7 +286,7 @@ def _build_dept_table(dept_exams: list) -> Table:
                     badge = " | ".join(row_data["cross_codes"])
                     course_display += (
                         f'<br/><font size="7" color="{CROSS_BADGE}">'
-                        f'&#10022; Also: {badge}</font>'
+                        
                     )
 
                 tbl_data.append([
@@ -428,12 +428,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
             width="100%", thickness=0.5, color=colors.grey,
             spaceBefore=2, spaceAfter=2,
         ))
-        story.append(Paragraph(
-            f'<font color="{CROSS_BADGE}">&#10022; Also: DEPT</font>'
-            " — This course is also examined under the listed department(s). "
-            "It intentionally appears in each relevant department section.",
-            _s("Footnote", fontSize=7, textColor=colors.grey, alignment=TA_LEFT),
-        ))
+       
 
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
