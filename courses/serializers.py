@@ -34,7 +34,15 @@ class CourseSerializer(serializers.ModelSerializer):
     semester_id = serializers.PrimaryKeyRelatedField(
         queryset=Semester.objects.all(), source='semester', write_only=True
     )
-
+    associated_departments = DepartmentSerializer(many=True, read_only=True)
+    associated_department_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.all(),
+        source='associated_departments',
+        many=True,
+        write_only=True,
+        required=False,
+        allow_empty=True
+    )
     
     schedules = CourseScheduleSerializer(many=True, read_only=True)
     students_enrolled = serializers.SerializerMethodField()
@@ -46,10 +54,17 @@ class CourseSerializer(serializers.ModelSerializer):
             'department', 'department_id',
             'semester', 'semester_id',
             'prerequisites', 'start_date', 'end_date', 'enrollment_limit',
-            'schedules',  'students_enrolled' 
+            'schedules',  'students_enrolled',
+            'is_cross_departmental',
+            'associated_departments', 'associated_department_ids',
         ]
     def get_students_enrolled(self, obj):
         return obj.enrollments.filter(status='active').count()
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Add a computed property for all departments if needed
+        data['all_department_ids'] = list(instance.all_departments.values_list('id', flat=True))
+        return data
     
 class CourseGroupSerializer(serializers.ModelSerializer):
     course = CourseSerializer(read_only=True)

@@ -188,10 +188,15 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
-def _dept_banner(dept_name: str) -> Table:
-    """Blue department separator banner — same style as the title banner."""
+def _dept_banner(dept_name: str, is_cross_listed: bool = False) -> Table:
+    """Blue department separator banner — with optional cross-listed indicator."""
+    display_name = dept_name.upper()
+    if is_cross_listed:
+        display_name = display_name.replace(" (CROSS-LISTED)", "")
+        display_name += " †"  # Add a dagger symbol to indicate cross-listed courses
+    
     data = [[Paragraph(
-        dept_name.upper(),
+        display_name,
         _sb("DeptBanner", fontSize=11, textColor=TEXT_WHITE, alignment=TA_CENTER),
     )]]
     tbl = Table(data, colWidths=["100%"])
@@ -205,25 +210,27 @@ def _dept_banner(dept_name: str) -> Table:
     return tbl
 
 
-def _build_dept_table(dept_exams: list) -> Table:
+def _build_dept_table(dept_exams: list, is_cross_listed: bool = False) -> Table:
     """
     Build one exam table for a single department.
     Grouping: date → time slot → merge same-course rows (groups as A, B, C).
     """
-    from collections import OrderedDict
+    from collections import OrderedDict, defaultdict
 
     hdr  = _sb("TH",  fontSize=9, textColor=TEXT_DARK, alignment=TA_LEFT)
     cell = _s("TD",   fontSize=8, textColor=TEXT_DARK, alignment=TA_LEFT,   leading=11)
     celc = _s("TDC",  fontSize=8, textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
-    COL_W = [2.5*cm, 2.0*cm, 6.0*cm, 8.5*cm, 3.5*cm]
+    
+    # Configure columns based on whether this is cross-listed view
+    if is_cross_listed:
+        COL_W = [2.5*cm, 2.0*cm, 6.0*cm, 8.5*cm, 3.0*cm, 1.5*cm]
+        headers = ["Day&Date", "Time", "Teacher", "Course", "Group", "Offered By"]
+    else:
+        COL_W = [2.5*cm, 2.0*cm, 6.0*cm, 8.5*cm, 3.5*cm]
+        headers = ["Day&Date", "Time", "Teacher", "Course", "Group"]
 
-    tbl_data = [[
-        Paragraph("Day&amp;Date", hdr),
-        Paragraph("Time",         hdr),
-        Paragraph("Teacher",      hdr),
-        Paragraph("Course",       hdr),
-        Paragraph("Group",        hdr),
-    ]]
+    tbl_data = [[Paragraph(h, hdr) for h in headers]]
+    
     style_cmds = [
         ("BACKGROUND",    (0, 0), (-1, 0), COL_HEADER),
         ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_COL),
@@ -263,29 +270,28 @@ def _build_dept_table(dept_exams: list) -> Table:
 
             course_rows = OrderedDict()
             for exam in slot_exams:
-                course    = exam.group.course if exam.group else None
-                c_id      = course.id if course else 0
+                course = exam.group.course if exam.group else None
+                c_id = course.id if course else 0
                 
-                merge_key = (c_id)
+                merge_key = (c_id, time_key)  # Group by course AND time
                 if merge_key not in course_rows:
                     course_rows[merge_key] = {
                         "course_title": course.title if course else "–",
-                        "groups":       [],
-                        "teachers":[]
+                        "course_code": course.code if course else "–",
+                        "groups": [],
+                        "teachers": [],
+                        "dept_code": course.department.code if course and course.department else "",
                     }
-                course_rows[merge_key]["groups"].append(
-                    exam.group.group_name if exam.group else "–"
-                )
+                if exam.group:
+                    course_rows[merge_key]["groups"].append(exam.group.group_name)
                 if exam.group and exam.group.instructor:
-                    course_rows[merge_key]["teachers"].append(
-                        exam.group.instructor.get_full_name() 
-                    )
-                # Optional: deduplicate teachers if needed
+                    instructor_name = exam.group.instructor.get_full_name()
+                    if instructor_name and instructor_name not in course_rows[merge_key]["teachers"]:
+                        course_rows[merge_key]["teachers"].append(instructor_name)
 
             for slot_i, row_data in enumerate(course_rows.values()):
-                 
-                teacher_str = ", ".join(row_data["teachers"])
-                groups_str  = ", ".join(row_data["groups"])
+                teacher_str = ", ".join(row_data["teachers"]) if row_data["teachers"] else "TBA"
+                groups_str = ", ".join(sorted(set(row_data["groups"]))) if row_data["groups"] else "–"
 
                 if not date_shown and slot_i == 0:
                     day_cell_text = f"<b>{day_name}</b><br/>{date_str}"
@@ -295,19 +301,29 @@ def _build_dept_table(dept_exams: list) -> Table:
                 else:
                     day_cell_text = ""
 
-                tbl_data.append([
+                # Build course display with code
+                course_display = f"<b>{row_data['course_code']}</b><br/>{row_data['course_title']}"
+
+                row = [
                     Paragraph(day_cell_text, celc),
                     Paragraph(time_str if slot_i == 0 else "", celc),
                     Paragraph(teacher_str, cell),
-                    Paragraph(f"<b>{row_data['course_title']}</b>", cell),
+                    Paragraph(course_display, cell),
                     Paragraph(groups_str, celc),
-                ])
+                ]
+                
+                # Add department code for cross-listed view
+                if is_cross_listed:
+                    row.append(Paragraph(row_data['dept_code'], celc))
+                
+                tbl_data.append(row)
                 row_idx += 1
 
         # Separator row after each date block
-        tbl_data.append([Paragraph("", cell)] * 5)
+        sep_row = [Paragraph("", cell)] * (len(headers))
+        tbl_data.append(sep_row)
         style_cmds.append(("BACKGROUND", (0, row_idx), (-1, row_idx), SPACER_ROW))
-        style_cmds.append(("ROWHEIGHT",  (0, row_idx), (-1, row_idx), 8))
+        style_cmds.append(("ROWHEIGHT", (0, row_idx), (-1, row_idx), 8))
         row_idx += 1
 
     tbl = Table(tbl_data, colWidths=COL_W, repeatRows=1)
@@ -321,13 +337,7 @@ def _build_dept_table(dept_exams: list) -> Table:
 def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
     """
     Landscape A4 timetable grouped by Department.
-
-    Layout per department:
-      [Blue department banner]
-      [Table: Day&Date | Time | Teacher | Course | Group]
-        — rows grouped by date then time slot
-        — same course at same time → one merged row, groups as "A, B, C"
-        — orange separator between date blocks
+    Now handles cross-departmental courses properly.
     """
     buffer = io.BytesIO()
 
@@ -345,6 +355,8 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
             "group__course",
             "group__course__department",
             "room",
+        ).prefetch_related(
+            "group__course__associated_departments"
         ).order_by(
             "group__course__department__name",
             "date",
@@ -354,31 +366,96 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
         )
     )
 
-    # ── Group exams by department ─────────────────────────────────────────────
-    by_dept = defaultdict(list)
+    # ── Group exams by primary department, but include cross-departmental courses ──
+    from collections import defaultdict
+    
+    # Track which departments each course belongs to
+    course_dept_map = {}
     for exam in exams:
-        dept = (
-            exam.group.course.department
-            if exam.group and exam.group.course and exam.group.course.department
-            else None
-        )
-        dept_name = dept.name if dept else "No Department"
-        by_dept[dept_name].append(exam)
+        if exam.group and exam.group.course:
+            course = exam.group.course
+            if course.id not in course_dept_map:
+                # Get primary department and all associated departments
+                primary_dept = course.department
+                associated = list(course.associated_departments.all())
+                course_dept_map[course.id] = {
+                    'primary': primary_dept,
+                    'all': [primary_dept] + associated if associated else [primary_dept],
+                    'is_cross': course.is_cross_departmental
+                }
+    
+    # Group exams by each department they belong to
+    by_dept = defaultdict(list)
+    processed_for_primary = set()  # Track which exams we've added to primary departments
+    
+    for exam in exams:
+        if exam.group and exam.group.course:
+            course = exam.group.course
+            dept_info = course_dept_map.get(course.id, {})
+            
+            # Add exam under primary department (always)
+            if dept_info.get('primary'):
+                primary_dept_name = dept_info['primary'].name
+                by_dept[primary_dept_name].append(exam)
+                processed_for_primary.add(exam.id)
+            
+            # Also add under associated departments if cross-departmental
+            if dept_info.get('is_cross', False):
+                for dept in dept_info.get('all', [])[1:]:  # Skip primary, take associated
+                    if dept:
+                        # Create a reference for cross-listed view
+                        by_dept[f"{dept.name} (Cross-listed)"].append(exam)
+        else:
+            # Fallback for exams without proper course association
+            by_dept["No Department"].append(exam)
 
     # ── Assemble story ────────────────────────────────────────────────────────
-    faculty_name  = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
+    faculty_name = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
     timetable_lbl = f"Campus: {timetable.location.name.capitalize()}, Academic year: {timetable.academic_year}, Semester: {timetable.semester.name.capitalize()} ({timetable.category.capitalize()})"
 
     story = _logo_and_header(timetable_lbl, faculty_name)
 
+    # Track processed courses to avoid duplication in display
+    processed_exam_ids = set()
+    has_cross_listed = False
+
     for dept_name in sorted(by_dept.keys()):
-        # Department banner
+        # Filter out duplicate exams if a course appears in multiple departments
+        dept_exams = []
+        is_cross_listed = dept_name.endswith("(Cross-listed)")
+        
+        for exam in by_dept[dept_name]:
+            if exam.id not in processed_exam_ids or is_cross_listed:
+                dept_exams.append(exam)
+                if not is_cross_listed:
+                    processed_exam_ids.add(exam.id)
+        
+        if not dept_exams:
+            continue
+            
+        if is_cross_listed:
+            has_cross_listed = True
+            
+        # Department banner with cross-listed indicator
         story.append(Spacer(1, 0.3 * cm))
-        story.append(_dept_banner(dept_name))
+        story.append(_dept_banner(dept_name, is_cross_listed))
         story.append(Spacer(1, 0.1 * cm))
 
         # Department exam table
-        story.append(_build_dept_table(by_dept[dept_name]))
+        story.append(_build_dept_table(dept_exams, is_cross_listed))
+
+    # Add footnote if there are cross-listed courses
+    if has_cross_listed:
+        story.append(Spacer(1, 0.3 * cm))
+        story.append(HRFlowable(
+            width="100%", thickness=0.5, color=colors.grey,
+            spaceBefore=2, spaceAfter=2
+        ))
+        story.append(Paragraph(
+            "† Cross-listed courses appear in multiple department sections "
+            "but are scheduled once by the primary (offering) department.",
+            _s("Footnote", fontSize=7, textColor=colors.grey, alignment=TA_LEFT)
+        ))
 
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
