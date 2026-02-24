@@ -60,11 +60,7 @@ class CourseSerializer(serializers.ModelSerializer):
         ]
     def get_students_enrolled(self, obj):
         return obj.enrollments.filter(status='active').count()
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        # Add a computed property for all departments if needed
-        data['all_department_ids'] = list(instance.all_departments.values_list('id', flat=True))
-        return data
+     
     
 class CourseGroupSerializer(serializers.ModelSerializer):
     course = CourseSerializer(read_only=True)
