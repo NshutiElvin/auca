@@ -502,7 +502,9 @@ class ExamAttendanceListView(APIView):
         for exam in exam_qs.order_by("date", "start_time"):
             # FIXED: Get StudentExam records only for this exam
             student_exams = StudentExam.objects.filter(
-                exam=exam
+                exam=exam,
+                student__department__location=timetable.location,
+
             ).select_related(
                 "student", "student__user", "student__department", "room"
             ).order_by("student__reg_no")
@@ -582,7 +584,9 @@ class ExamAttendanceListView(APIView):
 
         # FIXED: Get StudentExam records only for this exam
         student_exams = StudentExam.objects.filter(
-            exam=exam
+            exam=exam,
+            student__department__location=timetable.location,
+
         ).select_related(
             "student", "student__user", "student__department", "room"
         ).order_by("student__reg_no")
