@@ -42,33 +42,41 @@ COURSE_HEADER_BG = colors.HexColor("#D6E4F7")
 # ══════════════════════════════════════════════════════════════════════════════
 #  INTERNAL HELPERS — campus-safe querysets
 #
-#  Mirrors the double-lock used in TimetablePDFView (views.py):
+#  Mirrors exactly how TimetablePDFView (views.py) scopes its exams:
 #    mastertimetableexam__master_timetable=timetable   (M2M join filter)
 #    master_timetable=timetable                        (direct FK filter)
-#  Together they guarantee only exams belonging to THIS timetable/campus
-#  are ever returned.
+#
+#  StudentExam is then locked via:
+#    exam__in=exam_qs                  (only exams from above set)
+#    exam__master_timetable=timetable  (direct FK on Exam — the key missing lock)
 # ══════════════════════════════════════════════════════════════════════════════
 def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
     """
     Return an Exam queryset scoped exclusively to `timetable`.
-    Pass extra_filters to narrow further (e.g. {'group__course__code': 'CS101'}).
+    Mirrors: Exam.objects.filter(
+        mastertimetableexam__master_timetable_id=timetable.id,
+        master_timetable=timetable
+    ) from TimetablePDFView.
     """
     qs = Exam.objects.filter(
-        mastertimetableexam__master_timetable=timetable,  # M2M join
-        master_timetable=timetable,                       # direct FK double-lock
+        mastertimetableexam__master_timetable=timetable,
+        master_timetable=timetable,
     ).distinct()
     if extra_filters:
         qs = qs.filter(**extra_filters)
     return qs
 
 
-def _timetable_student_exams(exam_qs):
+def _timetable_student_exams(exam_qs, timetable: MasterTimetable):
     """
-    Return a StudentExam queryset scoped to an already-campus-locked exam_qs.
-    Filtering via exam__in avoids re-joining through mastertimetableexam and
-    prevents cross-campus student bleed from duplicate join rows.
+    Return a StudentExam queryset scoped to campus-locked exams only.
+    exam__master_timetable=timetable is the key lock that prevents students
+    from other campuses bleeding in through shared Exam rows.
     """
-    return StudentExam.objects.filter(exam__in=exam_qs).distinct()
+    return StudentExam.objects.filter(
+        exam__in=exam_qs,
+        exam__master_timetable=timetable,
+    ).distinct()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -117,7 +125,6 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     story.append(Spacer(1, 0.3 * cm))
 
     # ── Pre-load cheating reports scoped to this timetable's exams only ───────
-    # Use exam_id__in (not mastertimetableexam join) to stay campus-safe.
     timetable_exam_ids = list(
         _timetable_exams(timetable).values_list("id", flat=True)
     )
@@ -342,9 +349,6 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
 class AttendanceStatsView(APIView):
     """
     GET /api/report/attendance/stats/?timetable_id=<id>
-
-    Returns summary cards for a timetable and a breakdown per course.
-    Each course entry contains the list of its individual exams for drill-down.
     """
     permission_classes = [IsAuthenticated, IsAdminUser]
 
@@ -360,13 +364,11 @@ class AttendanceStatsView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
-        # ── Campus-safe exam set (double-lock) ────────────────────────────────
         exam_qs = _timetable_exams(timetable).select_related(
             "group", "group__course", "room"
         )
 
-        # ── Campus-safe student_exams (via exam__in, not timetable join) ──────
-        student_exams = _timetable_student_exams(exam_qs).select_related(
+        student_exams = _timetable_student_exams(exam_qs, timetable).select_related(
             "exam", "exam__group", "exam__group__course",
             "exam__room", "student",
         )
@@ -376,13 +378,11 @@ class AttendanceStatsView(APIView):
         signed_out = student_exams.filter(signout_attendance=True).count()
         absent     = student_exams.filter(signin_attendance=False).count()
 
-        # Cheating reports via exam_id__in — stays campus-safe
         timetable_exam_ids = list(exam_qs.values_list("id", flat=True))
         cheating_reports   = CheatingReport.objects.filter(
             exam_id__in=timetable_exam_ids
         ).count()
 
-        # ── Per-course breakdown ──────────────────────────────────────────────
         course_map = defaultdict(lambda: {
             "course_code": "", "course_title": "",
             "total": 0, "signed_in": 0, "absent": 0, "cheating_reports": 0,
@@ -441,17 +441,12 @@ class AttendanceStatsView(APIView):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  VIEW 2 — Per-Course Attendance List  (all exams of a course combined)
+#  VIEW 2 — Per-Course Attendance List
 # ══════════════════════════════════════════════════════════════════════════════
 class ExamAttendanceListView(APIView):
     """
     GET /api/report/attendance/?course_code=<code>&timetable_id=<id>
-
-    Returns every StudentExam record for the given course within a timetable,
-    grouped under their respective exam for frontend rendering.
-
-    Legacy single-exam lookup also supported:
-    GET /api/report/attendance/?exam_id=<id>
+    GET /api/report/attendance/?exam_id=<id>   (legacy)
     """
     permission_classes = [IsAuthenticated, IsAdminUser]
 
@@ -461,11 +456,23 @@ class ExamAttendanceListView(APIView):
         timetable_id = request.GET.get("timetable_id")
 
         if exam_id:
-            return self._single_exam(request, exam_id)
+            # legacy: need timetable_id too for proper scoping
+            if not timetable_id:
+                return Response(
+                    {"error": "timetable_id is required alongside exam_id."},
+                    status=400,
+                )
+            try:
+                timetable = MasterTimetable.objects.select_related(
+                    "location", "semester"
+                ).get(pk=timetable_id)
+            except MasterTimetable.DoesNotExist:
+                return Response({"error": "Timetable not found."}, status=404)
+            return self._single_exam(request, exam_id, timetable)
 
         if not course_code or not timetable_id:
             return Response(
-                {"error": "Provide either exam_id OR (course_code + timetable_id)."},
+                {"error": "Provide either (exam_id + timetable_id) OR (course_code + timetable_id)."},
                 status=400,
             )
 
@@ -476,7 +483,6 @@ class ExamAttendanceListView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
-        # ── Campus-safe exam set narrowed to this course ──────────────────────
         exam_qs = _timetable_exams(
             timetable,
             extra_filters={"group__course__code": course_code},
@@ -485,7 +491,6 @@ class ExamAttendanceListView(APIView):
         if not exam_qs.exists():
             return Response({"error": "No exams found for this course/timetable."}, status=404)
 
-        # ── Cheating reports via exam_id__in ──────────────────────────────────
         exam_ids = list(exam_qs.values_list("id", flat=True))
         cheating_map = {
             (cr.exam_id, cr.student_id): cr
@@ -499,8 +504,11 @@ class ExamAttendanceListView(APIView):
         grand = dict(total=0, signed_in=0, signed_out=0, absent=0, cheating_reports=0)
 
         for exam in exam_qs.order_by("date", "start_time"):
-            # Per-exam student_exams — campus-safe because exam itself is locked
-            student_exams = StudentExam.objects.filter(exam=exam).select_related(
+            # Lock to this timetable via exam__master_timetable
+            student_exams = StudentExam.objects.filter(
+                exam=exam,
+                exam__master_timetable=timetable,
+            ).select_related(
                 "student", "student__user", "student__department", "room"
             ).order_by("student__reg_no")
 
@@ -569,15 +577,19 @@ class ExamAttendanceListView(APIView):
         })
 
     # ── Legacy single-exam helper ─────────────────────────────────────────────
-    def _single_exam(self, request, exam_id):
+    def _single_exam(self, request, exam_id, timetable: MasterTimetable):
         try:
             exam = Exam.objects.select_related(
                 "group", "group__course", "room"
-            ).get(pk=exam_id)
+            ).get(pk=exam_id, master_timetable=timetable)  # locked to timetable
         except Exam.DoesNotExist:
-            return Response({"error": "Exam not found."}, status=404)
+            return Response({"error": "Exam not found in this timetable."}, status=404)
 
-        student_exams = StudentExam.objects.filter(exam=exam).select_related(
+        # Lock StudentExam to this timetable via exam__master_timetable
+        student_exams = StudentExam.objects.filter(
+            exam=exam,
+            exam__master_timetable=timetable,
+        ).select_related(
             "student", "student__user", "student__department", "room"
         ).order_by("student__reg_no")
 
@@ -642,7 +654,7 @@ class ExamAttendanceListView(APIView):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  VIEW 3 — Admin Cheating Report Action  (unchanged)
+#  VIEW 3 — Admin Cheating Report Action
 # ══════════════════════════════════════════════════════════════════════════════
 class CheatingReportActionView(APIView):
     """
@@ -689,10 +701,7 @@ class CheatingReportActionView(APIView):
 class AttendancePDFView(APIView):
     """
     GET /api/report/attendance/pdf/?timetable_id=<id>
-      → Full timetable PDF, sections per course, sub-sections per exam.
-
     GET /api/report/attendance/pdf/?timetable_id=<id>&course_code=<code>
-      → Single-course PDF (same layout, filtered to one course).
     """
     permission_classes = [IsAuthenticated, IsAdminUser]
 
@@ -710,7 +719,6 @@ class AttendancePDFView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
-        # ── Campus-safe exam set (double-lock), optionally narrowed by course ─
         extra   = {"group__course__code": course_code} if course_code else None
         exam_qs = _timetable_exams(timetable, extra_filters=extra).select_related(
             "group", "group__course", "room"
@@ -722,8 +730,7 @@ class AttendancePDFView(APIView):
                 status=404,
             )
 
-        # ── Campus-safe student_exams via exam__in ────────────────────────────
-        student_exams = _timetable_student_exams(exam_qs).select_related(
+        student_exams = _timetable_student_exams(exam_qs, timetable).select_related(
             "exam", "exam__group", "exam__group__course", "exam__room",
             "student", "student__user", "student__department",
         ).order_by("student__reg_no")
