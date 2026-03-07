@@ -526,6 +526,7 @@ class ExamAttendanceListView(APIView):
                             if se.student and se.student.department
                             else "–"
                         ),
+                        "room": se.room.name if exam.room else "–",
                         "signin": se.signin_attendance,
                         "signout": se.signout_attendance,
                         "status": se.status,
