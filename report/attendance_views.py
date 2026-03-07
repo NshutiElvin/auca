@@ -14,8 +14,13 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import (
-    HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate,
-    Spacer, Table, TableStyle,
+    HRFlowable,
+    KeepTogether,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
 )
 
 from exams.models import Exam, StudentExam
@@ -23,26 +28,46 @@ from schedules.models import MasterTimetable
 from cheating.models import CheatingReport
 
 from .views import (
-    FONT_REGULAR, FONT_BOLD,
-    PRIMARY, BLUE_HEADER, COL_HEADER, BORDER_COL,
-    TEXT_DARK, TEXT_WHITE, SPACER_ROW,
-    _NumberedCanvas, _s, _sb, _logo_and_header,
+    FONT_REGULAR,
+    FONT_BOLD,
+    PRIMARY,
+    BLUE_HEADER,
+    COL_HEADER,
+    BORDER_COL,
+    TEXT_DARK,
+    TEXT_WHITE,
+    SPACER_ROW,
+    _NumberedCanvas,
+    _s,
+    _sb,
+    _logo_and_header,
 )
 
 # ── Extra colours ─────────────────────────────────────────────────────────────
-PRESENT_GREEN    = colors.HexColor("#E6F4EA")
-ABSENT_RED       = colors.HexColor("#FCE8E8")
-CHEATED_AMBER    = colors.HexColor("#FFF3E0")
-BADGE_GREEN      = colors.HexColor("#1E8449")
-BADGE_RED        = colors.HexColor("#C0392B")
-BADGE_AMBER      = colors.HexColor("#CC6600")
+PRESENT_GREEN = colors.HexColor("#E6F4EA")
+ABSENT_RED = colors.HexColor("#FCE8E8")
+CHEATED_AMBER = colors.HexColor("#FFF3E0")
+BADGE_GREEN = colors.HexColor("#1E8449")
+BADGE_RED = colors.HexColor("#C0392B")
+BADGE_AMBER = colors.HexColor("#CC6600")
 COURSE_HEADER_BG = colors.HexColor("#D6E4F7")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  INTERNAL HELPERS — campus-safe querysets
+#
+#  Mirrors exactly how TimetablePDFView (views.py) scopes its exams:
+#    mastertimetableexam__master_timetable=timetable   (M2M join filter)
+#    master_timetable=timetable                        (direct FK filter)
 # ══════════════════════════════════════════════════════════════════════════════
 def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
+    """
+    Return an Exam queryset scoped exclusively to `timetable`.
+    Mirrors: Exam.objects.filter(
+        mastertimetableexam__master_timetable_id=timetable.id,
+        master_timetable=timetable
+    ) from TimetablePDFView.
+    """
     qs = Exam.objects.filter(
         mastertimetableexam__master_timetable=timetable,
         master_timetable=timetable,
@@ -52,9 +77,6 @@ def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
     return qs
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  HELPER — build attendance PDF  (grouped by course)
-# ══════════════════════════════════════════════════════════════════════════════
 def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -287,6 +309,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     return buffer.getvalue()
 
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  VIEW 1 — Dashboard Stats Cards  (grouped by course)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -294,6 +317,7 @@ class AttendanceStatsView(APIView):
     """
     GET /api/report/attendance/stats/?timetable_id=<id>
     """
+
     permission_classes = [IsAuthenticated, IsAdminUser]
 
     def get(self, request):
@@ -308,11 +332,13 @@ class AttendanceStatsView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
+        # Get exams scoped to this timetable
         exam_qs = _timetable_exams(timetable).select_related(
             "group", "group__course", "room"
         )
         exam_ids = list(exam_qs.values_list("id", flat=True))
 
+        # FIXED: Get StudentExam records only for these exams
         student_exams = StudentExam.objects.filter(
             exam_id__in=exam_ids,
             student__department__location=timetable.location,
@@ -324,70 +350,81 @@ class AttendanceStatsView(APIView):
             "student",
         )
 
-        total      = student_exams.count()
-        signed_in  = student_exams.filter(signin_attendance=True).count()
+        total = student_exams.count()
+        signed_in = student_exams.filter(signin_attendance=True).count()
         signed_out = student_exams.filter(signout_attendance=True).count()
-        absent     = student_exams.filter(signin_attendance=False).count()
+        absent = student_exams.filter(signin_attendance=False).count()
 
         cheating_reports = CheatingReport.objects.filter(
             exam_id__in=exam_ids,
         ).count()
 
-        course_map = defaultdict(lambda: {
-            "course_code": "", "course_title": "",
-            "total": 0, "signed_in": 0, "absent": 0, "cheating_reports": 0,
-            "exams": [],
-        })
+        course_map = defaultdict(
+            lambda: {
+                "course_code": "",
+                "course_title": "",
+                "total": 0,
+                "signed_in": 0,
+                "absent": 0,
+                "cheating_reports": 0,
+                "exams": [],
+            }
+        )
 
         for exam in exam_qs:
-            course  = exam.group.course if exam.group else None
-            c_code  = course.code  if course else "–"
+            course = exam.group.course if exam.group else None
+            c_code = course.code if course else "–"
             c_title = course.title if course else "Unknown Course"
-            key     = f"{c_code}||{c_title}"
+            key = f"{c_code}||{c_title}"
 
+            # Filter student exams for this specific exam
             ses = student_exams.filter(exam=exam)
             exam_total = ses.count()
-            exam_in    = ses.filter(signin_attendance=True).count()
+            exam_in = ses.filter(signin_attendance=True).count()
             exam_cheat = CheatingReport.objects.filter(exam=exam).count()
 
             bucket = course_map[key]
-            bucket["course_code"]       = c_code
-            bucket["course_title"]      = c_title
-            bucket["total"]            += exam_total
-            bucket["signed_in"]        += exam_in
-            bucket["absent"]           += exam_total - exam_in
+            bucket["course_code"] = c_code
+            bucket["course_title"] = c_title
+            bucket["total"] += exam_total
+            bucket["signed_in"] += exam_in
+            bucket["absent"] += exam_total - exam_in
             bucket["cheating_reports"] += exam_cheat
-            bucket["exams"].append({
-                "exam_id":          exam.id,
-                "group":            exam.group.group_name if exam.group else "–",
-                "date":             exam.date,
-                "start_time":       exam.start_time,
-                "end_time":         exam.end_time,
-                "room":             exam.room.name if exam.room else "–",
-                "status":           exam.status,
-                "total":            exam_total,
-                "signed_in":        exam_in,
-                "absent":           exam_total - exam_in,
-                "cheating_reports": exam_cheat,
-            })
+            bucket["exams"].append(
+                {
+                    "exam_id": exam.id,
+                    "group": exam.group.group_name if exam.group else "–",
+                    "date": exam.date,
+                    "start_time": exam.start_time,
+                    "end_time": exam.end_time,
+                    "room": "",
+                    "status": exam.status,
+                    "total": exam_total,
+                    "signed_in": exam_in,
+                    "absent": exam_total - exam_in,
+                    "cheating_reports": exam_cheat,
+                }
+            )
 
         courses = sorted(course_map.values(), key=lambda c: c["course_code"])
 
-        return Response({
-            "timetable_id":    timetable.id,
-            "timetable_label": (
-                f"{timetable.location.name} | {timetable.academic_year} | "
-                f"{timetable.semester.name} ({timetable.category})"
-            ),
-            "stats": {
-                "total_students":   total,
-                "signed_in":        signed_in,
-                "signed_out":       signed_out,
-                "absent":           absent,
-                "cheating_reports": cheating_reports,
-            },
-            "courses": courses,
-        })
+        return Response(
+            {
+                "timetable_id": timetable.id,
+                "timetable_label": (
+                    f"{timetable.location.name} | {timetable.academic_year} | "
+                    f"{timetable.semester.name} ({timetable.category})"
+                ),
+                "stats": {
+                    "total_students": total,
+                    "signed_in": signed_in,
+                    "signed_out": signed_out,
+                    "absent": absent,
+                    "cheating_reports": cheating_reports,
+                },
+                "courses": courses,
+            }
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -398,14 +435,16 @@ class ExamAttendanceListView(APIView):
     GET /api/report/attendance/?course_code=<code>&timetable_id=<id>
     GET /api/report/attendance/?exam_id=<id>   (legacy)
     """
+
     permission_classes = [IsAuthenticated, IsAdminUser]
 
     def get(self, request):
-        exam_id      = request.GET.get("exam_id")
-        course_code  = request.GET.get("course_code")
+        exam_id = request.GET.get("exam_id")
+        course_code = request.GET.get("course_code")
         timetable_id = request.GET.get("timetable_id")
 
         if exam_id:
+            # legacy: need timetable_id too for proper scoping
             if not timetable_id:
                 return Response(
                     {"error": "timetable_id is required alongside exam_id."},
@@ -421,7 +460,9 @@ class ExamAttendanceListView(APIView):
 
         if not course_code or not timetable_id:
             return Response(
-                {"error": "Provide either (exam_id + timetable_id) OR (course_code + timetable_id)."},
+                {
+                    "error": "Provide either (exam_id + timetable_id) OR (course_code + timetable_id)."
+                },
                 status=400,
             )
 
@@ -438,7 +479,9 @@ class ExamAttendanceListView(APIView):
         ).select_related("group", "group__course", "room")
 
         if not exam_qs.exists():
-            return Response({"error": "No exams found for this course/timetable."}, status=404)
+            return Response(
+                {"error": "No exams found for this course/timetable."}, status=404
+            )
 
         exam_ids = list(exam_qs.values_list("id", flat=True))
         cheating_map = {
@@ -448,101 +491,122 @@ class ExamAttendanceListView(APIView):
             ).select_related("reported_by", "reviewed_by")
         }
 
-        course_obj  = exam_qs.first().group.course
+        course_obj = exam_qs.first().group.course
         exam_groups = []
         grand = dict(total=0, signed_in=0, signed_out=0, absent=0, cheating_reports=0)
 
         for exam in exam_qs.order_by("date", "start_time"):
-            student_exams = StudentExam.objects.filter(
-                exam=exam,
-                student__department__location=timetable.location,
-            ).select_related(
-                "student", "student__user", "student__department", "room"
-            ).order_by("student__reg_no")
+            # FIXED: Get StudentExam records only for this exam
+            student_exams = (
+                StudentExam.objects.filter(
+                    exam=exam,
+                    student__department__location=timetable.location,
+                )
+                .select_related(
+                    "student", "student__user", "student__department", "room"
+                )
+                .order_by("student__reg_no")
+            )
 
             rows = []
             for se in student_exams:
                 report = cheating_map.get((exam.id, se.student_id))
-                rows.append({
-                    "id":              se.id,
-                    "student_id":      se.student_id,
-                    "reg_no":          se.student.reg_no if se.student else "–",
-                    "name":            (
-                        f"{se.student.user.first_name} {se.student.user.last_name}".strip()
-                        if se.student and se.student.user else "–"
-                    ),
-                    "department":      (
-                        se.student.department.name
-                        if se.student and se.student.department else "–"
-                    ),
-                    "room":            (
-                        se.room.name if se.room
-                        else (exam.room.name if exam.room else "–")
-                    ),
-                    "signin":          se.signin_attendance,
-                    "signout":         se.signout_attendance,
-                    "status":          se.status,
-                    "cheated":         report is not None,
-                    "cheating_report": {
-                        "id":                   report.id,
-                        "severity":             report.severity,
-                        "status":               report.status,
-                        "incident_description": report.incident_description,
-                        "reported_by":          report.reported_by.get_full_name() if report.reported_by else "–",
-                        "created_at":           report.created_at,
-                        "evidence_count":       report.evidence.count(),
-                    } if report else None,
-                })
+                rows.append(
+                    {
+                        "id": se.id,
+                        "student_id": se.student_id,
+                        "reg_no": se.student.reg_no if se.student else "–",
+                        "name": (
+                            f"{se.student.user.first_name} {se.student.user.last_name}".strip()
+                            if se.student and se.student.user
+                            else "–"
+                        ),
+                        "department": (
+                            se.student.department.name
+                            if se.student and se.student.department
+                            else "–"
+                        ),
+                        "signin": se.signin_attendance,
+                        "signout": se.signout_attendance,
+                        "status": se.status,
+                        "cheated": report is not None,
+                        "cheating_report": (
+                            {
+                                "id": report.id,
+                                "severity": report.severity,
+                                "status": report.status,
+                                "incident_description": report.incident_description,
+                                "reported_by": (
+                                    report.reported_by.get_full_name()
+                                    if report.reported_by
+                                    else "–"
+                                ),
+                                "created_at": report.created_at,
+                                "evidence_count": report.evidence.count(),
+                            }
+                            if report
+                            else None
+                        ),
+                    }
+                )
             rows.sort(key=lambda x: x["name"].lower())
 
             exam_summary = {
-                "total":            len(rows),
-                "signed_in":        sum(1 for r in rows if r["signin"]),
-                "signed_out":       sum(1 for r in rows if r["signout"]),
-                "absent":           sum(1 for r in rows if not r["signin"]),
+                "total": len(rows),
+                "signed_in": sum(1 for r in rows if r["signin"]),
+                "signed_out": sum(1 for r in rows if r["signout"]),
+                "absent": sum(1 for r in rows if not r["signin"]),
                 "cheating_reports": sum(1 for r in rows if r["cheated"]),
             }
             for k in grand:
                 grand[k] += exam_summary[k]
 
-            exam_groups.append({
-                "exam": {
-                    "id":         exam.id,
-                    "group":      exam.group.group_name if exam.group else "–",
-                    "date":       exam.date,
-                    "start_time": exam.start_time,
-                    "end_time":   exam.end_time,
-                    "room":       exam.room.name if exam.room else "–",
-                    "status":     exam.status,
+            exam_groups.append(
+                {
+                    "exam": {
+                        "id": exam.id,
+                        "group": exam.group.group_name if exam.group else "–",
+                        "date": exam.date,
+                        "start_time": exam.start_time,
+                        "end_time": exam.end_time,
+                        "room": exam.room.name if exam.room else "–",
+                        "status": exam.status,
+                    },
+                    "students": rows,
+                    "summary": exam_summary,
+                }
+            )
+
+        return Response(
+            {
+                "course": {
+                    "code": course_obj.code,
+                    "title": course_obj.title,
                 },
-                "students": rows,
-                "summary":  exam_summary,
-            })
+                "timetable_id": timetable.id,
+                "exam_groups": exam_groups,
+                "summary": grand,
+            }
+        )
 
-        return Response({
-            "course": {
-                "code":  course_obj.code,
-                "title": course_obj.title,
-            },
-            "timetable_id": timetable.id,
-            "exam_groups":  exam_groups,
-            "summary":      grand,
-        })
-
+    # ── Legacy single-exam helper ─────────────────────────────────────────────
     def _single_exam(self, request, exam_id, timetable: MasterTimetable):
         try:
-            exam = Exam.objects.select_related(
-                "group", "group__course", "room"
-            ).get(pk=exam_id, master_timetable=timetable)
+            exam = Exam.objects.select_related("group", "group__course", "room").get(
+                pk=exam_id, master_timetable=timetable
+            )  # locked to timetable
         except Exam.DoesNotExist:
             return Response({"error": "Exam not found in this timetable."}, status=404)
 
-        student_exams = StudentExam.objects.filter(
-            exam=exam,
-            student__department__location=timetable.location,
-        ).select_related(
-            "student", "student__user", "student__department", "room"
-        ).order_by("student__reg_no")
+        # FIXED: Get StudentExam records only for this exam
+        student_exams = (
+            StudentExam.objects.filter(
+                exam=exam,
+                student__department__location=timetable.location,
+            )
+            .select_related("student", "student__user", "student__department", "room")
+            .order_by("student__reg_no")
+        )
 
         cheating_map = {
             cr.student_id: cr
@@ -554,59 +618,78 @@ class ExamAttendanceListView(APIView):
         rows = []
         for se in student_exams:
             report = cheating_map.get(se.student_id)
-            rows.append({
-                "id":              se.id,
-                "student_id":      se.student_id,
-                "reg_no":          se.student.reg_no if se.student else "–",
-                "name":            (
-                    f"{se.student.user.first_name} {se.student.user.last_name}".strip()
-                    if se.student and se.student.user else "–"
-                ),
-                "department":      (
-                    se.student.department.name
-                    if se.student and se.student.department else "–"
-                ),
-                "room":            (
-                    se.room.name if se.room
-                    else (exam.room.name if exam.room else "–")
-                ),
-                "signin":          se.signin_attendance,
-                "signout":         se.signout_attendance,
-                "status":          se.status,
-                "cheated":         report is not None,
-                "cheating_report": {
-                    "id":                   report.id,
-                    "severity":             report.severity,
-                    "status":               report.status,
-                    "incident_description": report.incident_description,
-                    "reported_by":          report.reported_by.get_full_name() if report.reported_by else "–",
-                    "created_at":           report.created_at,
-                    "evidence_count":       report.evidence.count(),
-                } if report else None,
-            })
+            rows.append(
+                {
+                    "id": se.id,
+                    "student_id": se.student_id,
+                    "reg_no": se.student.reg_no if se.student else "–",
+                    "name": (
+                        f"{se.student.user.first_name} {se.student.user.last_name}".strip()
+                        if se.student and se.student.user
+                        else "–"
+                    ),
+                    "department": (
+                        se.student.department.name
+                        if se.student and se.student.department
+                        else "–"
+                    ),
+                    "signin": se.signin_attendance,
+                    "room": se.room.name if exam.room else "",
+                    "signout": se.signout_attendance,
+                    "status": se.status,
+                    "cheated": report is not None,
+                    "cheating_report": (
+                        {
+                            "id": report.id,
+                            "severity": report.severity,
+                            "status": report.status,
+                            "incident_description": report.incident_description,
+                            "reported_by": (
+                                report.reported_by.get_full_name()
+                                if report.reported_by
+                                else "–"
+                            ),
+                            "created_at": report.created_at,
+                            "evidence_count": report.evidence.count(),
+                        }
+                        if report
+                        else None
+                    ),
+                }
+            )
         rows.sort(key=lambda x: x["name"].lower())
 
-        return Response({
-            "exam": {
-                "id":          exam.id,
-                "course":      exam.group.course.title if exam.group and exam.group.course else "–",
-                "course_code": exam.group.course.code  if exam.group and exam.group.course else "–",
-                "group":       exam.group.group_name   if exam.group else "–",
-                "date":        exam.date,
-                "start_time":  exam.start_time,
-                "end_time":    exam.end_time,
-                "room":        exam.room.name if exam.room else "–",
-                "status":      exam.status,
-            },
-            "students": rows,
-            "summary": {
-                "total":            len(rows),
-                "signed_in":        sum(1 for r in rows if r["signin"]),
-                "signed_out":       sum(1 for r in rows if r["signout"]),
-                "absent":           sum(1 for r in rows if not r["signin"]),
-                "cheating_reports": sum(1 for r in rows if r["cheated"]),
-            },
-        })
+        return Response(
+            {
+                "exam": {
+                    "id": exam.id,
+                    "course": (
+                        exam.group.course.title
+                        if exam.group and exam.group.course
+                        else "–"
+                    ),
+                    "course_code": (
+                        exam.group.course.code
+                        if exam.group and exam.group.course
+                        else "–"
+                    ),
+                    "group": exam.group.group_name if exam.group else "–",
+                    "date": exam.date,
+                    "start_time": exam.start_time,
+                    "end_time": exam.end_time,
+                    "room": "",
+                    "status": exam.status,
+                },
+                "students": rows,
+                "summary": {
+                    "total": len(rows),
+                    "signed_in": sum(1 for r in rows if r["signin"]),
+                    "signed_out": sum(1 for r in rows if r["signout"]),
+                    "absent": sum(1 for r in rows if not r["signin"]),
+                    "cheating_reports": sum(1 for r in rows if r["cheated"]),
+                },
+            }
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -617,6 +700,7 @@ class CheatingReportActionView(APIView):
     PATCH /api/report/cheating/<report_id>/action/
     Body: { "status": "confirmed"|"dismissed"|"under_review", "admin_notes": "..." }
     """
+
     permission_classes = [IsAuthenticated, IsAdminUser]
 
     def patch(self, request, report_id):
@@ -625,8 +709,8 @@ class CheatingReportActionView(APIView):
         except CheatingReport.DoesNotExist:
             return Response({"error": "Report not found."}, status=404)
 
-        new_status   = request.data.get("status")
-        admin_notes  = request.data.get("admin_notes", report.admin_notes)
+        new_status = request.data.get("status")
+        admin_notes = request.data.get("admin_notes", report.admin_notes)
         valid_states = [s[0] for s in CheatingReport.Status.choices]
 
         if new_status and new_status not in valid_states:
@@ -642,13 +726,15 @@ class CheatingReportActionView(APIView):
         report.reviewed_at = timezone.now()
         report.save()
 
-        return Response({
-            "id":          report.id,
-            "status":      report.status,
-            "admin_notes": report.admin_notes,
-            "reviewed_by": request.user.get_full_name(),
-            "reviewed_at": report.reviewed_at,
-        })
+        return Response(
+            {
+                "id": report.id,
+                "status": report.status,
+                "admin_notes": report.admin_notes,
+                "reviewed_by": request.user.get_full_name(),
+                "reviewed_at": report.reviewed_at,
+            }
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -659,11 +745,12 @@ class AttendancePDFView(APIView):
     GET /api/report/attendance/pdf/?timetable_id=<id>
     GET /api/report/attendance/pdf/?timetable_id=<id>&course_code=<code>
     """
+
     permission_classes = [IsAuthenticated, IsAdminUser]
 
     def get(self, request):
         timetable_id = request.GET.get("timetable_id")
-        course_code  = request.GET.get("course_code")
+        course_code = request.GET.get("course_code")
 
         if not timetable_id:
             return Response({"error": "timetable_id is required."}, status=400)
@@ -675,6 +762,7 @@ class AttendancePDFView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
+        # Get exams scoped to this timetable
         extra = {"group__course__code": course_code} if course_code else None
         exam_qs = _timetable_exams(timetable, extra_filters=extra).select_related(
             "group", "group__course", "room"
@@ -686,24 +774,29 @@ class AttendancePDFView(APIView):
                 status=404,
             )
 
-        exam_ids = list(exam_qs.values_list('id', flat=True))
-        student_exams = StudentExam.objects.filter(
-            exam_id__in=exam_ids,
-            student__department__location=timetable.location,
-        ).select_related(
-            "exam",
-            "exam__group",
-            "exam__group__course",
-            "exam__room",
-            "student",
-            "student__user",
-            "student__department",
-            "room",            # ← ensure SE-level room is fetched
-        ).order_by(
-            "exam__group__course__code",
-            "exam__date",
-            "exam__start_time",
-            "student__reg_no"
+        # FIXED: Get StudentExam records only for these exams
+        exam_ids = list(exam_qs.values_list("id", flat=True))
+        student_exams = (
+            StudentExam.objects.filter(
+                exam_id__in=exam_ids,
+                student__department__location=timetable.location,
+            )
+            .select_related(
+                "exam",
+                "exam__group",
+                "exam__group__course",
+                "exam__room",
+                "student",
+                "room",
+                "student__user",
+                "student__department",
+            )
+            .order_by(
+                "exam__group__course__code",
+                "exam__date",
+                "exam__start_time",
+                "student__reg_no",
+            )
         )
 
         if not student_exams.exists():
@@ -717,7 +810,7 @@ class AttendancePDFView(APIView):
         except Exception as exc:
             return Response({"error": f"PDF generation failed: {exc}"}, status=500)
 
-        suffix   = f"_{course_code}" if course_code else ""
+        suffix = f"_{course_code}" if course_code else ""
         filename = (
             f"attendance{suffix}_{timetable.academic_year}_"
             f"{timetable.semester.name}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
