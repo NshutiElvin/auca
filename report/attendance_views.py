@@ -76,8 +76,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     ──────
     For every course:
       • A full-width course header band  (code – title)
-      • One sub-header row per exam      (date / time / room / group)
-      • Data rows for that exam's students
+      • One flat sorted list of all students across all exams for that course
 
     Footer: summary per course + grand total.
 
@@ -165,109 +164,86 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
 
         c_total = c_in = c_out = c_absent = c_cheated = 0
 
-        for exam in sorted(exam_dict.keys(), key=lambda e: (e.date, e.start_time)):
-            ses = exam_dict[exam]
+        # ── Flatten all student_exams for this course into one sorted list ────
+        all_ses = [
+            (se, exam)
+            for exam, ses in exam_dict.items()
+            for se in ses
+        ]
+        all_ses.sort(key=lambda x: (
+            f"{x[0].student.user.first_name} {x[0].student.user.last_name}".strip().lower()
+            if x[0].student and x[0].student.user else ""
+        ))
 
-            date_str  = exam.date.strftime("%d %B %Y") if exam.date else "–"
-            time_str  = (
-                f"{exam.start_time.strftime('%I:%M %p').lstrip('0')} – "
-                f"{exam.end_time.strftime('%I:%M %p').lstrip('0')}"
-                if exam.start_time and exam.end_time else "–"
+        tbl_data = [[Paragraph(h, hdr) for h in headers]]
+        style_cmds = [
+            ("BACKGROUND",    (0, 0), (-1, 0),  COL_HEADER),
+            ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_COL),
+            ("INNERGRID",     (0, 0), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+            ("TOPPADDING",    (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
+        ]
+
+        for idx, (se, exam) in enumerate(all_ses, start=1):
+            si = se.signin_attendance
+            so = se.signout_attendance
+            full_name = (
+                f"{se.student.user.first_name} {se.student.user.last_name}".strip()
+                if se.student and se.student.user else "–"
             )
-            room_str  = exam.room.name if exam.room else "No Room"
-            group_str = exam.group.group_name if exam.group else "–"
-
-            exam_subhdr = Table(
-                [[Paragraph(
-                    f"Group: <b>{group_str}</b> &nbsp;|&nbsp; "
-                    f"Date: <b>{date_str}</b> &nbsp;|&nbsp; "
-                    f"Time: <b>{time_str}</b> &nbsp;|&nbsp; "
-                    f"Room: <b>{room_str}</b>",
-                    _s("EH", fontSize=8, textColor=TEXT_DARK, alignment=TA_LEFT, leading=12)
-                )]],
-                colWidths=[usable_width],
+            reg_no    = se.student.reg_no if se.student else "–"
+            dept_name = (
+                se.student.department.name
+                if se.student and se.student.department else "–"
             )
-            exam_subhdr.setStyle(TableStyle([
-                ("BACKGROUND",    (0, 0), (-1, -1), colors.HexColor("#EEF2F9")),
-                ("BOX",           (0, 0), (-1, -1), 0.4, BORDER_COL),
-                ("TOPPADDING",    (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("LEFTPADDING",   (0, 0), (-1, -1), 10),
-            ]))
 
-            tbl_data   = [[Paragraph(h, hdr) for h in headers]]
-            style_cmds = [
-                ("BACKGROUND",    (0, 0), (-1, 0),  COL_HEADER),
-                ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_COL),
-                ("INNERGRID",     (0, 0), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
-                ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
-                ("TOPPADDING",    (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                ("LEFTPADDING",   (0, 0), (-1, -1), 5),
-                ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
-            ]
+            has_report = (exam.id, se.student_id) in cheating_map
+            report_obj = cheating_map.get((exam.id, se.student_id))
 
-            for idx, se in enumerate(
-                sorted(ses, key=lambda s: s.student.reg_no if s.student else ""),
-                start=1,
-            ):
-                si = se.signin_attendance
-                so = se.signout_attendance
-                full_name = (
-                    f"{se.student.user.first_name} {se.student.user.last_name}".strip()
-                    if se.student and se.student.user else "–"
+            if si:         c_in      += 1
+            if so:         c_out     += 1
+            if not si:     c_absent  += 1
+            if has_report: c_cheated += 1
+            c_total += 1
+
+            if has_report:
+                sev_color = {
+                    "low": "#CC6600", "medium": "#E67E22", "high": "#C0392B"
+                }.get(report_obj.severity, "#CC6600")
+                cheated_cell = Paragraph(
+                    f'<font color="{sev_color}"><b>YES</b></font><br/>'
+                    f'<font size="6" color="{sev_color}">{report_obj.get_severity_display()}</font>',
+                    celc
                 )
-                reg_no    = se.student.reg_no if se.student else "–"
-                dept_name = (
-                    se.student.department.name
-                    if se.student and se.student.department else "–"
-                )
+            else:
+                cheated_cell = Paragraph('<font color="#1E8449">–</font>', celc)
 
-                has_report = (exam.id, se.student_id) in cheating_map
-                report_obj = cheating_map.get((exam.id, se.student_id))
+            row_num = len(tbl_data)
+            tbl_data.append([
+                Paragraph(str(idx), celc),
+                Paragraph(reg_no,    cell),
+                Paragraph(full_name, cell),
+                Paragraph(dept_name, cell),
+                _tick(si),
+                _tick(so),
+                cheated_cell,
+            ])
 
-                if si:         c_in      += 1
-                if so:         c_out     += 1
-                if not si:     c_absent  += 1
-                if has_report: c_cheated += 1
-                c_total += 1
+            # Only highlight cheated (amber) or present (green); absent = white
+            if has_report:
+                style_cmds.append(("BACKGROUND", (0, row_num), (-1, row_num), CHEATED_AMBER))
+            elif si:
+                style_cmds.append(("BACKGROUND", (0, row_num), (-1, row_num), PRESENT_GREEN))
+            # absent rows get no background (default white)
 
-                if has_report:
-                    sev_color = {
-                        "low": "#CC6600", "medium": "#E67E22", "high": "#C0392B"
-                    }.get(report_obj.severity, "#CC6600")
-                    cheated_cell = Paragraph(
-                        f'<font color="{sev_color}"><b>YES</b></font><br/>'
-                        f'<font size="6" color="{sev_color}">{report_obj.get_severity_display()}</font>',
-                        celc
-                    )
-                else:
-                    cheated_cell = Paragraph('<font color="#1E8449">–</font>', celc)
-
-                row_num = len(tbl_data)
-                tbl_data.append([
-                    Paragraph(str(idx), celc),
-                    Paragraph(reg_no,    cell),
-                    Paragraph(full_name, cell),
-                    Paragraph(dept_name, cell),
-                    _tick(si),
-                    _tick(so),
-                    cheated_cell,
-                ])
-
-                if has_report:
-                    style_cmds.append(("BACKGROUND", (0, row_num), (-1, row_num), CHEATED_AMBER))
-                elif si:
-                    style_cmds.append(("BACKGROUND", (0, row_num), (-1, row_num), PRESENT_GREEN))
-                else:
-                    style_cmds.append(("BACKGROUND", (0, row_num), (-1, row_num), ABSENT_RED))
-
-            data_tbl = Table(tbl_data, colWidths=col_widths, repeatRows=1)
-            data_tbl.setStyle(TableStyle(style_cmds))
-
-            story.append(KeepTogether([exam_subhdr, data_tbl]))
-            story.append(Spacer(1, 0.2 * cm))
+        data_tbl = Table(tbl_data, colWidths=col_widths, repeatRows=1)
+        data_tbl.setStyle(TableStyle(style_cmds))
+        story.append(data_tbl)
+        story.append(Spacer(1, 0.2 * cm))
 
         # ── Per-course summary row ────────────────────────────────────────────
         story.append(Spacer(1, 0.1 * cm))
@@ -538,6 +514,7 @@ class ExamAttendanceListView(APIView):
                         "evidence_count":       report.evidence.count(),
                     } if report else None,
                 })
+            rows.sort(key=lambda x: x["name"].lower())
 
             exam_summary = {
                 "total":            len(rows),
@@ -627,6 +604,7 @@ class ExamAttendanceListView(APIView):
                     "evidence_count":       report.evidence.count(),
                 } if report else None,
             })
+        rows.sort(key=lambda x: x["name"].lower())
 
         return Response({
             "exam": {
