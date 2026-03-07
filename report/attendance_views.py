@@ -68,14 +68,9 @@ def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
 
 
 def _timetable_student_exams(exam_qs, timetable: MasterTimetable):
-    """
-    Return a StudentExam queryset scoped to campus-locked exams only.
-    exam__master_timetable=timetable is the key lock that prevents students
-    from other campuses bleeding in through shared Exam rows.
-    """
     return StudentExam.objects.filter(
         exam__in=exam_qs,
-        exam__master_timetable=timetable,
+        exam__master_timetable__location=timetable.location,  # ← lock by campus location
     ).distinct()
 
 
@@ -507,7 +502,7 @@ class ExamAttendanceListView(APIView):
             # Lock to this timetable via exam__master_timetable
             student_exams = StudentExam.objects.filter(
                 exam=exam,
-                exam__master_timetable=timetable,
+                exam__master_timetable__location=timetable.location,
             ).select_related(
                 "student", "student__user", "student__department", "room"
             ).order_by("student__reg_no")
@@ -588,7 +583,7 @@ class ExamAttendanceListView(APIView):
         # Lock StudentExam to this timetable via exam__master_timetable
         student_exams = StudentExam.objects.filter(
             exam=exam,
-            exam__master_timetable=timetable,
+            exam__master_timetable__location=timetable.location,
         ).select_related(
             "student", "student__user", "student__department", "room"
         ).order_by("student__reg_no")
