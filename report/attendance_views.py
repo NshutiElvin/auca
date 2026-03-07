@@ -41,24 +41,11 @@ COURSE_HEADER_BG = colors.HexColor("#D6E4F7")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  INTERNAL HELPERS — campus-safe querysets
-#
-#  Mirrors exactly how TimetablePDFView (views.py) scopes its exams:
-#    mastertimetableexam__master_timetable=timetable   (M2M join filter)
-#    master_timetable=timetable                        (direct FK filter)
 # ══════════════════════════════════════════════════════════════════════════════
 def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
-    """
-    Return an Exam queryset scoped exclusively to `timetable`.
-    Mirrors: Exam.objects.filter(
-        mastertimetableexam__master_timetable_id=timetable.id,
-        master_timetable=timetable
-    ) from TimetablePDFView.
-    """
     qs = Exam.objects.filter(
         mastertimetableexam__master_timetable=timetable,
         master_timetable=timetable,
-        
-
     ).distinct()
     if extra_filters:
         qs = qs.filter(**extra_filters)
@@ -69,19 +56,6 @@ def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
 #  HELPER — build attendance PDF  (grouped by course)
 # ══════════════════════════════════════════════════════════════════════════════
 def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
-    """
-    Portrait A4 attendance report for a whole timetable, grouped by course.
-
-    Layout
-    ──────
-    For every course:
-      • A full-width course header band  (code – title)
-      • One flat sorted list of all students across all exams for that course
-
-    Footer: summary per course + grand total.
-
-    `student_exams` must already be campus-scoped (via exam_id__in).
-    """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -120,8 +94,9 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
         ).select_related("reported_by")
     }
 
-    col_widths   = [0.7*cm, 2.2*cm, 4.8*cm, 3.0*cm, 1.8*cm, 1.8*cm, 2.0*cm]
-    headers      = ["#", "Reg No", "Student Name", "Department", "Sign-In", "Sign-Out", "Cheated"]
+    # ── Column definitions — now includes "Room" ──────────────────────────────
+    col_widths = [0.7*cm, 2.2*cm, 4.0*cm, 2.6*cm, 2.0*cm, 2.0*cm, 1.6*cm, 1.6*cm, 2.0*cm]
+    headers    = ["#", "Reg No", "Student Name", "Department", "Room", "Group", "Sign-In", "Sign-Out", "Cheated"]
     usable_width = sum(col_widths)
 
     # ── Aggregate by course then by exam ──────────────────────────────────────
@@ -200,6 +175,13 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
                 se.student.department.name
                 if se.student and se.student.department else "–"
             )
+            # ── Room: prefer the student's assigned room on the SE record,
+            #    fall back to the exam's default room ─────────────────────────
+            room_name = (
+                se.room.name if se.room
+                else (exam.room.name if exam.room else "–")
+            )
+            group_name = exam.group.group_name if exam.group else "–"
 
             has_report = (exam.id, se.student_id) in cheating_map
             report_obj = cheating_map.get((exam.id, se.student_id))
@@ -224,21 +206,21 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
 
             row_num = len(tbl_data)
             tbl_data.append([
-                Paragraph(str(idx), celc),
-                Paragraph(reg_no,    cell),
-                Paragraph(full_name, cell),
-                Paragraph(dept_name, cell),
+                Paragraph(str(idx),   celc),
+                Paragraph(reg_no,     cell),
+                Paragraph(full_name,  cell),
+                Paragraph(dept_name,  cell),
+                Paragraph(room_name,  celc),
+                Paragraph(group_name, celc),  # ← Group
                 _tick(si),
                 _tick(so),
                 cheated_cell,
             ])
 
-            # Only highlight cheated (amber) or present (green); absent = white
             if has_report:
                 style_cmds.append(("BACKGROUND", (0, row_num), (-1, row_num), CHEATED_AMBER))
             elif si:
                 style_cmds.append(("BACKGROUND", (0, row_num), (-1, row_num), PRESENT_GREEN))
-            # absent rows get no background (default white)
 
         data_tbl = Table(tbl_data, colWidths=col_widths, repeatRows=1)
         data_tbl.setStyle(TableStyle(style_cmds))
@@ -326,17 +308,14 @@ class AttendanceStatsView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
-        # Get exams scoped to this timetable
         exam_qs = _timetable_exams(timetable).select_related(
             "group", "group__course", "room"
         )
         exam_ids = list(exam_qs.values_list("id", flat=True))
 
-        # FIXED: Get StudentExam records only for these exams
         student_exams = StudentExam.objects.filter(
             exam_id__in=exam_ids,
             student__department__location=timetable.location,
-
         ).select_related(
             "exam",
             "exam__group",
@@ -366,7 +345,6 @@ class AttendanceStatsView(APIView):
             c_title = course.title if course else "Unknown Course"
             key     = f"{c_code}||{c_title}"
 
-            # Filter student exams for this specific exam
             ses = student_exams.filter(exam=exam)
             exam_total = ses.count()
             exam_in    = ses.filter(signin_attendance=True).count()
@@ -428,7 +406,6 @@ class ExamAttendanceListView(APIView):
         timetable_id = request.GET.get("timetable_id")
 
         if exam_id:
-            # legacy: need timetable_id too for proper scoping
             if not timetable_id:
                 return Response(
                     {"error": "timetable_id is required alongside exam_id."},
@@ -476,11 +453,9 @@ class ExamAttendanceListView(APIView):
         grand = dict(total=0, signed_in=0, signed_out=0, absent=0, cheating_reports=0)
 
         for exam in exam_qs.order_by("date", "start_time"):
-            # FIXED: Get StudentExam records only for this exam
             student_exams = StudentExam.objects.filter(
                 exam=exam,
                 student__department__location=timetable.location,
-
             ).select_related(
                 "student", "student__user", "student__department", "room"
             ).order_by("student__reg_no")
@@ -499,6 +474,10 @@ class ExamAttendanceListView(APIView):
                     "department":      (
                         se.student.department.name
                         if se.student and se.student.department else "–"
+                    ),
+                    "room":            (
+                        se.room.name if se.room
+                        else (exam.room.name if exam.room else "–")
                     ),
                     "signin":          se.signin_attendance,
                     "signout":         se.signout_attendance,
@@ -550,20 +529,17 @@ class ExamAttendanceListView(APIView):
             "summary":      grand,
         })
 
-    # ── Legacy single-exam helper ─────────────────────────────────────────────
     def _single_exam(self, request, exam_id, timetable: MasterTimetable):
         try:
             exam = Exam.objects.select_related(
                 "group", "group__course", "room"
-            ).get(pk=exam_id, master_timetable=timetable)  # locked to timetable
+            ).get(pk=exam_id, master_timetable=timetable)
         except Exam.DoesNotExist:
             return Response({"error": "Exam not found in this timetable."}, status=404)
 
-        # FIXED: Get StudentExam records only for this exam
         student_exams = StudentExam.objects.filter(
             exam=exam,
             student__department__location=timetable.location,
-
         ).select_related(
             "student", "student__user", "student__department", "room"
         ).order_by("student__reg_no")
@@ -589,6 +565,10 @@ class ExamAttendanceListView(APIView):
                 "department":      (
                     se.student.department.name
                     if se.student and se.student.department else "–"
+                ),
+                "room":            (
+                    se.room.name if se.room
+                    else (exam.room.name if exam.room else "–")
                 ),
                 "signin":          se.signin_attendance,
                 "signout":         se.signout_attendance,
@@ -695,7 +675,6 @@ class AttendancePDFView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
-        # Get exams scoped to this timetable
         extra = {"group__course__code": course_code} if course_code else None
         exam_qs = _timetable_exams(timetable, extra_filters=extra).select_related(
             "group", "group__course", "room"
@@ -707,7 +686,6 @@ class AttendancePDFView(APIView):
                 status=404,
             )
 
-        # FIXED: Get StudentExam records only for these exams
         exam_ids = list(exam_qs.values_list('id', flat=True))
         student_exams = StudentExam.objects.filter(
             exam_id__in=exam_ids,
@@ -720,6 +698,7 @@ class AttendancePDFView(APIView):
             "student",
             "student__user",
             "student__department",
+            "room",            # ← ensure SE-level room is fetched
         ).order_by(
             "exam__group__course__code",
             "exam__date",
