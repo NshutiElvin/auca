@@ -30,35 +30,45 @@ from .views import (
 )
 
 # ── Extra colours ─────────────────────────────────────────────────────────────
-PRESENT_GREEN = colors.HexColor("#E6F4EA")
-ABSENT_RED    = colors.HexColor("#FCE8E8")
-CHEATED_AMBER = colors.HexColor("#FFF3E0")
-BADGE_GREEN   = colors.HexColor("#1E8449")
-BADGE_RED     = colors.HexColor("#C0392B")
-BADGE_AMBER   = colors.HexColor("#CC6600")
-COURSE_HEADER_BG = colors.HexColor("#D6E4F7")   # soft blue band for course sections
+PRESENT_GREEN    = colors.HexColor("#E6F4EA")
+ABSENT_RED       = colors.HexColor("#FCE8E8")
+CHEATED_AMBER    = colors.HexColor("#FFF3E0")
+BADGE_GREEN      = colors.HexColor("#1E8449")
+BADGE_RED        = colors.HexColor("#C0392B")
+BADGE_AMBER      = colors.HexColor("#CC6600")
+COURSE_HEADER_BG = colors.HexColor("#D6E4F7")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  HELPER — group StudentExams by course
+#  INTERNAL HELPERS — campus-safe querysets
+#
+#  Mirrors the double-lock used in TimetablePDFView (views.py):
+#    mastertimetableexam__master_timetable=timetable   (M2M join filter)
+#    master_timetable=timetable                        (direct FK filter)
+#  Together they guarantee only exams belonging to THIS timetable/campus
+#  are ever returned.
 # ══════════════════════════════════════════════════════════════════════════════
-def _group_by_course(student_exams):
+def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
     """
-    Returns an OrderedDict:
-      { (course_code, course_title): [StudentExam, …] }
-    A student who sat the same course in multiple exams appears once per exam
-    but all under the same course bucket.
+    Return an Exam queryset scoped exclusively to `timetable`.
+    Pass extra_filters to narrow further (e.g. {'group__course__code': 'CS101'}).
     """
-    buckets = defaultdict(list)
-    for se in student_exams:
-        course = se.exam.group.course if se.exam.group else None
-        key = (
-            course.code  if course else "–",
-            course.title if course else "Unknown Course",
-        )
-        buckets[key].append(se)
-    # sort by course code
-    return dict(sorted(buckets.items(), key=lambda x: x[0][0]))
+    qs = Exam.objects.filter(
+        mastertimetableexam__master_timetable=timetable,  # M2M join
+        master_timetable=timetable,                       # direct FK double-lock
+    ).distinct()
+    if extra_filters:
+        qs = qs.filter(**extra_filters)
+    return qs
+
+
+def _timetable_student_exams(exam_qs):
+    """
+    Return a StudentExam queryset scoped to an already-campus-locked exam_qs.
+    Filtering via exam__in avoids re-joining through mastertimetableexam and
+    prevents cross-campus student bleed from duplicate join rows.
+    """
+    return StudentExam.objects.filter(exam__in=exam_qs).distinct()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -76,6 +86,8 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
       • Data rows for that exam's students
 
     Footer: summary per course + grand total.
+
+    `student_exams` must already be campus-scoped (via _timetable_student_exams).
     """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -104,11 +116,15 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     ))
     story.append(Spacer(1, 0.3 * cm))
 
-    # ── Pre-load all cheating reports for this timetable ─────────────────────
+    # ── Pre-load cheating reports scoped to this timetable's exams only ───────
+    # Use exam_id__in (not mastertimetableexam join) to stay campus-safe.
+    timetable_exam_ids = list(
+        _timetable_exams(timetable).values_list("id", flat=True)
+    )
     cheating_map = {
         (cr.exam_id, cr.student_id): cr
         for cr in CheatingReport.objects.filter(
-            exam__mastertimetableexam__master_timetable=timetable
+            exam_id__in=timetable_exam_ids
         ).select_related("reported_by")
     }
 
@@ -116,8 +132,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     headers      = ["#", "Reg No", "Student Name", "Department", "Sign-In", "Sign-Out", "Cheated"]
     usable_width = sum(col_widths)
 
-    # ── Aggregate by course then by exam ─────────────────────────────────────
-    # Build: { course_key: { exam: [se, …] } }
+    # ── Aggregate by course then by exam ──────────────────────────────────────
     course_exam_map = defaultdict(lambda: defaultdict(list))
     for se in student_exams:
         course = se.exam.group.course if se.exam and se.exam.group else None
@@ -130,7 +145,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     course_exam_map = dict(sorted(course_exam_map.items(), key=lambda x: x[0][0]))
 
     grand = dict(total=0, signed_in=0, signed_out=0, absent=0, cheated=0)
-    course_summaries = []   # list of dicts for the final summary table
+    course_summaries = []
 
     def _tick(val):
         colour = "#1E8449" if val else "#C0392B"
@@ -160,7 +175,6 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
         for exam in sorted(exam_dict.keys(), key=lambda e: (e.date, e.start_time)):
             ses = exam_dict[exam]
 
-            # ── Exam sub-header ───────────────────────────────────────────────
             date_str  = exam.date.strftime("%d %B %Y") if exam.date else "–"
             time_str  = (
                 f"{exam.start_time.strftime('%I:%M %p').lstrip('0')} – "
@@ -188,7 +202,6 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
                 ("LEFTPADDING",   (0, 0), (-1, -1), 10),
             ]))
 
-            # ── Student rows ──────────────────────────────────────────────────
             tbl_data   = [[Paragraph(h, hdr) for h in headers]]
             style_cmds = [
                 ("BACKGROUND",    (0, 0), (-1, 0),  COL_HEADER),
@@ -204,7 +217,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
 
             for idx, se in enumerate(
                 sorted(ses, key=lambda s: s.student.reg_no if s.student else ""),
-                start=1
+                start=1,
             ):
                 si = se.signin_attendance
                 so = se.signout_attendance
@@ -213,14 +226,17 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
                     if se.student and se.student.user else "–"
                 )
                 reg_no    = se.student.reg_no if se.student else "–"
-                dept_name = se.student.department.name if se.student and se.student.department else "–"
+                dept_name = (
+                    se.student.department.name
+                    if se.student and se.student.department else "–"
+                )
 
                 has_report = (exam.id, se.student_id) in cheating_map
                 report_obj = cheating_map.get((exam.id, se.student_id))
 
-                if si: c_in  += 1
-                if so: c_out += 1
-                if not si: c_absent  += 1
+                if si:         c_in      += 1
+                if so:         c_out     += 1
+                if not si:     c_absent  += 1
                 if has_report: c_cheated += 1
                 c_total += 1
 
@@ -263,11 +279,11 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
         # ── Per-course summary row ────────────────────────────────────────────
         story.append(Spacer(1, 0.1 * cm))
         c_summary_data = [[
-            Paragraph(f"<b>{c_code} Total:</b> {c_total}",      _s("S", fontSize=8)),
-            Paragraph(f'<font color="#1E8449"><b>In: {c_in}</b></font>',       _s("S", fontSize=8, alignment=TA_CENTER)),
-            Paragraph(f'<font color="#C0392B"><b>Absent: {c_absent}</b></font>', _s("S", fontSize=8, alignment=TA_CENTER)),
+            Paragraph(f"<b>{c_code} Total:</b> {c_total}",                        _s("S", fontSize=8)),
+            Paragraph(f'<font color="#1E8449"><b>In: {c_in}</b></font>',           _s("S", fontSize=8, alignment=TA_CENTER)),
+            Paragraph(f'<font color="#C0392B"><b>Absent: {c_absent}</b></font>',   _s("S", fontSize=8, alignment=TA_CENTER)),
             Paragraph(f'<font color="#CC6600"><b>Cheated: {c_cheated}</b></font>', _s("S", fontSize=8, alignment=TA_CENTER)),
-            Paragraph(f"<b>Out: {c_out}</b>",                   _s("S", fontSize=8, alignment=TA_RIGHT)),
+            Paragraph(f"<b>Out: {c_out}</b>",                                     _s("S", fontSize=8, alignment=TA_RIGHT)),
         ]]
         c_sum_tbl = Table(c_summary_data, colWidths=["22%", "18%", "20%", "22%", "18%"])
         c_sum_tbl.setStyle(TableStyle([
@@ -282,12 +298,11 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
         story.append(c_sum_tbl)
         story.append(Spacer(1, 0.4 * cm))
 
-        # accumulate grand totals
-        grand["total"]     += c_total
-        grand["signed_in"] += c_in
-        grand["signed_out"]+= c_out
-        grand["absent"]    += c_absent
-        grand["cheated"]   += c_cheated
+        grand["total"]      += c_total
+        grand["signed_in"]  += c_in
+        grand["signed_out"] += c_out
+        grand["absent"]     += c_absent
+        grand["cheated"]    += c_cheated
 
         course_summaries.append({
             "code": c_code, "title": c_title,
@@ -299,11 +314,11 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     story.append(HRFlowable(width="100%", thickness=0.8, color=colors.grey))
     story.append(Spacer(1, 0.15 * cm))
     grand_data = [[
-        Paragraph(f"<b>GRAND TOTAL: {grand['total']}</b>",          _s("G", fontSize=9)),
-        Paragraph(f'<font color="#1E8449"><b>Signed In: {grand["signed_in"]}</b></font>',  _s("G", fontSize=9, alignment=TA_CENTER)),
+        Paragraph(f"<b>GRAND TOTAL: {grand['total']}</b>",                               _s("G", fontSize=9)),
+        Paragraph(f'<font color="#1E8449"><b>Signed In: {grand["signed_in"]}</b></font>', _s("G", fontSize=9, alignment=TA_CENTER)),
         Paragraph(f'<font color="#C0392B"><b>Absent: {grand["absent"]}</b></font>',        _s("G", fontSize=9, alignment=TA_CENTER)),
         Paragraph(f'<font color="#CC6600"><b>Cheating: {grand["cheated"]}</b></font>',     _s("G", fontSize=9, alignment=TA_CENTER)),
-        Paragraph(f"<b>Signed Out: {grand['signed_out']}</b>",      _s("G", fontSize=9, alignment=TA_RIGHT)),
+        Paragraph(f"<b>Signed Out: {grand['signed_out']}</b>",                            _s("G", fontSize=9, alignment=TA_RIGHT)),
     ]]
     grand_tbl = Table(grand_data, colWidths=["22%", "20%", "18%", "22%", "18%"])
     grand_tbl.setStyle(TableStyle([
@@ -328,8 +343,8 @@ class AttendanceStatsView(APIView):
     """
     GET /api/report/attendance/stats/?timetable_id=<id>
 
-    Returns summary cards for a timetable and a breakdown **per course**
-    (each course entry contains the list of its individual exams for drill-down).
+    Returns summary cards for a timetable and a breakdown per course.
+    Each course entry contains the list of its individual exams for drill-down.
     """
     permission_classes = [IsAuthenticated, IsAdminUser]
 
@@ -339,13 +354,19 @@ class AttendanceStatsView(APIView):
             return Response({"error": "timetable_id is required."}, status=400)
 
         try:
-            timetable = MasterTimetable.objects.get(pk=timetable_id)
+            timetable = MasterTimetable.objects.select_related(
+                "location", "semester"
+            ).get(pk=timetable_id)
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
-        student_exams = StudentExam.objects.filter(
-            exam__mastertimetableexam__master_timetable=timetable
-        ).select_related(
+        # ── Campus-safe exam set (double-lock) ────────────────────────────────
+        exam_qs = _timetable_exams(timetable).select_related(
+            "group", "group__course", "room"
+        )
+
+        # ── Campus-safe student_exams (via exam__in, not timetable join) ──────
+        student_exams = _timetable_student_exams(exam_qs).select_related(
             "exam", "exam__group", "exam__group__course",
             "exam__room", "student",
         )
@@ -354,32 +375,30 @@ class AttendanceStatsView(APIView):
         signed_in  = student_exams.filter(signin_attendance=True).count()
         signed_out = student_exams.filter(signout_attendance=True).count()
         absent     = student_exams.filter(signin_attendance=False).count()
-        cheating_reports = CheatingReport.objects.filter(
-            exam__mastertimetableexam__master_timetable=timetable
+
+        # Cheating reports via exam_id__in — stays campus-safe
+        timetable_exam_ids = list(exam_qs.values_list("id", flat=True))
+        cheating_reports   = CheatingReport.objects.filter(
+            exam_id__in=timetable_exam_ids
         ).count()
 
-        # ── Build per-course breakdown ────────────────────────────────────────
-        # course_key → { meta, exams: [], totals }
+        # ── Per-course breakdown ──────────────────────────────────────────────
         course_map = defaultdict(lambda: {
             "course_code": "", "course_title": "",
             "total": 0, "signed_in": 0, "absent": 0, "cheating_reports": 0,
             "exams": [],
         })
 
-        exams = Exam.objects.filter(
-            mastertimetableexam__master_timetable=timetable
-        ).select_related("group", "group__course", "room").distinct()
+        for exam in exam_qs:
+            course  = exam.group.course if exam.group else None
+            c_code  = course.code  if course else "–"
+            c_title = course.title if course else "Unknown Course"
+            key     = f"{c_code}||{c_title}"
 
-        for exam in exams:
-            course      = exam.group.course if exam.group else None
-            c_code      = course.code  if course else "–"
-            c_title     = course.title if course else "Unknown Course"
-            key         = f"{c_code}||{c_title}"
-
-            ses         = student_exams.filter(exam=exam)
-            exam_total  = ses.count()
-            exam_in     = ses.filter(signin_attendance=True).count()
-            exam_cheat  = CheatingReport.objects.filter(exam=exam).count()
+            ses        = student_exams.filter(exam=exam)
+            exam_total = ses.count()
+            exam_in    = ses.filter(signin_attendance=True).count()
+            exam_cheat = CheatingReport.objects.filter(exam=exam).count()
 
             bucket = course_map[key]
             bucket["course_code"]       = c_code
@@ -389,16 +408,16 @@ class AttendanceStatsView(APIView):
             bucket["absent"]           += exam_total - exam_in
             bucket["cheating_reports"] += exam_cheat
             bucket["exams"].append({
-                "exam_id":    exam.id,
-                "group":      exam.group.group_name if exam.group else "–",
-                "date":       exam.date,
-                "start_time": exam.start_time,
-                "end_time":   exam.end_time,
-                "room":       exam.room.name if exam.room else "–",
-                "status":     exam.status,
-                "total":      exam_total,
-                "signed_in":  exam_in,
-                "absent":     exam_total - exam_in,
+                "exam_id":          exam.id,
+                "group":            exam.group.group_name if exam.group else "–",
+                "date":             exam.date,
+                "start_time":       exam.start_time,
+                "end_time":         exam.end_time,
+                "room":             exam.room.name if exam.room else "–",
+                "status":           exam.status,
+                "total":            exam_total,
+                "signed_in":        exam_in,
+                "absent":           exam_total - exam_in,
                 "cheating_reports": exam_cheat,
             })
 
@@ -417,7 +436,7 @@ class AttendanceStatsView(APIView):
                 "absent":           absent,
                 "cheating_reports": cheating_reports,
             },
-            "courses": courses,   # ← replaces flat "exams" list
+            "courses": courses,
         })
 
 
@@ -429,7 +448,7 @@ class ExamAttendanceListView(APIView):
     GET /api/report/attendance/?course_code=<code>&timetable_id=<id>
 
     Returns every StudentExam record for the given course within a timetable,
-    grouped under their respective exam (date/room/group) for frontend rendering.
+    grouped under their respective exam for frontend rendering.
 
     Legacy single-exam lookup also supported:
     GET /api/report/attendance/?exam_id=<id>
@@ -441,11 +460,9 @@ class ExamAttendanceListView(APIView):
         course_code  = request.GET.get("course_code")
         timetable_id = request.GET.get("timetable_id")
 
-        # ── Single-exam (legacy) ──────────────────────────────────────────────
         if exam_id:
             return self._single_exam(request, exam_id)
 
-        # ── Course-level ──────────────────────────────────────────────────────
         if not course_code or not timetable_id:
             return Response(
                 {"error": "Provide either exam_id OR (course_code + timetable_id)."},
@@ -453,31 +470,36 @@ class ExamAttendanceListView(APIView):
             )
 
         try:
-            timetable = MasterTimetable.objects.get(pk=timetable_id)
+            timetable = MasterTimetable.objects.select_related(
+                "location", "semester"
+            ).get(pk=timetable_id)
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
-        exams = Exam.objects.filter(
-            mastertimetableexam__master_timetable=timetable,
-            group__course__code=course_code,
-        ).select_related("group", "group__course", "room").distinct()
+        # ── Campus-safe exam set narrowed to this course ──────────────────────
+        exam_qs = _timetable_exams(
+            timetable,
+            extra_filters={"group__course__code": course_code},
+        ).select_related("group", "group__course", "room")
 
-        if not exams.exists():
+        if not exam_qs.exists():
             return Response({"error": "No exams found for this course/timetable."}, status=404)
 
+        # ── Cheating reports via exam_id__in ──────────────────────────────────
+        exam_ids = list(exam_qs.values_list("id", flat=True))
         cheating_map = {
             (cr.exam_id, cr.student_id): cr
             for cr in CheatingReport.objects.filter(
-                exam__in=exams
+                exam_id__in=exam_ids
             ).select_related("reported_by", "reviewed_by")
         }
 
-        course_obj = exams.first().group.course
-
+        course_obj  = exam_qs.first().group.course
         exam_groups = []
         grand = dict(total=0, signed_in=0, signed_out=0, absent=0, cheating_reports=0)
 
-        for exam in exams.order_by("date", "start_time"):
+        for exam in exam_qs.order_by("date", "start_time"):
+            # Per-exam student_exams — campus-safe because exam itself is locked
             student_exams = StudentExam.objects.filter(exam=exam).select_related(
                 "student", "student__user", "student__department", "room"
             ).order_by("student__reg_no")
@@ -493,7 +515,10 @@ class ExamAttendanceListView(APIView):
                         f"{se.student.user.first_name} {se.student.user.last_name}".strip()
                         if se.student and se.student.user else "–"
                     ),
-                    "department":      se.student.department.name if se.student and se.student.department else "–",
+                    "department":      (
+                        se.student.department.name
+                        if se.student and se.student.department else "–"
+                    ),
                     "signin":          se.signin_attendance,
                     "signout":         se.signout_attendance,
                     "status":          se.status,
@@ -539,11 +564,11 @@ class ExamAttendanceListView(APIView):
                 "title": course_obj.title,
             },
             "timetable_id": timetable.id,
-            "exam_groups":  exam_groups,   # list of { exam, students, summary }
-            "summary":      grand,         # aggregated across all exams
+            "exam_groups":  exam_groups,
+            "summary":      grand,
         })
 
-    # ── legacy single-exam helper ─────────────────────────────────────────────
+    # ── Legacy single-exam helper ─────────────────────────────────────────────
     def _single_exam(self, request, exam_id):
         try:
             exam = Exam.objects.select_related(
@@ -574,7 +599,10 @@ class ExamAttendanceListView(APIView):
                     f"{se.student.user.first_name} {se.student.user.last_name}".strip()
                     if se.student and se.student.user else "–"
                 ),
-                "department":      se.student.department.name if se.student and se.student.department else "–",
+                "department":      (
+                    se.student.department.name
+                    if se.student and se.student.department else "–"
+                ),
                 "signin":          se.signin_attendance,
                 "signout":         se.signout_attendance,
                 "status":          se.status,
@@ -629,8 +657,8 @@ class CheatingReportActionView(APIView):
         except CheatingReport.DoesNotExist:
             return Response({"error": "Report not found."}, status=404)
 
-        new_status  = request.data.get("status")
-        admin_notes = request.data.get("admin_notes", report.admin_notes)
+        new_status   = request.data.get("status")
+        admin_notes  = request.data.get("admin_notes", report.admin_notes)
         valid_states = [s[0] for s in CheatingReport.Status.choices]
 
         if new_status and new_status not in valid_states:
@@ -656,7 +684,7 @@ class CheatingReportActionView(APIView):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  VIEW 4 — Attendance PDF Export  (whole timetable, grouped by course)
+#  VIEW 4 — Attendance PDF Export
 # ══════════════════════════════════════════════════════════════════════════════
 class AttendancePDFView(APIView):
     """
@@ -682,21 +710,20 @@ class AttendancePDFView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
-        exam_qs = Exam.objects.filter(
-            mastertimetableexam__master_timetable=timetable
-        ).select_related("group", "group__course", "room").distinct()
+        # ── Campus-safe exam set (double-lock), optionally narrowed by course ─
+        extra   = {"group__course__code": course_code} if course_code else None
+        exam_qs = _timetable_exams(timetable, extra_filters=extra).select_related(
+            "group", "group__course", "room"
+        )
 
-        if course_code:
-            exam_qs = exam_qs.filter(group__course__code=course_code)
-            if not exam_qs.exists():
-                return Response(
-                    {"error": f"No exams found for course {course_code}."},
-                    status=404,
-                )
+        if course_code and not exam_qs.exists():
+            return Response(
+                {"error": f"No exams found for course {course_code}."},
+                status=404,
+            )
 
-        student_exams = StudentExam.objects.filter(
-            exam__in=exam_qs
-        ).select_related(
+        # ── Campus-safe student_exams via exam__in ────────────────────────────
+        student_exams = _timetable_student_exams(exam_qs).select_related(
             "exam", "exam__group", "exam__group__course", "exam__room",
             "student", "student__user", "student__department",
         ).order_by("student__reg_no")
