@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path, include
 from .views import TimetablePDFView
 from .attendance_views import (
     AttendanceStatsView,
@@ -6,14 +6,12 @@ from .attendance_views import (
     CheatingReportActionView,
     AttendancePDFView,
 )
-from django.urls import include
 
 urlpatterns = [
-    path('', TimetablePDFView.as_view(), name='timetable-pdf'),
-     path("api/", include("cheating.urls")), 
-    path("attendance/stats/",  AttendanceStatsView.as_view(),    name="attendance-stats"),
-    path("attendance/",        ExamAttendanceListView.as_view(), name="exam-attendance"),
-    path("attendance/pdf/",    AttendancePDFView.as_view(),      name="attendance-pdf"),
-    path("cheating/<int:report_id>/action/", CheatingReportActionView.as_view(), name="cheating-action"),
-
+    path("",                                  TimetablePDFView.as_view(),         name="timetable-pdf"),
+    path("cheating-reports/",                 include("cheating.urls")),
+    path("attendance/stats/",                 AttendanceStatsView.as_view(),      name="attendance-stats"),
+    path("attendance/",                       ExamAttendanceListView.as_view(),   name="exam-attendance"),
+    path("attendance/pdf/",                   AttendancePDFView.as_view(),        name="attendance-pdf"),
+    path("cheating/<int:report_id>/action/",  CheatingReportActionView.as_view(), name="cheating-action"),
 ]
