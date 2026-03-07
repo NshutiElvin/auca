@@ -510,7 +510,7 @@ class ExamAttendanceListView(APIView):
 
             rows = []
             for se in student_exams:
-                report = cheating_map.get((exam.id, se.student_id))
+                report = cheating_map.get((exam.id, se.student.user.id))
                 rows.append(
                     {
                         "id": se.id,
@@ -618,7 +618,7 @@ class ExamAttendanceListView(APIView):
 
         rows = []
         for se in student_exams:
-            report = cheating_map.get(se.student_id)
+            report = cheating_map.get(se.student.user.id)
             rows.append(
                 {
                     "id": se.id,
