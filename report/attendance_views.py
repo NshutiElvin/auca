@@ -45,10 +45,6 @@ COURSE_HEADER_BG = colors.HexColor("#D6E4F7")
 #  Mirrors exactly how TimetablePDFView (views.py) scopes its exams:
 #    mastertimetableexam__master_timetable=timetable   (M2M join filter)
 #    master_timetable=timetable                        (direct FK filter)
-#
-#  StudentExam is then locked via:
-#    exam__in=exam_qs                  (only exams from above set)
-#    exam__master_timetable=timetable  (direct FK on Exam — the key missing lock)
 # ══════════════════════════════════════════════════════════════════════════════
 def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
     """
@@ -67,13 +63,6 @@ def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
     return qs
 
 
-def _timetable_student_exams(exam_qs, timetable: MasterTimetable):
-    return StudentExam.objects.filter(
-        exam__in=exam_qs,
-        exam__master_timetable__location=timetable.location,  # ← lock by campus location
-    ).distinct()
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  HELPER — build attendance PDF  (grouped by course)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -90,7 +79,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
 
     Footer: summary per course + grand total.
 
-    `student_exams` must already be campus-scoped (via _timetable_student_exams).
+    `student_exams` must already be campus-scoped (via exam_id__in).
     """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -359,13 +348,21 @@ class AttendanceStatsView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
+        # Get exams scoped to this timetable
         exam_qs = _timetable_exams(timetable).select_related(
             "group", "group__course", "room"
         )
+        exam_ids = list(exam_qs.values_list("id", flat=True))
 
-        student_exams = _timetable_student_exams(exam_qs, timetable).select_related(
-            "exam", "exam__group", "exam__group__course",
-            "exam__room", "student",
+        # FIXED: Get StudentExam records only for these exams
+        student_exams = StudentExam.objects.filter(
+            exam_id__in=exam_ids
+        ).select_related(
+            "exam",
+            "exam__group",
+            "exam__group__course",
+            "exam__room",
+            "student",
         )
 
         total      = student_exams.count()
@@ -373,9 +370,8 @@ class AttendanceStatsView(APIView):
         signed_out = student_exams.filter(signout_attendance=True).count()
         absent     = student_exams.filter(signin_attendance=False).count()
 
-        timetable_exam_ids = list(exam_qs.values_list("id", flat=True))
-        cheating_reports   = CheatingReport.objects.filter(
-            exam_id__in=timetable_exam_ids
+        cheating_reports = CheatingReport.objects.filter(
+            exam_id__in=exam_ids
         ).count()
 
         course_map = defaultdict(lambda: {
@@ -390,7 +386,8 @@ class AttendanceStatsView(APIView):
             c_title = course.title if course else "Unknown Course"
             key     = f"{c_code}||{c_title}"
 
-            ses        = student_exams.filter(exam=exam)
+            # Filter student exams for this specific exam
+            ses = student_exams.filter(exam=exam)
             exam_total = ses.count()
             exam_in    = ses.filter(signin_attendance=True).count()
             exam_cheat = CheatingReport.objects.filter(exam=exam).count()
@@ -499,10 +496,9 @@ class ExamAttendanceListView(APIView):
         grand = dict(total=0, signed_in=0, signed_out=0, absent=0, cheating_reports=0)
 
         for exam in exam_qs.order_by("date", "start_time"):
-            # Lock to this timetable via exam__master_timetable
+            # FIXED: Get StudentExam records only for this exam
             student_exams = StudentExam.objects.filter(
-                exam=exam,
-                exam__master_timetable__location=timetable.location,
+                exam=exam
             ).select_related(
                 "student", "student__user", "student__department", "room"
             ).order_by("student__reg_no")
@@ -580,10 +576,9 @@ class ExamAttendanceListView(APIView):
         except Exam.DoesNotExist:
             return Response({"error": "Exam not found in this timetable."}, status=404)
 
-        # Lock StudentExam to this timetable via exam__master_timetable
+        # FIXED: Get StudentExam records only for this exam
         student_exams = StudentExam.objects.filter(
-            exam=exam,
-            exam__master_timetable__location=timetable.location,
+            exam=exam
         ).select_related(
             "student", "student__user", "student__department", "room"
         ).order_by("student__reg_no")
@@ -714,7 +709,8 @@ class AttendancePDFView(APIView):
         except MasterTimetable.DoesNotExist:
             return Response({"error": "Timetable not found."}, status=404)
 
-        extra   = {"group__course__code": course_code} if course_code else None
+        # Get exams scoped to this timetable
+        extra = {"group__course__code": course_code} if course_code else None
         exam_qs = _timetable_exams(timetable, extra_filters=extra).select_related(
             "group", "group__course", "room"
         )
@@ -725,10 +721,30 @@ class AttendancePDFView(APIView):
                 status=404,
             )
 
-        student_exams = _timetable_student_exams(exam_qs, timetable).select_related(
-            "exam", "exam__group", "exam__group__course", "exam__room",
-            "student", "student__user", "student__department",
-        ).order_by("student__reg_no")
+        # FIXED: Get StudentExam records only for these exams
+        exam_ids = list(exam_qs.values_list('id', flat=True))
+        student_exams = StudentExam.objects.filter(
+            exam_id__in=exam_ids
+        ).select_related(
+            "exam",
+            "exam__group",
+            "exam__group__course",
+            "exam__room",
+            "student",
+            "student__user",
+            "student__department",
+        ).order_by(
+            "exam__group__course__code",
+            "exam__date",
+            "exam__start_time",
+            "student__reg_no"
+        )
+
+        if not student_exams.exists():
+            return Response(
+                {"error": "No student exam records found for this timetable."},
+                status=404,
+            )
 
         try:
             pdf_bytes = _build_attendance_pdf(timetable, student_exams)
