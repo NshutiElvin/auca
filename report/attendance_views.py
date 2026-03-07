@@ -83,7 +83,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, exam: Exam, student_exams)
         f"{exam.end_time.strftime('%I:%M %p').lstrip('0')}"
         if exam.start_time and exam.end_time else "–"
     )
-    room_str   = exam.room.room_name if exam.room else "No Room"
+    room_str   = exam.room.name if exam.room else "No Room"
 
     report_title = f"ATTENDANCE REPORT – {timetable_lbl}"
 
@@ -287,7 +287,7 @@ class AttendanceStatsView(APIView):
                 "date":        exam.date,
                 "start_time":  exam.start_time,
                 "end_time":    exam.end_time,
-                "room":        exam.room.room_name if exam.room else "–",
+                "room":        exam.room.name if exam.room else "–",
                 "status":      exam.status,
                 "total":       exam_total,
                 "signed_in":   exam_in,
@@ -385,7 +385,7 @@ class ExamAttendanceListView(APIView):
                 "date":        exam.date,
                 "start_time":  exam.start_time,
                 "end_time":    exam.end_time,
-                "room":        exam.room.room_name if exam.room else "–",
+                "room":        exam.room.name if exam.room else "–",
                 "status":      exam.status,
             },
             "students": rows,
