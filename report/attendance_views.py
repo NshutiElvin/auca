@@ -57,6 +57,8 @@ def _timetable_exams(timetable: MasterTimetable, extra_filters: dict = None):
     qs = Exam.objects.filter(
         mastertimetableexam__master_timetable=timetable,
         master_timetable=timetable,
+        
+
     ).distinct()
     if extra_filters:
         qs = qs.filter(**extra_filters)
@@ -356,7 +358,9 @@ class AttendanceStatsView(APIView):
 
         # FIXED: Get StudentExam records only for these exams
         student_exams = StudentExam.objects.filter(
-            exam_id__in=exam_ids
+            exam_id__in=exam_ids,
+            student__department__location=timetable.location,
+
         ).select_related(
             "exam",
             "exam__group",
@@ -371,7 +375,7 @@ class AttendanceStatsView(APIView):
         absent     = student_exams.filter(signin_attendance=False).count()
 
         cheating_reports = CheatingReport.objects.filter(
-            exam_id__in=exam_ids
+            exam_id__in=exam_ids,
         ).count()
 
         course_map = defaultdict(lambda: {
@@ -724,7 +728,8 @@ class AttendancePDFView(APIView):
         # FIXED: Get StudentExam records only for these exams
         exam_ids = list(exam_qs.values_list('id', flat=True))
         student_exams = StudentExam.objects.filter(
-            exam_id__in=exam_ids
+            exam_id__in=exam_ids,
+            student__department__location=timetable.location,
         ).select_related(
             "exam",
             "exam__group",
