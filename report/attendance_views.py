@@ -98,7 +98,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     timetable_lbl = [
         f"Campus: {timetable.location.name.capitalize()}, "
         f"Academic Year: {timetable.academic_year}, "
-        f"Semester: {timetable.semester.name.capitalize()}"
+        f"Semester: {timetable.semester.name.capitalize()},"
         f"Category: {timetable.category}"
     ]
     
@@ -472,14 +472,14 @@ def _build_instructor_attendance_pdf(timetable: MasterTimetable, instructor, roo
     ]
 
      
-    student_exams.sort(
-            key=lambda x: (
-                f"{x[0].student.user.first_name} {x[0].student.user.last_name}".strip().lower()
-                if x[0].student and x[0].student.user
-                else ""
-            )
-        )
-    []
+    student_exams = sorted(
+    student_exams,
+    key=lambda x: (
+        f"{x[0].student.user.first_name} {x[0].student.user.last_name}".strip().lower()
+        if x[0].student and x[0].student.user
+        else ""
+    )
+)
 
     all_ses_flat = student_exams
 
