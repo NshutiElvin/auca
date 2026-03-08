@@ -101,8 +101,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
         f"Semester: {timetable.semester.name.capitalize()}"
         f"Category: {timetable.category}"
     ]
-    report_title = f"ATTENDANCE REPORT – {timetable_lbl}"
- 
+    
 
     story = _logo_and_header("ATTENDANCE REPORT", "")
     for line in timetable_lbl:
@@ -119,8 +118,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
         )
     )
     story.append(Spacer(1, 0.3 * cm))
-
-    story = _logo_and_header(report_title, "")
+ 
     story.append(
         Paragraph(
             f"<b>Printed:</b> {timezone.now().strftime('%d %b %Y %H:%M')}",
@@ -530,7 +528,7 @@ def _build_instructor_attendance_pdf(timetable: MasterTimetable, instructor, roo
         group_name = exam.group.group_name if exam and exam.group else "–"
 
         course     = exam.group.course if exam and exam.group else None
-        course_str = f"{course.code}" if course else "–"
+        course_str = f"{course.title}" if course else "–"
 
         has_report = (exam.id, se.student_id) in cheating_map if exam else False
 
