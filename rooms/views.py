@@ -588,7 +588,7 @@ class RoomViewSet(viewsets.ModelViewSet):
             student_exam = StudentExam.objects.get(
                 student__reg_no=regNumber,
                 exam__date=today,
-                # exam__status__in=["READY", "ONGOING"],
+                exam__status__in=["READY", "ONGOING"],
             )
             serializer = StudentExamSerializer(student_exam)
             roomSerializer = RoomSerializer(student_exam.room)
@@ -851,7 +851,7 @@ class RoomViewSet(viewsets.ModelViewSet):
             student_exams = StudentExam.objects.filter(
                 exam__date=today,
                 room=examRoom,
-                # exam__status__in=["READY", "ONGOING"],
+                exam__status__in=["READY", "ONGOING"],
             )
             students_info = []
             for student_exam in student_exams:
@@ -904,7 +904,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 student__reg_no=regNumber,
                 exam__date=today,
                 room=examRoom,
-                # exam__status__in=["READY", "ONGOING"],
+                exam__status__in=["READY", "ONGOING"],
             )
 
             if student_exam.signin_attendance and student_exam.room==examRoom:
@@ -975,7 +975,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 student_exam = StudentExam.objects.get(
                     student__reg_no=regNumber,
                     exam__date=today,
-                    # exam__status__in=["READY", "ONGOING"],
+                    exam__status__in=["READY", "ONGOING"],
                 )
 
                 enrollments = Enrollment.objects.filter(student_id=student.id)

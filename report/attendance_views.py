@@ -1152,7 +1152,7 @@ class InstructorAttendancePDFView(APIView):
         
             exam__date=today,
             instructor=instructor,
-            # exam__status__in=["READY", "ONGOING"]
+            exam__status__in=["READY", "ONGOING"]
             
         ).select_related(
                 "exam",
