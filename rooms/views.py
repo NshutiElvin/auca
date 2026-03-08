@@ -907,7 +907,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 # exam__status__in=["READY", "ONGOING"],
             )
 
-            if student_exam.signin_attendance:
+            if student_exam.signin_attendance and student_exam.room==examRoom:
                 return Response(
                     {
                         "success": True,
