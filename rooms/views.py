@@ -588,7 +588,7 @@ class RoomViewSet(viewsets.ModelViewSet):
             student_exam = StudentExam.objects.get(
                 student__reg_no=regNumber,
                 exam__date=today,
-                exam__status__in=["READY", "ONGOING"],
+                # exam__status__in=["READY", "ONGOING"],
             )
             serializer = StudentExamSerializer(student_exam)
             roomSerializer = RoomSerializer(student_exam.room)
