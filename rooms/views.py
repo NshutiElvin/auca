@@ -910,12 +910,12 @@ class RoomViewSet(viewsets.ModelViewSet):
             if student_exam.signin_attendance:
                 return Response(
                     {
-                        "success": False,
+                        "success": True,
                         "data": {
-                            "status": False,
+                            "status": True,
                             "studentName": f"{student.user.first_name} {student.user.last_name}",
                             "studentRegNumber": student.reg_no,
-                            "message": f"Now you have {student_exam.exam.group.course.title} in this room {student_exam.room.name}, And you have already scanned the code.",
+                            "message": f"Now you have {student_exam.exam.group.course.title} in this room {student_exam.room.name}.",
                         },
                     },
                     status=200,
