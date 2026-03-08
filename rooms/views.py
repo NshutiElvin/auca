@@ -921,8 +921,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                     status=200,
                 )
 
-            student_exam.signin_attendance = True
-            student_exam.save()
+            
 
             enrollments = Enrollment.objects.filter(student_id=student.id)
 
@@ -941,6 +940,8 @@ class RoomViewSet(viewsets.ModelViewSet):
             all_paid = total_to_pay == total_paid
 
             if all_paid:
+                student_exam.signin_attendance = True
+                student_exam.save()
                 return Response(
                     {
                         "success": True,
