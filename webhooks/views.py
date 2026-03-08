@@ -12,6 +12,29 @@ from notifications.models import Notification
 from notifications.tasks import send_notification, send_email_task
 
 
+def _get_notification_message(exam, new_status):
+    course_title = exam.group.course.title
+    start_time = exam.start_time.strftime("%I:%M %p")
+    end_time = exam.end_time.strftime("%I:%M %p")
+
+    messages = {
+        "READY": (
+            f"This is a reminder that your {course_title} examination is scheduled to commence "
+            f"in 15 minutes at {start_time}. Please proceed to your assigned examination room promptly."
+        ),
+        "ONGOING": (
+            f"Your {course_title} examination is now in progress ({start_time} – {end_time}). "
+            f"Students who have not yet reported to their assigned room should do so immediately."
+        ),
+        "COMPLETED": (
+            f"Your {course_title} examination, which was scheduled from {start_time} to {end_time}, "
+            f"has now concluded. Thank you for your participation. "
+            f"Further information regarding results will be communicated through official channels."
+        ),
+    }
+    return messages.get(new_status)
+
+
 def _notify_students(exam, message):
     students = StudentExam.objects.filter(exam=exam).select_related('student__user')
     
@@ -37,12 +60,12 @@ def _notify_students(exam, message):
             "read_at": notification.read_at.isoformat() if notification.read_at else None,
         }
         send_notification(notification_message, student_exam.student.user.id)
-        send_email_task(
-            subject=notification.title,
-            message=notification.message,
-            from_email=None,
-            recipient_list=[student_exam.student.user.email],
-        )
+        # send_email_task(
+        #     subject=notification.title,
+        #     message=notification.message,
+        #     from_email=None,
+        #     recipient_list=[student_exam.student.user.email],
+        # )
 
 
 class CheckAndUpdateExamsWebhookView(APIView):
@@ -82,6 +105,7 @@ class CheckAndUpdateExamsWebhookView(APIView):
             end_time = timezone.make_aware(end_dt) if timezone.is_naive(end_dt) else end_dt
 
             time_diff = (start_time - now).total_seconds()
+            time_after_end = (now - end_time).total_seconds()
             previous_status = exam.status
 
             if 0 < time_diff <= 900 and exam.status != 'READY':
@@ -92,9 +116,14 @@ class CheckAndUpdateExamsWebhookView(APIView):
                 exam.status = 'ONGOING'
                 exam.save(update_fields=['status'])
 
-            elif now >= end_time and exam.status != 'COMPLETED':
+            elif now >= end_time and time_after_end >= 900 and exam.status != 'COMPLETED':
                 exam.status = 'COMPLETED'
                 exam.save(update_fields=['status'])
+
+            if previous_status != exam.status:
+                message = _get_notification_message(exam, exam.status)
+                if message:
+                    _notify_students(exam, message)
 
             results.append({
                 'exam': str(exam),
