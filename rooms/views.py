@@ -729,6 +729,7 @@ class RoomViewSet(viewsets.ModelViewSet):
         try:
             instructor_id = request.data.get("instructor_id")
             room_id = request.data.get("room_id")
+            timetable_id = request.data.get("timetable_id")
             date = request.data.get("date")
             slot_name = request.data.get("slot_name")
             date = parse_date(date) if date else None
@@ -739,11 +740,20 @@ class RoomViewSet(viewsets.ModelViewSet):
             config = config_manager.read_config()
             time_config = config.get("time_constraints", {})
             time_slots = time_config.get("time_slots", [])
+            if not timetable_id:
+                return Response({"error": "timetable_id is required."}, status=400)
+
+            try:
+                timetable = MasterTimetable.objects.select_related(
+                    "location", "semester"
+                ).get(pk=timetable_id)
+            except MasterTimetable.DoesNotExist:
+                return Response({"error": "Timetable not found."}, status=404)
             for slot in time_slots:
                 if slot.get("name", "").lower() == (slot_name or "").lower():
-                    start_time = slot.get("start_time")  # e.g. "09:00" or "09:00:00"
+                    start_time = slot.get("start_time") 
                     end_time = slot.get("end_time")
-                    start_time = time.fromisoformat(start_time)  # works for both "09:00" and "09:00:00"
+                    start_time = time.fromisoformat(start_time)
                     end_time = time.fromisoformat(end_time)
                     break
 
@@ -781,6 +791,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 exam__start_time=start_time,
                 exam__end_time=end_time,
                 instructor=instructor,
+                student__department__location=timetable.location,
             ).exists()
             if already_assigned:
                 return Response(
@@ -798,6 +809,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 exam__date=date,
                 exam__start_time=start_time,
                 exam__end_time=end_time,
+                student__department__location=timetable.location
             ).update(instructor=instructor)
 
             if student_exams_count == 0:

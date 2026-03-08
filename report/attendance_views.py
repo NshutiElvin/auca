@@ -96,7 +96,8 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     timetable_lbl = (
         f"Campus: {timetable.location.name.capitalize()}, "
         f"Academic Year: {timetable.academic_year}, "
-        f"Semester: {timetable.semester.name.capitalize()}"
+        f"Semester: {timetable.semester.name.capitalize()}",
+        f"Category: {timetable.category}"
     )
     report_title = f"ATTENDANCE REPORT – {timetable_lbl}"
 
@@ -139,7 +140,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
         "Group",
         "Sign-In",
         "Sign-Out",
-        "Cheated",
+        
     ]
     usable_width = sum(col_widths)
 
@@ -254,19 +255,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
                 c_cheated += 1
             c_total += 1
 
-            if has_report:
-                sev_color = {
-                    "low": "#CC6600",
-                    "medium": "#E67E22",
-                    "high": "#C0392B",
-                }.get(report_obj.severity, "#CC6600")
-                cheated_cell = Paragraph(
-                    f'<font color="{sev_color}"><b>YES</b></font><br/>'
-                    f'<font size="6" color="{sev_color}">{report_obj.get_severity_display()}</font>',
-                    celc,
-                )
-            else:
-                cheated_cell = Paragraph('<font color="#1E8449">–</font>', celc)
+            
 
             row_num = len(tbl_data)
             tbl_data.append(
@@ -279,7 +268,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
                     Paragraph(group_name, celc),  # ← Group
                     _tick(si),
                     _tick(so),
-                    cheated_cell,
+                     
                 ]
             )
 
