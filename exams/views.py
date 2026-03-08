@@ -1490,8 +1490,9 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             
                 exam__date=today,
                 instructor=instructor,
+                exam__status__in=["READY", "ONGOING"]
                 
-            )
+            ) 
             serializer = StudentExamSerializer(student_exam, many=True)
            
 

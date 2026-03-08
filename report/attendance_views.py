@@ -161,7 +161,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
 
     def _tick(val):
         colour = "#1E8449" if val else "#C0392B"
-        mark = "✓" if val else "✗"
+        mark = "Yes" if val else "No"
         return Paragraph(f'<font color="{colour}">{mark}</font>', celc)
 
     for (c_code, c_title), exam_dict in course_exam_map.items():
@@ -908,6 +908,93 @@ class AttendancePDFView(APIView):
         filename = (
             f"attendance{suffix}_{timetable.academic_year}_"
             f"{timetable.semester.name}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
+        )
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  VIEW 5 — Instructor Attendance PDF
+# ══════════════════════════════════════════════════════════════════════════════
+class InstructorAttendancePDFView(APIView):
+    """
+    GET /api/report/attendance/instructor-pdf/?timetable_id=<id>
+    GET /api/report/attendance/instructor-pdf/?timetable_id=<id>&exam_id=<id>
+
+    Scoped exclusively to the logged-in instructor's allocated students.
+    Reuses the same _build_attendance_pdf() as the admin view.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.role != "instructor":
+            return Response(
+                {"error": "Only instructors can access this endpoint."},
+                status=403,
+            )
+
+        timetable_id = request.GET.get("timetable_id")
+        exam_id      = request.GET.get("exam_id")
+
+        if not timetable_id:
+            return Response({"error": "timetable_id is required."}, status=400)
+
+        try:
+            timetable = MasterTimetable.objects.select_related(
+                "location", "semester"
+            ).get(pk=timetable_id)
+        except MasterTimetable.DoesNotExist:
+            return Response({"error": "Timetable not found."}, status=404)
+
+        # Always scoped to this instructor only
+        filters = {
+            "instructor": request.user,
+            "exam__mastertimetableexam__master_timetable": timetable,
+            "exam__master_timetable": timetable,
+        }
+        if exam_id:
+            filters["exam_id"] = exam_id
+
+        student_exams = (
+            StudentExam.objects.filter(**filters)
+            .select_related(
+                "exam",
+                "exam__group",
+                "exam__group__course",
+                "room",
+                "student",
+                "student__user",
+                "student__department",
+                "room",
+            )
+            .order_by(
+                "exam__group__course__code",
+                "exam__date",
+                "exam__start_time",
+                "student__reg_no",
+            )
+            .distinct()
+        )
+
+        if not student_exams.exists():
+            return Response(
+                {"error": "No allocated students found for your account in this timetable."},
+                status=404,
+            )
+
+        try:
+            pdf_bytes = _build_attendance_pdf(timetable, student_exams)
+        except Exception as exc:
+            return Response({"error": f"PDF generation failed: {exc}"}, status=500)
+
+        instructor_name = request.user.get_full_name().replace(" ", "_") or "instructor"
+        suffix   = f"_exam{exam_id}" if exam_id else ""
+        filename = (
+            f"attendance_{instructor_name}{suffix}_"
+            f"{timetable.academic_year}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
         )
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'

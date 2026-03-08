@@ -1,10 +1,12 @@
 from rest_framework import serializers
 from rooms.models import Location, Room, RoomAllocationSwitch
+from rooms.serializers import LocationSerializer
 
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
 class RoomSerializer(serializers.ModelSerializer):
+    location= LocationSerializer(read_only=True)
     class Meta:
         model = Room
         fields = '__all__'
