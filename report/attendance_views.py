@@ -118,14 +118,7 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
         )
     )
     story.append(Spacer(1, 0.3 * cm))
- 
-    story.append(
-        Paragraph(
-            f"<b>Printed:</b> {timezone.now().strftime('%d %b %Y %H:%M')}",
-            _s("M", fontSize=9, alignment=TA_RIGHT),
-        )
-    )
-    story.append(Spacer(1, 0.3 * cm))
+  
 
     # ── Pre-load cheating reports scoped to this timetable's exams only ───────
     timetable_exam_ids = list(_timetable_exams(timetable).values_list("id", flat=True))
@@ -478,16 +471,17 @@ def _build_instructor_attendance_pdf(timetable: MasterTimetable, instructor, roo
         "Sign-Out",
     ]
 
-    # ── Flatten ALL student_exams into one list, sorted by reg_no ─────────────
-    def _reg_sort_key(se):
-        """Sort numerically where possible, else lexicographically."""
-        reg = se.student.reg_no if se.student else ""
-        # extract trailing digits for natural sort
-        import re
-        m = re.search(r'(\d+)$', reg or "")
-        return (int(m.group(1)) if m else float('inf'), reg)
+     
+    student_exams.sort(
+            key=lambda x: (
+                f"{x[0].student.user.first_name} {x[0].student.user.last_name}".strip().lower()
+                if x[0].student and x[0].student.user
+                else ""
+            )
+        )
+    []
 
-    all_ses_flat = sorted(student_exams, key=_reg_sort_key)
+    all_ses_flat = student_exams
 
     def _tick(val):
         colour = "#1E8449" if val else "#C0392B"
