@@ -474,9 +474,9 @@ def _build_instructor_attendance_pdf(timetable: MasterTimetable, instructor, roo
      
     student_exams = sorted(
     student_exams,
-    key=lambda x: (
-        f"{x[0].student.user.first_name} {x[0].student.user.last_name}".strip().lower()
-        if x[0].student and x[0].student.user
+    key=lambda se: (
+        f"{se.student.user.first_name} {se.student.user.last_name}".strip().lower()
+        if se.student and se.student.user
         else ""
     )
 )
