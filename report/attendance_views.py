@@ -22,10 +22,12 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
-
+from pytz import timezone as pytz_timezone
+from django.utils import timezone
 from exams.models import Exam, StudentExam
 from schedules.models import MasterTimetable
 from cheating.models import CheatingEvidence, CheatingReport
+from django.conf import settings
 
 from .views import (
     FONT_REGULAR,
@@ -386,6 +388,318 @@ def _build_attendance_pdf(timetable: MasterTimetable, student_exams) -> bytes:
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
 
+
+
+def _build_instructor_attendance_pdf(timetable:MasterTimetable, instructor,room, student_exams) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=2.0 * cm,
+        title="Attendance Report",
+    )
+
+    hdr = _sb("AH", fontSize=9, textColor=TEXT_DARK, alignment=TA_CENTER, leading=12)
+    cell = _s("AC", fontSize=8, textColor=TEXT_DARK, alignment=TA_LEFT, leading=11)
+    celc = _s("ACC", fontSize=8, textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
+
+    timetable_lbl = (
+        f"Campus: {timetable.location.name.capitalize()}, "
+        f"Academic Year: {timetable.academic_year}, "
+        f"Semester: {timetable.semester.name.capitalize()}",
+        f"Category: {timetable.category}",
+        f"Instructor:  {instructor.get_full_name()}",
+        f"Room: {room.name}"
+    )
+    report_title = f"ATTENDANCE REPORT – {timetable_lbl}"
+
+    story = _logo_and_header(report_title, "")
+    story.append(
+        Paragraph(
+            f"<b>Printed:</b> {timezone.now().strftime('%d %b %Y %H:%M')}",
+            _s("M", fontSize=9, alignment=TA_RIGHT),
+        )
+    )
+    story.append(Spacer(1, 0.3 * cm))
+
+    # ── Pre-load cheating reports scoped to this timetable's exams only ───────
+    timetable_exam_ids = list(_timetable_exams(timetable).values_list("id", flat=True))
+    cheating_map = {
+        (cr.exam_id, cr.student_id): cr
+        for cr in CheatingReport.objects.filter(
+            exam_id__in=timetable_exam_ids
+        ).select_related("reported_by")
+    }
+
+    # ── Column definitions — now includes "Room" ──────────────────────────────
+    col_widths = [
+        0.7 * cm,
+        2.2 * cm,
+        4.0 * cm,
+        2.6 * cm,
+        2.0 * cm,
+        2.0 * cm,
+        1.6 * cm,
+        1.6 * cm,
+        2.0 * cm,
+    ]
+    headers = [
+        "#",
+        "Reg No",
+        "Student Name",
+        "Department",
+        "Room",
+        "Group",
+        "Sign-In",
+        "Sign-Out",
+        
+    ]
+    usable_width = sum(col_widths)
+
+    # ── Aggregate by course then by exam ──────────────────────────────────────
+    course_exam_map = defaultdict(lambda: defaultdict(list))
+    for se in student_exams:
+        course = se.exam.group.course if se.exam and se.exam.group else None
+        c_key = (
+            course.code if course else "–",
+            course.title if course else "Unknown Course",
+        )
+        course_exam_map[c_key][se.exam].append(se)
+
+    course_exam_map = dict(sorted(course_exam_map.items(), key=lambda x: x[0][0]))
+
+    grand = dict(total=0, signed_in=0, signed_out=0, absent=0, cheated=0)
+    course_summaries = []
+
+    def _tick(val):
+        colour = "#1E8449" if val else "#C0392B"
+        mark = "Yes" if val else "No"
+        return Paragraph(f'<font color="{colour}">{mark}</font>', celc)
+
+    for (c_code, c_title), exam_dict in course_exam_map.items():
+        # ── Course banner ─────────────────────────────────────────────────────
+        course_banner = Table(
+            [
+                [
+                    Paragraph(
+                        f"<b>{c_code} – {c_title}</b>",
+                        _s(
+                            "CB",
+                            fontSize=10,
+                            textColor=TEXT_DARK,
+                            alignment=TA_LEFT,
+                            leading=14,
+                        ),
+                    )
+                ]
+            ],
+            colWidths=[usable_width],
+        )
+        course_banner.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), COURSE_HEADER_BG),
+                    ("BOX", (0, 0), (-1, -1), 0.8, BORDER_COL),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
+        story.append(KeepTogether(course_banner))
+
+        c_total = c_in = c_out = c_absent = c_cheated = 0
+
+        # ── Flatten all student_exams for this course into one sorted list ────
+        all_ses = [(se, exam) for exam, ses in exam_dict.items() for se in ses]
+        all_ses.sort(
+            key=lambda x: (
+                f"{x[0].student.user.first_name} {x[0].student.user.last_name}".strip().lower()
+                if x[0].student and x[0].student.user
+                else ""
+            )
+        )
+
+        tbl_data = [[Paragraph(h, hdr) for h in headers]]
+        style_cmds = [
+            ("BACKGROUND", (0, 0), (-1, 0), COL_HEADER),
+            ("BOX", (0, 0), (-1, -1), 0.5, BORDER_COL),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ]
+
+        for idx, (se, exam) in enumerate(all_ses, start=1):
+            si = se.signin_attendance
+            so = se.signout_attendance
+            full_name = (
+                f"{se.student.user.first_name} {se.student.user.last_name}".strip()
+                if se.student and se.student.user
+                else "–"
+            )
+            reg_no = se.student.reg_no if se.student else "–"
+            dept_name = (
+                se.student.department.name
+                if se.student and se.student.department
+                else "–"
+            )
+            # ── Room: prefer the student's assigned room on the SE record,
+            #    fall back to the exam's default room ─────────────────────────
+            room_name = (
+                se.room.name if se.room else (exam.room.name if exam.room else "–")
+            )
+            group_name = exam.group.group_name if exam.group else "–"
+
+            has_report = (exam.id, se.student_id) in cheating_map
+            report_obj = cheating_map.get((exam.id, se.student_id))
+
+            if si:
+                c_in += 1
+            if so:
+                c_out += 1
+            if not si:
+                c_absent += 1
+            if has_report:
+                c_cheated += 1
+            c_total += 1
+
+            
+
+            row_num = len(tbl_data)
+            tbl_data.append(
+                [
+                    Paragraph(str(idx), celc),
+                    Paragraph(reg_no, cell),
+                    Paragraph(full_name, cell),
+                    Paragraph(dept_name, cell),
+                    Paragraph(room_name, celc),
+                    Paragraph(group_name, celc),  # ← Group
+                    _tick(si),
+                    _tick(so),
+                     
+                ]
+            )
+
+            if has_report:
+                style_cmds.append(
+                    ("BACKGROUND", (0, row_num), (-1, row_num), CHEATED_AMBER)
+                )
+            elif si:
+                style_cmds.append(
+                    ("BACKGROUND", (0, row_num), (-1, row_num), PRESENT_GREEN)
+                )
+
+        data_tbl = Table(tbl_data, colWidths=col_widths, repeatRows=1)
+        data_tbl.setStyle(TableStyle(style_cmds))
+        story.append(data_tbl)
+        story.append(Spacer(1, 0.2 * cm))
+
+        # ── Per-course summary row ────────────────────────────────────────────
+        story.append(Spacer(1, 0.1 * cm))
+        c_summary_data = [
+            [
+                Paragraph(f"<b>{c_code} Total:</b> {c_total}", _s("S", fontSize=8)),
+                Paragraph(
+                    f'<font color="#1E8449"><b>In: {c_in}</b></font>',
+                    _s("S", fontSize=8, alignment=TA_CENTER),
+                ),
+                Paragraph(
+                    f'<font color="#C0392B"><b>Absent: {c_absent}</b></font>',
+                    _s("S", fontSize=8, alignment=TA_CENTER),
+                ),
+                Paragraph(
+                    f'<font color="#CC6600"><b>Cheated: {c_cheated}</b></font>',
+                    _s("S", fontSize=8, alignment=TA_CENTER),
+                ),
+                Paragraph(
+                    f"<b>Out: {c_out}</b>", _s("S", fontSize=8, alignment=TA_RIGHT)
+                ),
+            ]
+        ]
+        c_sum_tbl = Table(c_summary_data, colWidths=["22%", "18%", "20%", "22%", "18%"])
+        c_sum_tbl.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), COURSE_HEADER_BG),
+                    ("BOX", (0, 0), (-1, -1), 0.5, BORDER_COL),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]
+            )
+        )
+        story.append(c_sum_tbl)
+        story.append(Spacer(1, 0.4 * cm))
+
+        grand["total"] += c_total
+        grand["signed_in"] += c_in
+        grand["signed_out"] += c_out
+        grand["absent"] += c_absent
+        grand["cheated"] += c_cheated
+
+        course_summaries.append(
+            {
+                "code": c_code,
+                "title": c_title,
+                "total": c_total,
+                "signed_in": c_in,
+                "absent": c_absent,
+                "cheated": c_cheated,
+                "signed_out": c_out,
+            }
+        )
+
+    # ── Grand total footer ────────────────────────────────────────────────────
+    story.append(HRFlowable(width="100%", thickness=0.8, color=colors.grey))
+    story.append(Spacer(1, 0.15 * cm))
+    grand_data = [
+        [
+            Paragraph(f"<b>GRAND TOTAL: {grand['total']}</b>", _s("G", fontSize=9)),
+            Paragraph(
+                f'<font color="#1E8449"><b>Signed In: {grand["signed_in"]}</b></font>',
+                _s("G", fontSize=9, alignment=TA_CENTER),
+            ),
+            Paragraph(
+                f'<font color="#C0392B"><b>Absent: {grand["absent"]}</b></font>',
+                _s("G", fontSize=9, alignment=TA_CENTER),
+            ),
+            Paragraph(
+                f'<font color="#CC6600"><b>Cheating: {grand["cheated"]}</b></font>',
+                _s("G", fontSize=9, alignment=TA_CENTER),
+            ),
+            Paragraph(
+                f"<b>Signed Out: {grand['signed_out']}</b>",
+                _s("G", fontSize=9, alignment=TA_RIGHT),
+            ),
+        ]
+    ]
+    grand_tbl = Table(grand_data, colWidths=["22%", "20%", "18%", "22%", "18%"])
+    grand_tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#D6E4F7")),
+                ("BOX", (0, 0), (-1, -1), 1.0, BORDER_COL),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    story.append(grand_tbl)
+
+    doc.build(story, canvasmaker=_NumberedCanvas)
+    return buffer.getvalue()
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  VIEW 1 — Dashboard Stats Cards  (grouped by course)
@@ -930,37 +1244,33 @@ class InstructorAttendancePDFView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if request.user.role != "instructor":
+        tz = pytz_timezone(settings.TIME_ZONE)
+        instructor_id= request.user.id
+            
+        if not instructor_id:
             return Response(
-                {"error": "Only instructors can access this endpoint."},
-                status=403,
+                {
+                    "success": False,
+                    "message": "Instructor ID is required",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
-
-        timetable_id = request.GET.get("timetable_id")
-        exam_id      = request.GET.get("exam_id")
-
-        if not timetable_id:
-            return Response({"error": "timetable_id is required."}, status=400)
-
-        try:
-            timetable = MasterTimetable.objects.select_related(
-                "location", "semester"
-            ).get(pk=timetable_id)
-        except MasterTimetable.DoesNotExist:
-            return Response({"error": "Timetable not found."}, status=404)
-
-        # Always scoped to this instructor only
-        filters = {
-            "instructor": request.user,
-            "exam__mastertimetableexam__master_timetable": timetable,
-            "exam__master_timetable": timetable,
-        }
-        if exam_id:
-            filters["exam_id"] = exam_id
-
-        student_exams = (
-            StudentExam.objects.filter(**filters)
-            .select_related(
+        instructor= request.user
+        if instructor.role != "instructor":
+            return Response(
+                {"success": False, "message": "Only instructors can access this."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        now = timezone.now().astimezone(tz)
+        today = now.date()
+    
+        student_exams = StudentExam.objects.filter(
+        
+            exam__date=today,
+            instructor=instructor,
+            # exam__status__in=["READY", "ONGOING"]
+            
+        ).select_related(
                 "exam",
                 "exam__group",
                 "exam__group__course",
@@ -969,29 +1279,32 @@ class InstructorAttendancePDFView(APIView):
                 "student__user",
                 "student__department",
                 "room",
-            )
-            .order_by(
+            ).order_by(
                 "exam__group__course__code",
                 "exam__date",
                 "exam__start_time",
                 "student__reg_no",
-            )
-            .distinct()
-        )
+            ).distinct()
+        
+         
 
         if not student_exams.exists():
             return Response(
                 {"error": "No allocated students found for your account in this timetable."},
                 status=404,
             )
+        timetable= student_exams.first().exam.master_timetable
+        room=student_exams.first().room
+
+        
 
         try:
-            pdf_bytes = _build_attendance_pdf(timetable, student_exams)
+            pdf_bytes = _build_instructor_attendance_pdf(timetable,request.user, room, student_exams)
         except Exception as exc:
             return Response({"error": f"PDF generation failed: {exc}"}, status=500)
 
         instructor_name = request.user.get_full_name().replace(" ", "_") or "instructor"
-        suffix   = f"_exam{exam_id}" if exam_id else ""
+        suffix   = f"_attendance_{room.name}_{timetable.academic_year}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf" 
         filename = (
             f"attendance_{instructor_name}{suffix}_"
             f"{timetable.academic_year}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
