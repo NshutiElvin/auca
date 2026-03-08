@@ -720,9 +720,6 @@ class RoomViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-    
-
-
     @action(detail=False, methods=["post"], url_path="assign_instructor")
     @permission_classes([])
     def assign_instructor(self, request, *args, **kwargs):
@@ -751,7 +748,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 return Response({"error": "Timetable not found."}, status=404)
             for slot in time_slots:
                 if slot.get("name", "").lower() == (slot_name or "").lower():
-                    start_time = slot.get("start_time") 
+                    start_time = slot.get("start_time")
                     end_time = slot.get("end_time")
                     start_time = time.fromisoformat(start_time)
                     end_time = time.fromisoformat(end_time)
@@ -801,15 +798,17 @@ class RoomViewSet(viewsets.ModelViewSet):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            
-            print(f"Assigning instructor {instructor.get_full_name()} to exams in room ID {room_id} on {date} during slot '{slot_name}' ({start_time} - {end_time})")
+
+            print(
+                f"Assigning instructor {instructor.get_full_name()} to exams in room ID {room_id} on {date} during slot '{slot_name}' ({start_time} - {end_time})"
+            )
 
             student_exams_count = StudentExam.objects.filter(
                 room__id=int(room_id),
                 exam__date=date,
                 exam__start_time=start_time,
                 exam__end_time=end_time,
-                student__department__location=timetable.location
+                student__department__location=timetable.location,
             ).update(instructor=instructor)
 
             if student_exams_count == 0:
@@ -907,6 +906,23 @@ class RoomViewSet(viewsets.ModelViewSet):
                 room=examRoom,
                 # exam__status__in=["READY", "ONGOING"],
             )
+
+            if student_exam.signin_attendance:
+                return Response(
+                    {
+                        "success": False,
+                        "data": {
+                            "status": False,
+                            "studentName": f"{student.user.first_name} {student.user.last_name}",
+                            "studentRegNumber": student.reg_no,
+                            "message": f"Now you have {student_exam.exam.group.course.title} in this room {student_exam.room.name}, And you have already scanned the code.",
+                        },
+                    },
+                    status=200,
+                )
+
+            student_exam.signin_attendance = True
+            student_exam.save()
 
             enrollments = Enrollment.objects.filter(student_id=student.id)
 
