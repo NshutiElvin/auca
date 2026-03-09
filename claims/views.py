@@ -312,9 +312,9 @@ class StudentClaimViewSet(BaseViewSet):
     filterset_fields = ["status", "student"]
 
     def get_permissions(self):
-        if self.action in ["list", "retrieve", "create"]:
-            return [permissions.IsAuthenticated()]
-        return [permissions.IsAdminUser()]
+        # if self.action in ["list", "retrieve", "create"]:
+        return [permissions.IsAuthenticated()]
+        # return [permissions.IsAdminUser()]
 
     def perform_create(self, serializer):
         try:
@@ -353,7 +353,7 @@ class StudentClaimViewSet(BaseViewSet):
                 "title": f"New Response on Your Claim – {claim.claim_type}",
                 "message": (
                     f"{responder_name} has posted a response on your '{claim.claim_type}' claim. "
-                    "Please log in to read the full response."
+                   
                 ),
             }
         ]
