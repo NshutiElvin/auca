@@ -67,7 +67,7 @@ class InstructorReportListCreateView(generics.ListCreateAPIView):
 
         instructor_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
         student_name = f"{report.student.first_name} {report.student.last_name}".strip() or report.student.username
-        exam_name = getattr(report.exam, "title", f"Exam #{report.exam.pk}")
+        exam_name = getattr(report.exam.group.course, "title", f"Exam #{report.exam.pk}")
         severity = report.get_severity_display() if hasattr(report, "get_severity_display") else report.severity
 
         notifications_data = [
@@ -167,7 +167,7 @@ class AdminReportDetailView(generics.RetrieveUpdateAPIView):
         admin_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
         student_name = f"{instance.student.first_name} {instance.student.last_name}".strip() or instance.student.username
         instructor_name = f"{instance.reported_by.first_name} {instance.reported_by.last_name}".strip() or instance.reported_by.username
-        exam_name = getattr(instance.exam, "title", f"Exam #{instance.exam.pk}")
+        exam_name = getattr(instance.exam.group.course, "title", f"Exam #{instance.exam.pk}")
         severity = instance.get_severity_display() if hasattr(instance, "get_severity_display") else instance.severity
 
         STATUS_LABELS = {
@@ -241,7 +241,7 @@ class EvidenceCreateView(generics.CreateAPIView):
 
         uploader_name = f"{self.request.user.first_name} {self.request.user.last_name}".strip() or self.request.user.username
         student_name = f"{report.student.first_name} {report.student.last_name}".strip() or report.student.username
-        exam_name = getattr(report.exam, "title", f"Exam #{report.exam.pk}")
+        exam_name = getattr(report.exam.group.course, "title", f"Exam #{report.exam.pk}")
 
         notifications_data = []
 
@@ -289,7 +289,7 @@ class EvidenceDeleteView(generics.DestroyAPIView):
         report = instance.report
         deleter_name = f"{self.request.user.first_name} {self.request.user.last_name}".strip() or self.request.user.username
         student_name = f"{report.student.first_name} {report.student.last_name}".strip() or report.student.username
-        exam_name = getattr(report.exam, "title", f"Exam #{report.exam.pk}")
+        exam_name = getattr(report.exam.group.course, "title", f"Exam #{report.exam.pk}")
 
         instance.delete()
 
