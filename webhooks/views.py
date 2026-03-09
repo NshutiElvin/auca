@@ -12,6 +12,56 @@ from notifications.models import Notification
 from notifications.tasks import send_notification, send_email_task
 
 
+def _notify_admins(exam, new_status):
+    from users.models import User
+
+    course_title = exam.group.course.title
+    start_time = exam.start_time.strftime("%I:%M %p")
+    end_time = exam.end_time.strftime("%I:%M %p")
+    student_count = StudentExam.objects.filter(exam=exam).count()
+
+    admin_messages = {
+        "READY": (
+            f"Exam '{course_title}' is starting in 15 minutes at {start_time}. "
+            f"{student_count} students are registered."
+        ),
+        "ONGOING": (
+            f"Exam '{course_title}' is now ONGOING ({start_time} – {end_time}). "
+            f"{student_count} students registered."
+        ),
+        "COMPLETED": (
+            f"Exam '{course_title}' ({start_time} – {end_time}) has COMPLETED. "
+            f"{student_count} students were registered."
+        ),
+    }
+
+    message = admin_messages.get(new_status)
+    if not message:
+        return
+
+    title = f"Exam {new_status.title()} – {course_title}"
+    admins = User.objects.filter(is_superuser=True)
+
+    notifications = [
+        Notification(user=admin, title=title, message=message)
+        for admin in admins
+    ]
+    created = Notification.objects.bulk_create(notifications)
+
+    for notification in created:
+        send_notification(
+            {
+                "id": notification.id,
+                "title": notification.title,
+                "message": notification.message,
+                "created_at": notification.created_at.isoformat(),
+                "is_read": notification.is_read,
+                "read_at": notification.read_at.isoformat() if notification.read_at else None,
+            },
+            notification.user.id,
+        )
+
+
 def _get_notification_message(exam, new_status):
     course_title = exam.group.course.title
     start_time = exam.start_time.strftime("%I:%M %p")
@@ -124,6 +174,8 @@ class CheckAndUpdateExamsWebhookView(APIView):
                 message = _get_notification_message(exam, exam.status)
                 if message:
                     _notify_students(exam, message)
+                    _notify_admins(exam, exam.status)
+
 
             results.append({
                 'exam': str(exam),
