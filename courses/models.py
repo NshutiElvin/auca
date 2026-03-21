@@ -15,7 +15,7 @@ class TimeStampedModel(models.Model):
  
 class Course(TimeStampedModel):
    
-    code = models.CharField(max_length=10, unique=True)
+    code = models.CharField(max_length=255, unique=True)
     title = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     credits = models.PositiveIntegerField(default=3)

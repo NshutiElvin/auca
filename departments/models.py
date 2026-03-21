@@ -6,7 +6,7 @@ class TimeStampedModel(models.Model):
     class Meta:
         abstract = True 
 class Department(TimeStampedModel):
-    code = models.CharField(max_length=10, unique=True)  
+    code = models.CharField(max_length=255, unique=True)  
     name = models.CharField(max_length=100)
     location= models.ForeignKey("rooms.Location", null=True, blank=True, on_delete=models.CASCADE)
 

@@ -31,7 +31,7 @@ class Enrollment(TimeStampedModel):
     )
     enrollment_date = models.DateField(auto_now_add=True)
     status = models.CharField(
-        max_length=10,
+        max_length=255,
         choices=STATUS_CHOICES,
         default='enrolled'
     )
