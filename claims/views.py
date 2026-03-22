@@ -77,9 +77,10 @@ class BaseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
+        user_permissions = user.get_permissions_list()
         
 
-        if not user.is_staff:
+        if not user.is_staff or "view_studentclaim" not in user_permissions:
             try:
                 student = Student.objects.get(user=user)
                 queryset = queryset.filter(student=student)
@@ -431,8 +432,8 @@ class ClaimResponseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
-
-        if not user.is_staff:
+        user_permissions = user.get_permissions_list()
+        if not user.is_staff or "view_claimresponse" not in user_permissions:
             try:
                 student = Student.objects.get(user=user)
                 queryset = queryset.filter(claim__student=student)

@@ -176,7 +176,8 @@ class ExamViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["GET"], url_path="instructor")
     def instructor_exams(self, request):
         try:
-            instructor = request.user
+            instructor = request.user 
+            
             if instructor.role != "instructor":
                 return Response(
                     {"success": False, "message": "Only instructors can access this endpoint"},
