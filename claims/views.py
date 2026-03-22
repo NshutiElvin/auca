@@ -80,7 +80,7 @@ class BaseViewSet(viewsets.ModelViewSet):
         user_permissions = user.get_permissions_list()
         
 
-        if not user.is_staff or "view_studentclaim" not in user_permissions:
+        if not user.is_staff and "view_studentclaim" not in user_permissions:
             try:
                 student = Student.objects.get(user=user)
                 queryset = queryset.filter(student=student)
@@ -433,7 +433,7 @@ class ClaimResponseViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         user = self.request.user
         user_permissions = user.get_permissions_list()
-        if not user.is_staff or "view_claimresponse" not in user_permissions:
+        if not user.is_staff and "view_claimresponse" not in user_permissions:
             try:
                 student = Student.objects.get(user=user)
                 queryset = queryset.filter(claim__student=student)
