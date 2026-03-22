@@ -1,12 +1,10 @@
 """
-ImportEnrollmentsData — SSE Streaming Version (Optimised for Daphne)
-=====================================================================
-Key optimisations over original:
-  1. Transactions split per step  → SSE events flush immediately via Daphne
-  2. Bulk course upsert           → replaces N+1 update_or_create loop
-  3. Batch M2M via through-table  → replaces per-course .set() calls
-  4. Vectorised dept frequency    → O(n) groupby instead of O(n²) df filters
-  5. Async view                   → `async def post` so Daphne streams properly
+ImportEnrollmentsData — SSE Streaming Version
+==============================================
+- HTTP request returns immediately with a stream
+- Frontend receives real-time progress updates via SSE
+- No timeout — connection stays alive with periodic progress events
+- React can display live progress bar/log while import runs
 """
 
 from departments.models import Department
@@ -49,6 +47,12 @@ def _is_numeric(val):
         return False
 
 
+def _dept_code_str(raw):
+    if _is_numeric(raw) and not pd.isna(raw):
+        return str(int(float(raw)))
+    return str(raw)
+
+
 def _safe_df(queryset, columns):
     """
     Always returns DataFrame with correct columns
@@ -61,11 +65,16 @@ def _safe_df(queryset, columns):
 
 
 def _sse_event(event_type, data):
+    """
+    Format a single SSE event string.
+    Frontend receives: { type, ...data }
+    """
     payload = json.dumps({"type": event_type, **data})
     return f"data: {payload}\n\n"
 
 
 def _progress(step, total_steps, message, stats=None):
+    """Build a progress SSE event."""
     event = {
         "step": step,
         "total_steps": total_steps,
@@ -78,6 +87,7 @@ def _progress(step, total_steps, message, stats=None):
 
 
 def _done(stats, warnings):
+    """Build the final done SSE event."""
     return _sse_event(
         "done",
         {
@@ -93,6 +103,7 @@ def _done(stats, warnings):
 
 
 def _error(message):
+    """Build an error SSE event."""
     return _sse_event("error", {"message": message})
 
 
@@ -107,18 +118,18 @@ class ImportEnrollmentsData(generics.GenericAPIView):
         if not file:
             return Response({"error": "No file provided."}, status=400)
 
-        # Read file into memory immediately before stream starts
+        # Read file into memory immediately — before stream starts
+        # (file object will be gone once we start streaming)
         file_bytes = file.read()
+        selected_semester = selected_semester
 
         def event_stream():
             """
             Generator that yields SSE events.
-            Each step commits its own transaction before yielding,
-            so Daphne can flush the event to the client immediately.
+            Django keeps the HTTP connection open as long as
+            this generator is running.
             """
             TOTAL_STEPS = 8
-            stats = defaultdict(int)
-            errors = []
 
             try:
                 # ── Step 1: Read & validate ───────────────────────────────
@@ -161,8 +172,9 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     lambda x: str(int(float(x))) if _is_numeric(x) else str(x)
                 )
 
+                # Unique sets
                 student_nums = df["STUDNUM_STR"].dropna().unique().tolist()
-                all_dept_codes = df["DEPT_CODE"].dropna().unique().tolist()
+                dept_codes = df["DEPT_CODE"].dropna().unique().tolist()
                 course_codes = df["COURSECODE"].dropna().unique().tolist()
                 semester_terms = df["TERM"].dropna().unique().tolist()
                 uploaded_group_names = df["GROUP"].dropna().unique().tolist()
@@ -175,33 +187,8 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     .copy()
                 )
 
-                # ── Pre-compute dept frequency vectorised (O(n)) ──────────
-                # For each (COURSECODE, DEPT_CODE) pair, count rows.
-                # Then derive primary dept (most frequent) and cross-dept flag.
-                dept_freq_df = (
-                    df.groupby(["COURSECODE", "DEPT_CODE"])
-                    .size()
-                    .reset_index(name="count")
-                )
-                # Primary dept = dept with highest count per course
-                primary_dept_map = (
-                    dept_freq_df
-                    .loc[dept_freq_df.groupby("COURSECODE")["count"].idxmax()]
-                    .set_index("COURSECODE")["DEPT_CODE"]
-                    .to_dict()
-                )
-                # All depts per course (for cross-dept detection)
-                all_depts_per_course = (
-                    dept_freq_df
-                    .groupby("COURSECODE")["DEPT_CODE"]
-                    .apply(set)
-                    .to_dict()
-                )
-                cross_dept_codes = {
-                    code
-                    for code, depts in all_depts_per_course.items()
-                    if len(depts) > 1
-                }
+                stats = defaultdict(int)
+                errors = []
 
                 yield _progress(
                     1,
@@ -211,13 +198,13 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     f"{len(df):,} enrollment rows",
                 )
 
-                # ── Step 2: Semesters & Departments ──────────────────────
-                # Own transaction — commits before yield so SSE flushes.
-                yield _progress(
-                    2, TOTAL_STEPS, "Processing semesters and departments..."
-                )
-
                 with transaction.atomic():
+
+                    # ── Step 2: Semesters & Departments ──────────────────
+                    yield _progress(
+                        2, TOTAL_STEPS, "Processing semesters and departments..."
+                    )
+
                     if selected_semester:
                         Semester.objects.exclude(name=selected_semester).update(
                             is_active=False
@@ -238,9 +225,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     )
                     new_sems = [
                         Semester(
-                            name=n,
-                            start_date=timezone.now(),
-                            end_date=timezone.now(),
+                            name=n, start_date=timezone.now(), end_date=timezone.now()
                         )
                         for n in semester_terms
                         if n not in existing_sem_names
@@ -259,9 +244,9 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     }
 
                     existing_dept_codes = set(
-                        Department.objects.filter(
-                            code__in=all_dept_codes
-                        ).values_list("code", flat=True)
+                        Department.objects.filter(code__in=dept_codes).values_list(
+                            "code", flat=True
+                        )
                     )
                     new_depts = [
                         Department(
@@ -271,7 +256,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                                 code, DEFAULT_LOCATION_ID
                             ),
                         )
-                        for code in all_dept_codes
+                        for code in dept_codes
                         if code not in existing_dept_codes
                     ]
                     if new_depts:
@@ -282,26 +267,16 @@ class ImportEnrollmentsData(generics.GenericAPIView):
 
                     dept_map = {
                         r["code"]: r["id"]
-                        for r in Department.objects.filter(
-                            code__in=all_dept_codes
-                        ).values("id", "code")
+                        for r in Department.objects.filter(code__in=dept_codes).values(
+                            "id", "code"
+                        )
                     }
 
-                yield _progress(
-                    2,
-                    TOTAL_STEPS,
-                    f"Semesters & departments done — "
-                    f"{stats['semesters_created']:,} semesters, "
-                    f"{stats['departments_created']:,} departments created",
-                    stats=dict(stats),
-                )
+                    # ── Step 3: Users & Students ──────────────────────────
+                    yield _progress(
+                        3, TOTAL_STEPS, f"Processing {len(student_nums):,} students..."
+                    )
 
-                # ── Step 3: Users & Students ──────────────────────────────
-                yield _progress(
-                    3, TOTAL_STEPS, f"Processing {len(student_nums):,} students..."
-                )
-
-                with transaction.atomic():
                     student_df = (
                         df[["STUDNUM_STR", "STUDENTNAME", "DEPT_CODE"]]
                         .drop_duplicates(subset=["STUDNUM_STR"])
@@ -309,9 +284,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         .copy()
                     )
 
-                    names = (
-                        student_df["STUDENTNAME"].fillna("").astype(str).str.strip()
-                    )
+                    names = student_df["STUDENTNAME"].fillna("").astype(str).str.strip()
                     student_df["FIRST"] = names.str.split().str[0].fillna("")
                     student_df["LAST"] = names.apply(
                         lambda n: " ".join(n.split()[1:]) if len(n.split()) > 1 else ""
@@ -357,7 +330,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                             ],
                             left_on="EMAIL",
                             right_on="email",
-                            how="inner",
+                            how="inner",  # <--- Fixed KeyError bug here
                             suffixes=("_student", "_user"),
                         )
                         users_to_update = []
@@ -410,7 +383,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                             )
                             stats["users_created"] += len(new_user_objs)
 
-                    # Fresh fetch for IDs after creation
+                    # Fresh fetch for IDs
                     all_users_df = _safe_df(
                         User.objects.filter(email__in=potential_emails).values(
                             "id", "email"
@@ -429,12 +402,10 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         create_with_users["dept_id"] = create_with_users[
                             "DEPT_CODE"
                         ].map(dept_map)
-                        create_with_users = create_with_users.dropna(
-                            subset=["dept_id"]
-                        )
+                        create_with_users = create_with_users.dropna(subset=["dept_id"])
                         students_to_create = [
                             Student(
-                                user_id=int(row.id_user),
+                                user_id=int(row.id_user),  # <--- Fixed NaN issue here
                                 reg_no=row.STUDNUM_STR,
                                 department_id=int(row.dept_id),
                             )
@@ -450,26 +421,32 @@ class ImportEnrollmentsData(generics.GenericAPIView):
 
                     student_id_map = {
                         r["reg_no"]: r["id"]
-                        for r in Student.objects.filter(
-                            reg_no__in=student_nums
-                        ).values("id", "reg_no")
+                        for r in Student.objects.filter(reg_no__in=student_nums).values(
+                            "id", "reg_no"
+                        )
                     }
 
-                yield _progress(
-                    3,
-                    TOTAL_STEPS,
-                    f"Students done — "
-                    f"{stats['students_created']:,} created, "
-                    f"{stats['users_updated']:,} updated",
-                    stats=dict(stats),
-                )
+                    yield _progress(
+                        3,
+                        TOTAL_STEPS,
+                        f"Students done — "
+                        f"{stats['students_created']:,} created, "
+                        f"{stats['users_updated']:,} updated",
+                        stats=dict(stats),
+                    )
 
-                # ── Step 4: Courses ───────────────────────────────────────
-                yield _progress(
-                    4, TOTAL_STEPS, f"Processing {len(course_codes):,} courses..."
-                )
+                    # ── Step 4: Courses ───────────────────────────────────────────────────
+                    yield _progress(
+                        4, TOTAL_STEPS, f"Processing {len(course_codes):,} courses..."
+                    )
 
-                with transaction.atomic():
+                    # Group by course code to see which departments it appears under
+                    course_dept_mapping = defaultdict(set)
+                    for _, row in df.iterrows():
+                        if pd.notna(row["COURSECODE"]) and pd.notna(row["DEPT_CODE"]):
+                            course_dept_mapping[row["COURSECODE"]].add(row["DEPT_CODE"])
+
+                    # Get course metadata
                     course_meta_df = (
                         df[["COURSECODE", "COURSENAME", "CREDITS", "TERM"]]
                         .drop_duplicates(subset=["COURSECODE"])
@@ -482,108 +459,115 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         "semester_id"
                     ].astype(int)
 
-                    # Build course objects using pre-computed primary_dept_map
-                    course_objects = []
+                    existing_courses_df = _safe_df(
+                        Course.objects.filter(code__in=course_codes).values(
+                            "id",
+                            "code",
+                            "title",
+                            "credits",
+                            "semester_id",
+                            "department_id",
+                            "is_cross_departmental",
+                        ),
+                        columns=[
+                            "id",
+                            "code",
+                            "title",
+                            "credits",
+                            "semester_id",
+                            "department_id",
+                            "is_cross_departmental",
+                        ],
+                    )
+
+                    # Process each course
                     for _, row in course_meta_df.iterrows():
-                        code = row["COURSECODE"]
-                        primary_dept_code = primary_dept_map.get(code)
-                        if not primary_dept_code:
+                        course_code = row["COURSECODE"]
+                        dept_codes = course_dept_mapping.get(course_code, set())
+
+                        if not dept_codes:
                             continue
+
+                        # Find the most frequent department for this course (primary)
+                        dept_frequency = {}
+                        for dept_code in dept_codes:
+                            dept_frequency[dept_code] = len(
+                                df[
+                                    (df["COURSECODE"] == course_code)
+                                    & (df["DEPT_CODE"] == dept_code)
+                                ]
+                            )
+
+                        # Primary department = most frequent occurrence
+                        primary_dept_code = max(
+                            dept_frequency.items(), key=lambda x: x[1]
+                        )[0]
                         primary_dept_id = dept_map.get(primary_dept_code)
+
                         if not primary_dept_id:
                             continue
-                        course_objects.append(
-                            Course(
-                                code=code,
-                                title=row["COURSENAME"],
-                                credits=row["CREDITS"],
-                                semester_id=int(row["semester_id"]),
-                                department_id=int(primary_dept_id),
-                                is_cross_departmental=(code in cross_dept_codes),
+
+                        # Check if cross-departmental
+                        is_cross = len(dept_codes) > 1
+
+                        # Get or create course
+                        course_defaults = {
+                            "title": row["COURSENAME"],
+                            "credits": row["CREDITS"],
+                            "semester_id": row["semester_id"],
+                            "department_id": primary_dept_id,
+                            "is_cross_departmental": is_cross,
+                        }
+
+                        course, created = Course.objects.update_or_create(
+                            code=course_code, defaults=course_defaults
+                        )
+
+                        # Handle associated departments for cross-departmental courses
+                        if is_cross:
+                            other_dept_codes = dept_codes - {primary_dept_code}
+                            other_dept_ids = [
+                                dept_map[code]
+                                for code in other_dept_codes
+                                if code in dept_map
+                            ]
+
+                            if other_dept_ids:
+                                course.associated_departments.set(other_dept_ids)
+                            stats["courses_with_associations"] = (
+                                stats.get("courses_with_associations", 0) + 1
                             )
-                        )
 
-                    # Single bulk upsert — replaces N+1 update_or_create loop
-                    if course_objects:
-                        created_courses = Course.objects.bulk_create(
-                            course_objects,
-                            update_conflicts=True,
-                            update_fields=[
-                                "title",
-                                "credits",
-                                "semester_id",
-                                "department_id",
-                                "is_cross_departmental",
-                            ],
-                            unique_fields=["code"],
-                            batch_size=BATCH_SIZE,
-                        )
-                        # Django sets pk on returned objects after bulk_create
-                        stats["courses_upserted"] = len(created_courses)
+                        if created:
+                            stats["courses_created"] = (
+                                stats.get("courses_created", 0) + 1
+                            )
+                        else:
+                            stats["courses_updated"] = (
+                                stats.get("courses_updated", 0) + 1
+                            )
 
-                    # Fresh course id map after upsert
+                    # Build course_id map for later use
                     course_id_map = {
                         r["code"]: r["id"]
-                        for r in Course.objects.filter(
-                            code__in=course_codes
-                        ).values("id", "code")
+                        for r in Course.objects.filter(code__in=course_codes).values(
+                            "id", "code"
+                        )
                     }
 
-                    # Handle M2M (associated_departments) via through-table bulk
-                    # for cross-departmental courses — one delete + one bulk_create
-                    # instead of per-course .set() calls.
-                    if cross_dept_codes:
-                        AssocDept = Course.associated_departments.through
-                        cross_course_ids = [
-                            course_id_map[c]
-                            for c in cross_dept_codes
-                            if c in course_id_map
-                        ]
-                        # Clear stale associations in one query
-                        AssocDept.objects.filter(
-                            course_id__in=cross_course_ids
-                        ).delete()
+                    yield _progress(
+                        4,
+                        TOTAL_STEPS,
+                        f"Courses done — "
+                        f"{stats.get('courses_created', 0):,} created, "
+                        f"{stats.get('courses_updated', 0):,} updated, "
+                        f"{stats.get('courses_with_associations', 0):,} cross-departmental",
+                        stats=dict(stats),
+                    )
 
-                        through_rows = []
-                        for code in cross_dept_codes:
-                            cid = course_id_map.get(code)
-                            if not cid:
-                                continue
-                            primary_dept_code = primary_dept_map.get(code)
-                            other_dept_codes = (
-                                all_depts_per_course.get(code, set())
-                                - {primary_dept_code}
-                            )
-                            for dc in other_dept_codes:
-                                did = dept_map.get(dc)
-                                if did:
-                                    through_rows.append(
-                                        AssocDept(
-                                            course_id=cid,
-                                            department_id=did,
-                                        )
-                                    )
-                        if through_rows:
-                            AssocDept.objects.bulk_create(
-                                through_rows,
-                                ignore_conflicts=True,
-                                batch_size=BATCH_SIZE,
-                            )
-                            stats["courses_with_associations"] = len(cross_dept_codes)
+                    # ── Step 5: Course Groups ─────────────────────────────
+                    yield _progress(5, TOTAL_STEPS, "Processing course groups...")
 
-                yield _progress(
-                    4,
-                    TOTAL_STEPS,
-                    f"Courses done — "
-                    f"{stats.get('courses_upserted', 0):,} upserted, "
-                    f"{stats.get('courses_with_associations', 0):,} cross-departmental",
-                    stats=dict(stats),
-                )
-
-                # ── Step 5: Course Groups ─────────────────────────────────
-                yield _progress(5, TOTAL_STEPS, "Processing course groups...")
-
-                with transaction.atomic():
                     cg_pairs_df["course_id"] = cg_pairs_df["COURSECODE"].map(
                         course_id_map
                     )
@@ -610,8 +594,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         CourseGroup.objects.bulk_create(
                             [
                                 CourseGroup(
-                                    group_name=row.GROUP,
-                                    course_id=int(row.course_id),
+                                    group_name=row.GROUP, course_id=int(row.course_id)
                                 )
                                 for row in new_groups_df.itertuples(index=False)
                             ],
@@ -628,19 +611,11 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         ).values("id", "group_name", "course_id")
                     }
 
-                yield _progress(
-                    5,
-                    TOTAL_STEPS,
-                    f"Groups done — {stats['groups_created']:,} created",
-                    stats=dict(stats),
-                )
+                    # ── Step 6: Enrollments ───────────────────────────────
+                    yield _progress(
+                        6, TOTAL_STEPS, f"Processing {len(df):,} enrollment rows..."
+                    )
 
-                # ── Step 6: Enrollments ───────────────────────────────────
-                yield _progress(
-                    6, TOTAL_STEPS, f"Processing {len(df):,} enrollment rows..."
-                )
-
-                with transaction.atomic():
                     enr_df = (
                         df[["STUDNUM_STR", "COURSECODE", "GROUP"]]
                         .dropna(subset=["GROUP"])
@@ -658,7 +633,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         axis=1,
                     )
 
-                    # Log missing groups before dropping
+                    # Log missing groups
                     for row in enr_df[enr_df["group_id"].isna()].itertuples(
                         index=False
                     ):
@@ -683,11 +658,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                                 student_id__in=enr_df["student_id"].tolist(),
                                 course_id__in=enr_df["course_id"].tolist(),
                             ).values(
-                                "id",
-                                "student_id",
-                                "course_id",
-                                "group_id",
-                                "status",
+                                "id", "student_id", "course_id", "group_id", "status"
                             ),
                             columns=[
                                 "id",
@@ -700,13 +671,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
 
                         merged_enr = enr_df.merge(
                             existing_enr_df[
-                                [
-                                    "id",
-                                    "student_id",
-                                    "course_id",
-                                    "group_id",
-                                    "status",
-                                ]
+                                ["id", "student_id", "course_id", "group_id", "status"]
                             ],
                             on=["student_id", "course_id"],
                             how="left",
@@ -716,7 +681,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         is_new = merged_enr["id"].isna()
                         is_existing = ~is_new
 
-                        # Create new enrollments
+                        # Create new
                         new_enr_df = merged_enr[is_new].copy()
                         g_col = (
                             "group_id_new"
@@ -739,7 +704,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                             )
                             stats["enrollments_created"] += len(new_enr_df)
 
-                        # Update changed enrollments
+                        # Update changed
                         if is_existing.any():
                             ext_rows = merged_enr[is_existing].copy()
                             g_new_col = (
@@ -771,16 +736,16 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                                 )
                                 stats["enrollments_updated"] += len(update_df)
 
-                yield _progress(
-                    6,
-                    TOTAL_STEPS,
-                    f"Enrollments done — "
-                    f"{stats['enrollments_created']:,} created, "
-                    f"{stats['enrollments_updated']:,} updated",
-                    stats=dict(stats),
-                )
+                    yield _progress(
+                        6,
+                        TOTAL_STEPS,
+                        f"Enrollments done — "
+                        f"{stats['enrollments_created']:,} created, "
+                        f"{stats['enrollments_updated']:,} updated",
+                        stats=dict(stats),
+                    )
 
-                # ── Step 7 & 8: Finalise ──────────────────────────────────
+                # ── Step 7: Complete ──────────────────────────────────────
                 yield _progress(8, TOTAL_STEPS, "Finalising...", stats=dict(stats))
                 yield _done(dict(stats), errors)
 
@@ -793,6 +758,6 @@ class ImportEnrollmentsData(generics.GenericAPIView):
             content_type="text/event-stream",
         )
         response["Cache-Control"] = "no-cache"
-        response["X-Accel-Buffering"] = "no"
+        response["X-Accel-Buffering"] = "no"  # disable nginx buffering
         response["Access-Control-Allow-Origin"] = "*"
         return response
