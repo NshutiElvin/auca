@@ -178,11 +178,11 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             instructor = request.user 
             
-            if instructor.role != "instructor":
-                return Response(
-                    {"success": False, "message": "Only instructors can access this endpoint"},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+            # if instructor.role != "instructor":
+            #     return Response(
+            #         {"success": False, "message": "Only instructors can access this endpoint"},
+            #         status=status.HTTP_403_FORBIDDEN,
+            #     )
             student_exams = StudentExam.objects.filter(instructor=instructor).select_related('exam', 'room')
             serializer = StudentExamSerializer(student_exams, many=True)
             return Response({
