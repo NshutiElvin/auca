@@ -48,7 +48,7 @@ class ExamViewSet(viewsets.ModelViewSet):
     serializer_class = ExamSerializer
 
     def get_permissions(self):
-        if self.action in ["list", "retrieve", "signin_student", "signout_student", "exam_attendance", "instructor"]:
+        if self.action in ["list", "retrieve", "signin_student", "signout_student", "exam_attendance", "instructor_exams"]:
             permission_classes = [permissions.IsAuthenticated]
         else:
             permission_classes = [permissions.IsAdminUser]
