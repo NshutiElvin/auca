@@ -254,6 +254,8 @@ class UserViewSet(viewsets.ModelViewSet):
             "exam",
             "studentexam",
             "unscheduledexam",
+            "claim",
+            "claimresponse",
             "room",
         ]
         data = []
