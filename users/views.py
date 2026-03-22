@@ -300,7 +300,7 @@ class UserViewSet(viewsets.ModelViewSet):
         )
 
     @action(
-        detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated]
+        detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated]
     )
     def change_password(self, request):
         """
