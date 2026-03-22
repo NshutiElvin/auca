@@ -183,8 +183,13 @@ class ExamViewSet(viewsets.ModelViewSet):
                     {"success": False, "message": "Only instructors can access this endpoint"},
                     status=status.HTTP_403_FORBIDDEN,
                 )
-            student_exams = StudentExam.objects.filter(instructor=instructor).select_related('exam', 'room')
-            serializer = StudentExamSerializer(student_exams, many=True)
+
+            # ✅ Get distinct exams directly, not StudentExam objects
+            exams = Exam.objects.filter(
+                studentexam__instructor=instructor
+            ).select_related("group", "room").distinct()
+
+            serializer = ExamSerializer(exams, many=True)
             return Response({
                 "success": True,
                 "data": serializer.data,
