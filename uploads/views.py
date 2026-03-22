@@ -296,40 +296,85 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         + "@auca.ac.rw"
                     ).str.replace(" ", "", regex=False)
 
-                    # ── Find only students that don't exist yet ───────────
-                    existing_reg_nos = set(
-                        Student.objects.filter(reg_no__in=student_nums).values_list(
-                            "reg_no", flat=True
-                        )
+                    potential_emails = student_df["EMAIL"].dropna().tolist()
+
+                    existing_users_df = _safe_df(
+                        User.objects.filter(email__in=potential_emails).values(
+                            "id", "email", "first_name", "last_name"
+                        ),
+                        columns=["id", "email", "first_name", "last_name"],
+                    )
+                    existing_students_df = _safe_df(
+                        Student.objects.filter(reg_no__in=student_nums).values(
+                            "id", "reg_no", "user_id"
+                        ),
+                        columns=["id", "reg_no", "user_id"],
                     )
 
-                    to_create_df = student_df[
-                        ~student_df["STUDNUM_STR"].isin(existing_reg_nos)
-                    ].copy()
+                    merged_students = student_df.merge(
+                        existing_students_df[["id", "reg_no"]],
+                        left_on="STUDNUM_STR",
+                        right_on="reg_no",
+                        how="left",
+                    )
 
-                    # ── Create new users for new students only ────────────
-                    if not to_create_df.empty:
-                        potential_new_emails = to_create_df["EMAIL"].dropna().tolist()
+                    existing_mask = merged_students["id"].notna()
+                    to_update_df = merged_students[existing_mask].copy()
+                    to_create_df = merged_students[~existing_mask].copy()
 
-                        existing_emails = set(
-                            User.objects.filter(
-                                email__in=potential_new_emails
-                            ).values_list("email", flat=True)
+                    # Update existing users
+                    if not to_update_df.empty and not existing_users_df.empty:
+                        update_merged = to_update_df.merge(
+                            existing_users_df[
+                                ["id", "email", "first_name", "last_name"]
+                            ],
+                            left_on="EMAIL",
+                            right_on="email",
+                            how="inner",  # <--- Fixed KeyError bug here
+                            suffixes=("_student", "_user"),
                         )
-
-                        new_user_objs = [
-                            User(
-                                email=row.EMAIL,
-                                first_name=row.FIRST,
-                                last_name=row.LAST,
-                                role="student",
-                                password=make_password("password123."),
-                                is_active=True,
+                        users_to_update = []
+                        for row in update_merged.itertuples(index=False):
+                            fn = getattr(row, "first_name_user", None)
+                            ln = getattr(row, "last_name_user", None)
+                            uid = getattr(row, "id_user", None)
+                            if fn != row.FIRST or ln != row.LAST:
+                                users_to_update.append(
+                                    User(
+                                        id=int(uid),
+                                        first_name=row.FIRST,
+                                        last_name=row.LAST,
+                                        email=row.email,
+                                    )
+                                )
+                        if users_to_update:
+                            User.objects.bulk_update(
+                                users_to_update,
+                                ["first_name", "last_name", "email"],
+                                batch_size=BATCH_SIZE,
                             )
-                            for row in to_create_df.itertuples(index=False)
-                            if row.EMAIL not in existing_emails
-                        ]
+                            stats["users_updated"] += len(users_to_update)
 
+                    # Create new users
+                    existing_emails = (
+                        set(existing_users_df["email"].tolist())
+                        if not existing_users_df.empty
+                        else set()
+                    )
+                    new_user_objs = []
+                    if not to_create_df.empty:
+                        for row in to_create_df.itertuples(index=False):
+                            if row.EMAIL not in existing_emails:
+                                new_user_objs.append(
+                                    User(
+                                        email=row.EMAIL,
+                                        first_name=row.FIRST,
+                                        last_name=row.LAST,
+                                        role="student",
+                                        password=make_password("password123."),
+                                        is_active=True,
+                                    )
+                                )
                         if new_user_objs:
                             User.objects.bulk_create(
                                 new_user_objs,
@@ -338,50 +383,47 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                             )
                             stats["users_created"] += len(new_user_objs)
 
-                        # Fresh fetch of user IDs for just-created users
-                        all_new_users_df = _safe_df(
-                            User.objects.filter(
-                                email__in=potential_new_emails
-                            ).values("id", "email"),
-                            columns=["id", "email"],
+                    # Fresh fetch for IDs
+                    all_users_df = _safe_df(
+                        User.objects.filter(email__in=potential_emails).values(
+                            "id", "email"
+                        ),
+                        columns=["id", "email"],
+                    )
+
+                    if not to_create_df.empty and not all_users_df.empty:
+                        create_with_users = to_create_df.merge(
+                            all_users_df,
+                            left_on="EMAIL",
+                            right_on="email",
+                            how="inner",
+                            suffixes=("", "_user"),
                         )
-
-                        if not all_new_users_df.empty:
-                            create_with_users = to_create_df.merge(
-                                all_new_users_df,
-                                left_on="EMAIL",
-                                right_on="email",
-                                how="inner",
+                        create_with_users["dept_id"] = create_with_users[
+                            "DEPT_CODE"
+                        ].map(dept_map)
+                        create_with_users = create_with_users.dropna(subset=["dept_id"])
+                        students_to_create = [
+                            Student(
+                                user_id=int(row.id_user),  # <--- Fixed NaN issue here
+                                reg_no=row.STUDNUM_STR,
+                                department_id=int(row.dept_id),
                             )
-                            create_with_users["dept_id"] = create_with_users[
-                                "DEPT_CODE"
-                            ].map(dept_map)
-                            create_with_users = create_with_users.dropna(
-                                subset=["dept_id"]
+                            for row in create_with_users.itertuples(index=False)
+                        ]
+                        if students_to_create:
+                            Student.objects.bulk_create(
+                                students_to_create,
+                                ignore_conflicts=True,
+                                batch_size=BATCH_SIZE,
                             )
+                            stats["students_created"] += len(students_to_create)
 
-                            students_to_create = [
-                                Student(
-                                    user_id=int(row.id),
-                                    reg_no=row.STUDNUM_STR,
-                                    department_id=int(row.dept_id),
-                                )
-                                for row in create_with_users.itertuples(index=False)
-                            ]
-                            if students_to_create:
-                                Student.objects.bulk_create(
-                                    students_to_create,
-                                    ignore_conflicts=True,
-                                    batch_size=BATCH_SIZE,
-                                )
-                                stats["students_created"] += len(students_to_create)
-
-                    # Always fetch full student ID map for enrollment step
                     student_id_map = {
                         r["reg_no"]: r["id"]
-                        for r in Student.objects.filter(
-                            reg_no__in=student_nums
-                        ).values("id", "reg_no")
+                        for r in Student.objects.filter(reg_no__in=student_nums).values(
+                            "id", "reg_no"
+                        )
                     }
 
                     yield _progress(
@@ -389,11 +431,11 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         TOTAL_STEPS,
                         f"Students done — "
                         f"{stats['students_created']:,} created, "
-                        f"{len(existing_reg_nos):,} already existed (skipped)",
+                        f"{stats['users_updated']:,} updated",
                         stats=dict(stats),
                     )
 
-                    # ── Step 4: Courses ───────────────────────────────────
+                    # ── Step 4: Courses ───────────────────────────────────────────────────
                     yield _progress(
                         4, TOTAL_STEPS, f"Processing {len(course_codes):,} courses..."
                     )
@@ -441,16 +483,14 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                     # Process each course
                     for _, row in course_meta_df.iterrows():
                         course_code = row["COURSECODE"]
-                        dept_codes_for_course = course_dept_mapping.get(
-                            course_code, set()
-                        )
+                        dept_codes = course_dept_mapping.get(course_code, set())
 
-                        if not dept_codes_for_course:
+                        if not dept_codes:
                             continue
 
                         # Find the most frequent department for this course (primary)
                         dept_frequency = {}
-                        for dept_code in dept_codes_for_course:
+                        for dept_code in dept_codes:
                             dept_frequency[dept_code] = len(
                                 df[
                                     (df["COURSECODE"] == course_code)
@@ -468,7 +508,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                             continue
 
                         # Check if cross-departmental
-                        is_cross = len(dept_codes_for_course) > 1
+                        is_cross = len(dept_codes) > 1
 
                         # Get or create course
                         course_defaults = {
@@ -485,9 +525,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
 
                         # Handle associated departments for cross-departmental courses
                         if is_cross:
-                            other_dept_codes = dept_codes_for_course - {
-                                primary_dept_code
-                            }
+                            other_dept_codes = dept_codes - {primary_dept_code}
                             other_dept_ids = [
                                 dept_map[code]
                                 for code in other_dept_codes
@@ -633,13 +671,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
 
                         merged_enr = enr_df.merge(
                             existing_enr_df[
-                                [
-                                    "id",
-                                    "student_id",
-                                    "course_id",
-                                    "group_id",
-                                    "status",
-                                ]
+                                ["id", "student_id", "course_id", "group_id", "status"]
                             ],
                             on=["student_id", "course_id"],
                             how="left",
@@ -649,7 +681,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                         is_new = merged_enr["id"].isna()
                         is_existing = ~is_new
 
-                        # Create new enrollments
+                        # Create new
                         new_enr_df = merged_enr[is_new].copy()
                         g_col = (
                             "group_id_new"
@@ -672,7 +704,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
                             )
                             stats["enrollments_created"] += len(new_enr_df)
 
-                        # Update changed enrollments
+                        # Update changed
                         if is_existing.any():
                             ext_rows = merged_enr[is_existing].copy()
                             g_new_col = (
