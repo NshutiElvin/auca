@@ -171,6 +171,29 @@ class ExamViewSet(viewsets.ModelViewSet):
             {"success": True, "message": "Deleted successfully"},
             status=status.HTTP_204_NO_CONTENT,
         )
+    
+
+    @action(detail=False, methods=["GET"], url_path="instructor")
+    def instructor_exams(self, request):
+        try:
+            instructor = request.user
+            if instructor.role != "instructor":
+                return Response(
+                    {"success": False, "message": "Only instructors can access this endpoint"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            student_exams = StudentExam.objects.filter(instructor=instructor).select_related('exam', 'room')
+            serializer = StudentExamSerializer(student_exams, many=True)
+            return Response({
+                "success": True,
+                "data": serializer.data,
+                "message": "Instructor exams fetched successfully",
+            })
+        except Exception as e:
+            return Response({
+                "success": False,
+                "message": f"Error fetching instructor exams: {str(e)}",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=["PUT"], url_path="publish")
     def publish_timetable(self, request):

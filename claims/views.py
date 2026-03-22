@@ -77,6 +77,7 @@ class BaseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
+        
 
         if not user.is_staff:
             try:
