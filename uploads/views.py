@@ -1,15 +1,15 @@
 """
-ImportEnrollmentsData — Optimized Async SSE Streaming Version
-=============================================================
-Key optimizations vs original:
- 1. make_password called ONCE, reused for all new users (was: called per user — bcrypt × 30k)
+ImportEnrollmentsData — Optimized Async SSE Streaming Version v2
+================================================================
+Optimizations:
+ 1. make_password called ONCE (was: bcrypt × 30k users)
  2. course_dept_mapping built with groupby, not iterrows loop
  3. update_or_create loop replaced with bulk_create + bulk_update for courses
  4. associated_departments.set() batched via through-model bulk_create
- 5. Chunked bulk_create with live progress callbacks (no more silent freezes)
- 6. DataFrame operations vectorized wherever possible
- 7. Student update check uses set-difference instead of merge + mask
- 8. Enrollment merge deduplication added to prevent duplicate bulk_create entries
+ 5. Enrollment existence check uses course_id__in (232 values) not student_id__in (22k values)
+ 6. All heavy sections chunked with live progress callbacks
+ 7. DataFrame operations vectorized wherever possible
+ 8. Enrollment deduplication before bulk_create
 """
 
 from departments.models import Department
@@ -18,7 +18,6 @@ from rest_framework.response import Response
 from django.http import StreamingHttpResponse
 from asgiref.sync import sync_to_async
 import pandas as pd
-import numpy as np
 import asyncio
 import json
 import io
@@ -130,7 +129,6 @@ def _run_import(file_bytes, selected_semester, progress_callback):
     if df.empty:
         raise ValueError("No valid student records found in file.")
 
-    # ── OPTIMIZATION: vectorized DEPT_CODE (was apply with lambda) ─────────────
     df["DEPT_CODE"] = df["FACULTYCODE"].apply(
         lambda x: str(int(float(x))) if _is_numeric(x) else str(x)
     )
@@ -226,7 +224,7 @@ def _run_import(file_bytes, selected_semester, progress_callback):
         student_df["LAST"]  = split_names.apply(
             lambda parts: " ".join(parts[1:]) if parts and len(parts) > 1 else ""
         )
-        # ── OPTIMIZATION: build email with vectorized str ops (no apply) ───────
+        # Vectorized email construction
         student_df["EMAIL"] = (
             student_df["FIRST"].str.lower().str.replace(" ", "", regex=False)
             + student_df["LAST"].str.lower().str.replace(" ", "", regex=False)
@@ -241,14 +239,14 @@ def _run_import(file_bytes, selected_semester, progress_callback):
             columns=["id", "reg_no", "user_id"],
         )
 
-        # Split into existing vs new by reg_no set (faster than merge + mask)
+        # Set-difference split — faster than merge+mask
         existing_reg_nos = (
             set(existing_students_df["reg_no"].tolist())
             if not existing_students_df.empty
             else set()
         )
-        to_create_df  = student_df[~student_df["STUDNUM_STR"].isin(existing_reg_nos)].copy()
-        to_update_df  = student_df[student_df["STUDNUM_STR"].isin(existing_reg_nos)].copy()
+        to_create_df = student_df[~student_df["STUDNUM_STR"].isin(existing_reg_nos)].copy()
+        to_update_df = student_df[student_df["STUDNUM_STR"].isin(existing_reg_nos)].copy()
 
         # Update existing users (only when name actually changed)
         if not to_update_df.empty:
@@ -266,7 +264,6 @@ def _run_import(file_bytes, selected_semester, progress_callback):
                     how="inner",
                     suffixes=("_new", "_existing"),
                 )
-                # Only update rows where name actually differs
                 needs_name_update = (
                     (update_merged["FIRST"] != update_merged["first_name"])
                     | (update_merged["LAST"]  != update_merged["last_name"])
@@ -282,13 +279,13 @@ def _run_import(file_bytes, selected_semester, progress_callback):
                     )
                     stats["users_updated"] += len(users_to_update)
 
-        # ── OPTIMIZATION: hash password ONCE — was make_password() per user ────
+        # Create new users — hash password ONCE (was: make_password() per user = bcrypt × N)
         if not to_create_df.empty:
             existing_emails_set = set(
                 User.objects.filter(email__in=to_create_df["EMAIL"].tolist())
                 .values_list("email", flat=True)
             )
-            hashed_password = make_password("password123.")   # ← single bcrypt call
+            hashed_password = make_password("password123.")  # single bcrypt call
 
             new_user_objs = [
                 User(
@@ -303,11 +300,9 @@ def _run_import(file_bytes, selected_semester, progress_callback):
                 if row.EMAIL not in existing_emails_set
             ]
 
-            # ── OPTIMIZATION: chunked bulk_create with live progress ───────────
             total_new = len(new_user_objs)
             for i in range(0, total_new, BATCH_SIZE):
-                chunk = new_user_objs[i : i + BATCH_SIZE]
-                User.objects.bulk_create(chunk, ignore_conflicts=True)
+                User.objects.bulk_create(new_user_objs[i : i + BATCH_SIZE], ignore_conflicts=True)
                 progress_callback(
                     3, TOTAL_STEPS,
                     f"Creating users... {min(i + BATCH_SIZE, total_new):,}/{total_new:,}",
@@ -338,7 +333,6 @@ def _run_import(file_bytes, selected_semester, progress_callback):
                 )
                 for row in create_with_users.itertuples(index=False)
             ]
-            # ── OPTIMIZATION: chunked with live progress ───────────────────────
             total_students = len(students_to_create)
             for i in range(0, total_students, BATCH_SIZE):
                 Student.objects.bulk_create(
@@ -366,7 +360,7 @@ def _run_import(file_bytes, selected_semester, progress_callback):
         # ── Step 4: Courses ────────────────────────────────────────────────────
         progress_callback(4, TOTAL_STEPS, f"Processing {len(course_codes):,} courses...")
 
-        # ── OPTIMIZATION: groupby instead of iterrows loop ────────────────────
+        # groupby instead of iterrows loop
         course_dept_mapping = (
             df.dropna(subset=["COURSECODE", "DEPT_CODE"])
             .groupby("COURSECODE")["DEPT_CODE"]
@@ -374,14 +368,13 @@ def _run_import(file_bytes, selected_semester, progress_callback):
             .to_dict()
         )
 
-        # ── OPTIMIZATION: frequency via value_counts, vectorized ──────────────
+        # Primary dept = dept with highest enrollment count per course
         course_dept_counts = (
             df.dropna(subset=["COURSECODE", "DEPT_CODE"])
             .groupby(["COURSECODE", "DEPT_CODE"])
             .size()
             .reset_index(name="cnt")
         )
-        # Primary dept = dept with highest count per course
         primary_dept_series = (
             course_dept_counts
             .sort_values("cnt", ascending=False)
@@ -395,14 +388,14 @@ def _run_import(file_bytes, selected_semester, progress_callback):
             .reset_index(drop=True)
             .copy()
         )
-        course_meta_df["semester_id"] = course_meta_df["TERM"].map(sem_map)
+        course_meta_df["semester_id"]     = course_meta_df["TERM"].map(sem_map)
         course_meta_df = course_meta_df.dropna(subset=["semester_id"]).copy()
-        course_meta_df["semester_id"]   = course_meta_df["semester_id"].astype(int)
-        course_meta_df["primary_dept"]  = course_meta_df["COURSECODE"].map(primary_dept_series)
+        course_meta_df["semester_id"]     = course_meta_df["semester_id"].astype(int)
+        course_meta_df["primary_dept"]    = course_meta_df["COURSECODE"].map(primary_dept_series)
         course_meta_df["primary_dept_id"] = course_meta_df["primary_dept"].map(dept_map)
         course_meta_df = course_meta_df.dropna(subset=["primary_dept_id"]).copy()
         course_meta_df["primary_dept_id"] = course_meta_df["primary_dept_id"].astype(int)
-        course_meta_df["is_cross"] = course_meta_df["COURSECODE"].apply(
+        course_meta_df["is_cross"]        = course_meta_df["COURSECODE"].apply(
             lambda c: len(course_dept_mapping.get(c, set())) > 1
         )
 
@@ -413,10 +406,10 @@ def _run_import(file_bytes, selected_semester, progress_callback):
 
         courses_to_create = []
         courses_to_update = []
-        cross_dept_map    = {}   # code → [other dept ids]
+        cross_dept_map    = {}  # code → [other dept ids]
 
         for row in course_meta_df.itertuples(index=False):
-            c_dept_codes = course_dept_mapping.get(row.COURSECODE, set())
+            c_dept_codes   = course_dept_mapping.get(row.COURSECODE, set())
             other_dept_ids = [
                 dept_map[dc]
                 for dc in (c_dept_codes - {row.primary_dept})
@@ -427,11 +420,11 @@ def _run_import(file_bytes, selected_semester, progress_callback):
 
             if row.COURSECODE in existing_courses:
                 c = existing_courses[row.COURSECODE]
-                c.title                  = row.COURSENAME
-                c.credits                = row.CREDITS
-                c.semester_id            = row.semester_id
-                c.department_id          = row.primary_dept_id
-                c.is_cross_departmental  = row.is_cross
+                c.title                 = row.COURSENAME
+                c.credits               = row.CREDITS
+                c.semester_id           = row.semester_id
+                c.department_id         = row.primary_dept_id
+                c.is_cross_departmental = row.is_cross
                 courses_to_update.append(c)
             else:
                 courses_to_create.append(
@@ -445,7 +438,7 @@ def _run_import(file_bytes, selected_semester, progress_callback):
                     )
                 )
 
-        # ── OPTIMIZATION: bulk_create + bulk_update instead of update_or_create loop
+        # bulk_create + bulk_update instead of update_or_create loop
         if courses_to_create:
             Course.objects.bulk_create(courses_to_create, ignore_conflicts=True, batch_size=BATCH_SIZE)
             stats["courses_created"] += len(courses_to_create)
@@ -463,21 +456,21 @@ def _run_import(file_bytes, selected_semester, progress_callback):
             for r in Course.objects.filter(code__in=course_codes).values("id", "code")
         }
 
-        # ── OPTIMIZATION: batch associated_departments via through-model ───────
-        # Instead of course.associated_departments.set() per course (2-3 queries each),
-        # clear and recreate all at once.
+        # Batch associated_departments via through-model (was: .set() per course = N×3 queries)
         if cross_dept_map:
-            cross_course_ids = [course_id_map[code] for code in cross_dept_map if code in course_id_map]
-            CourseAssociation = Course.associated_departments.through  # the M2M through model
+            cross_course_ids   = [course_id_map[c] for c in cross_dept_map if c in course_id_map]
+            CourseAssociation  = Course.associated_departments.through
             CourseAssociation.objects.filter(course_id__in=cross_course_ids).delete()
-            assoc_objs = []
-            for code, dept_ids in cross_dept_map.items():
-                cid = course_id_map.get(code)
-                if cid:
-                    for did in dept_ids:
-                        assoc_objs.append(CourseAssociation(course_id=cid, department_id=did))
+            assoc_objs = [
+                CourseAssociation(course_id=course_id_map[code], department_id=did)
+                for code, dept_ids in cross_dept_map.items()
+                if code in course_id_map
+                for did in dept_ids
+            ]
             if assoc_objs:
-                CourseAssociation.objects.bulk_create(assoc_objs, ignore_conflicts=True, batch_size=BATCH_SIZE)
+                CourseAssociation.objects.bulk_create(
+                    assoc_objs, ignore_conflicts=True, batch_size=BATCH_SIZE
+                )
             stats["courses_with_associations"] = len(cross_dept_map)
 
         progress_callback(
@@ -545,7 +538,7 @@ def _run_import(file_bytes, selected_semester, progress_callback):
         enr_df["student_id"] = enr_df["STUDNUM_STR"].map(student_id_map)
         enr_df["course_id"]  = enr_df["COURSECODE"].map(course_id_map)
 
-        # ── OPTIMIZATION: vectorized group_id lookup ───────────────────────────
+        # Vectorized group_id lookup
         enr_df["_cid_tmp"] = enr_df["COURSECODE"].map(course_id_map)
         enr_df["group_id"] = [
             group_id_map.get((cid, grp))
@@ -569,14 +562,16 @@ def _run_import(file_bytes, selected_semester, progress_callback):
                 enr_df[["student_id", "course_id", "group_id"]].astype(int)
             )
 
+            # ── KEY FIX: filter by course_id (232 values) not student_id (22k values)
+            progress_callback(6, TOTAL_STEPS, "Fetching existing enrollments...")
             existing_enr_df = _safe_df(
                 Enrollment.objects.filter(
-                    student_id__in=enr_df["student_id"].tolist(),
-                    course_id__in=enr_df["course_id"].tolist(),
+                    course_id__in=enr_df["course_id"].unique().tolist(),
                 ).values("id", "student_id", "course_id", "group_id", "status"),
                 columns=["id", "student_id", "course_id", "group_id", "status"],
             )
 
+            progress_callback(6, TOTAL_STEPS, "Merging enrollment data...")
             merged_enr = enr_df.merge(
                 existing_enr_df,
                 on=["student_id", "course_id"],
@@ -584,13 +579,13 @@ def _run_import(file_bytes, selected_semester, progress_callback):
                 suffixes=("_new", "_existing"),
             )
 
-            # ── OPTIMIZATION: deduplicate before bulk_create ───────────────────
             is_new      = merged_enr["id"].isna()
             is_existing = ~is_new
 
             g_new_col = "group_id_new"      if "group_id_new"      in merged_enr.columns else "group_id"
             g_ext_col = "group_id_existing" if "group_id_existing" in merged_enr.columns else "group_id"
 
+            # Create new enrollments (chunked with progress)
             new_enr_df = merged_enr[is_new].drop_duplicates(
                 subset=["student_id", "course_id"]
             ).copy()
@@ -616,6 +611,7 @@ def _run_import(file_bytes, selected_semester, progress_callback):
                     )
                 stats["enrollments_created"] += total_enr
 
+            # Update changed enrollments (chunked with progress)
             if is_existing.any():
                 ext_rows     = merged_enr[is_existing].copy()
                 needs_update = (
@@ -624,19 +620,25 @@ def _run_import(file_bytes, selected_semester, progress_callback):
                 )
                 update_df = ext_rows[needs_update]
                 if not update_df.empty:
-                    Enrollment.objects.bulk_update(
-                        [
-                            Enrollment(
-                                id=int(row.id),
-                                group_id=int(getattr(row, g_new_col)),
-                                status="enrolled",
-                            )
-                            for row in update_df.itertuples(index=False)
-                        ],
-                        ["group_id", "status"],
-                        batch_size=BATCH_SIZE,
-                    )
-                    stats["enrollments_updated"] += len(update_df)
+                    update_objs = [
+                        Enrollment(
+                            id=int(row.id),
+                            group_id=int(getattr(row, g_new_col)),
+                            status="enrolled",
+                        )
+                        for row in update_df.itertuples(index=False)
+                    ]
+                    total_upd = len(update_objs)
+                    for i in range(0, total_upd, BATCH_SIZE):
+                        Enrollment.objects.bulk_update(
+                            update_objs[i : i + BATCH_SIZE],
+                            ["group_id", "status"],
+                        )
+                        progress_callback(
+                            6, TOTAL_STEPS,
+                            f"Updating enrollments... {min(i + BATCH_SIZE, total_upd):,}/{total_upd:,}",
+                        )
+                    stats["enrollments_updated"] += total_upd
 
         progress_callback(
             6, TOTAL_STEPS,
@@ -646,7 +648,7 @@ def _run_import(file_bytes, selected_semester, progress_callback):
             stats=dict(stats),
         )
 
-    # ── Step 7: Complete ───────────────────────────────────────────────────────
+    # ── Step 8: Complete ───────────────────────────────────────────────────────
     progress_callback(8, TOTAL_STEPS, "Finalising...", stats=dict(stats))
     return {"stats": dict(stats), "errors": errors}
 
