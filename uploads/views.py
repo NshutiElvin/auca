@@ -156,6 +156,11 @@ def _run_import(file_bytes, selected_semester, progress_callback):
 
     with transaction.atomic():
 
+        # ── Step 2: Clear existing enrollments (full replace) ─────────────────
+        progress_callback(2, TOTAL_STEPS, "Deleting all existing enrollments...")
+        deleted_count, _ = Enrollment.objects.all().delete()
+        stats["enrollments_deleted"] = deleted_count
+
         # ── Step 2: Semesters & Departments ───────────────────────────────────
         progress_callback(2, TOTAL_STEPS, "Processing semesters and departments...")
 
