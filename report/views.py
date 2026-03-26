@@ -138,17 +138,17 @@ def _sb(name, **kwargs):
     return ParagraphStyle(name, parent=base["Normal"], fontName=FONT_BOLD, **kwargs)
 
 
-# ── Logo helper ───────────────────────────────────────────────────────────────
 def _logo_and_header(timetable_name: str, faculty: str) -> list:
     story = []
 
+    # Logo
     if os.path.isfile(LOGO_PATH):
-        logo_img = Image(LOGO_PATH, width=2.5 * cm, height=2.5 * cm)
+        logo_img = Image(LOGO_PATH, width=3 * cm, height=3 * cm)
     else:
         logo_img = Paragraph("", _s("NoLogo"))
 
-    header_data = [
-        [logo_img],
+    # Right-side text (stacked)
+    text_block = [
         [
             Paragraph(
                 "Adventist University of Central Africa",
@@ -156,38 +156,58 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
                     "UniName",
                     fontSize=16,
                     textColor=TEXT_DARK,
-                    alignment=TA_CENTER,
-                    leading=22,
+                    alignment=TA_LEFT,
+                    leading=20,
                 ),
             )
         ],
         [
             Paragraph(
                 "P.O. Box 2461 Kigali, Rwanda  |  www.auca.ac.rw  |  info@auca.ac.rw",
-                _s("UniSub", fontSize=8, textColor=TEXT_DARK, alignment=TA_CENTER),
+                _s(
+                    "UniSub",
+                    fontSize=8,
+                    textColor=TEXT_DARK,
+                    alignment=TA_LEFT,
+                ),
             )
         ],
     ]
 
-    header_tbl = Table(header_data, colWidths=["100%"])
-    header_tbl.setStyle(
+    text_table = Table(text_block, colWidths=["100%"])
+    text_table.setStyle(
         TableStyle(
             [
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (0, 0), 4),
-                ("BOTTOMPADDING", (0, 0), (0, 0), 6),
-                ("TOPPADDING", (0, 1), (-1, -1), 2),
-                ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
             ]
         )
     )
+
+    # Main header row (LOGO | TEXT)
+    header_data = [[logo_img, text_table]]
+
+    header_tbl = Table(header_data, colWidths=["30%", "70%"])
+    header_tbl.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("VALIGN", (1, 0), (1, 0), "TOP"),
+                ("ALIGN", (0, 0), (0, 0), "LEFT"),
+                ("ALIGN", (1, 0), (1, 0), "LEFT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("LEFTPADDING", (1, 0), (1, 0), 10),  # space between logo & text
+            ]
+        )
+    )
+
     story.append(header_tbl)
     story.append(Spacer(1, 0.25 * cm))
 
-    # Faculty name bold centered
+    # Faculty title
     story.append(
         Paragraph(
             faculty,
@@ -196,7 +216,7 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
     )
     story.append(Spacer(1, 0.15 * cm))
 
-    # Blue banner — matches PDF style
+    # Banner
     banner_data = [
         [
             Paragraph(
@@ -211,6 +231,7 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
             )
         ]
     ]
+
     banner_tbl = Table(banner_data, colWidths=["100%"])
     banner_tbl.setStyle(
         TableStyle(
@@ -223,11 +244,11 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
             ]
         )
     )
+
     story.append(banner_tbl)
     story.append(Spacer(1, 0.2 * cm))
 
     return story
-
 
 _WEEK_ORDINALS = {1: "FIRST", 2: "SECOND", 3: "THIRD", 4: "FOURTH", 5: "FIFTH"}
 
