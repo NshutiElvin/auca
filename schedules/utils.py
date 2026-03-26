@@ -1950,39 +1950,46 @@ def verify_room_capacity():
 #     return unaccommodated_students
 
 
-def allocate_shared_rooms(location_id, current_step=None, total_steps=None, progress_callback=None, errors=None):
+def allocate_shared_rooms(
+    location_id,
+    current_step=None,
+    total_steps=None,
+    progress_callback=None,
+):
     """
-    Allocates rooms using strict equal-split (half-half) seating.
+    Allocates rooms using a largest-exam-first, proportional seat split.
 
     RULE:
-        Each room divides its seats EQUALLY across all exams in the slot.
-        Room capacity 70, 2 exams → 35 seats each.
-        Room capacity 70, 4 exams → 17 seats each (+ 2 remainder to largest exams).
+        For each room (largest first), divide available seats proportionally
+        among active exams based on how many students each still has waiting.
+        The largest exam always gets the biggest slice; rounding remainder
+        goes to the largest exam first.
 
-        If an exam has fewer students than its share, its unused seats are
-        redistributed equally to the remaining exams that still have students.
+        If an exam finishes before the room is full, its leftover seats are
+        redistributed proportionally to the remaining exams in the same pass.
 
-        Leftover students (those beyond one room's equal share) go to the
-        next room where the same equal-split rule applies again.
+        Students who cannot fit in any room are returned as unaccommodated.
 
     PRIORITY:
         1. Fill largest rooms first.
-        2. Equal seats per exam per room wherever possible.
-        3. Redistribute unused shares to exams that still have students.
-        4. Overflow to next room — same rule restarts.
+        2. Allocate seats proportionally (largest exam gets the most).
+        3. Rounding remainder always goes to the largest exam.
+        4. Overflow carries to the next room — same rule restarts.
 
     Example:
-        Slot has Exam 1 (40 students) and Exam 2 (55 students).
+        Slot has Exam A (80 students) and Exam B (20 students). Total = 100.
         Room capacity = 70.
 
-        Equal share per exam = floor(70 / 2) = 35
-        Exam 1 takes 35  (has 40, 5 left over → go to next room)
-        Exam 2 takes 35  (has 55, 20 left over → go to next room)
+        Proportions:  A = 70 * 80/100 = 56,  B = 70 * 20/100 = 14
         Room 1 seated = 70 ✅
 
-        Next room gets:  Exam 1 (5 remaining), Exam 2 (20 remaining)
-        Equal share = floor(room_capacity / 2) each, capped at what's left.
+        Next room gets: A (24 remaining), B (6 remaining). Total = 30.
+        Proportions:  A = room * 24/30,  B = room * 6/30  (capped at capacity)
     """
+
+    def _progress(msg):
+        if current_step and total_steps and progress_callback:
+            progress_callback(current_step, total_steps, msg)
 
     # ── 1. Find slots needing allocation ──────────────────────────────────────
     slots_to_allocate = list(
@@ -1996,6 +2003,7 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
 
     if not slots_to_allocate:
         logger.info(f"No students needing room allocation for location {location_id}")
+        _progress("Room allocation complete — nothing to assign.")
         return []
 
     # ── 2. Rooms sorted largest first ─────────────────────────────────────────
@@ -2004,6 +2012,7 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
     )
     if not rooms:
         logger.error(f"No rooms found for location {location_id}")
+        _progress("Room allocation failed — no rooms found.")
         return list(
             StudentExam.objects.filter(
                 room__isnull=True,
@@ -2012,9 +2021,15 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
         )
 
     unaccommodated_students = []
+    total_slots = len(slots_to_allocate)
 
     # ── 3. Process each time slot ─────────────────────────────────────────────
-    for date, start, end in slots_to_allocate:
+    for slot_index, (date, start, end) in enumerate(slots_to_allocate, start=1):
+
+        _progress(
+            f"Allocating rooms for slot {slot_index}/{total_slots}: "
+            f"{date} [{start}–{end}]"
+        )
 
         student_exams_qs = (
             StudentExam.objects.filter(
@@ -2024,7 +2039,7 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
                 exam__start_time=start,
                 exam__end_time=end,
             )
-            .select_related("exam", "student")
+            .select_related("exam", "student", "exam__group__course")
         )
 
         exams_students = defaultdict(list)
@@ -2036,6 +2051,12 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
 
         # Mutable queues — consumed as rooms are filled
         exam_queues = {exam: list(ses) for exam, ses in exams_students.items()}
+
+        total_to_seat = sum(len(q) for q in exam_queues.values())
+        _progress(
+            f"Slot {date} [{start}–{end}]: "
+            f"{len(exam_queues)} exam(s), {total_to_seat} students to seat"
+        )
 
         with transaction.atomic():
 
@@ -2050,7 +2071,7 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
                 ).count()
                 room_available[room.id] = room.capacity - already
 
-            # ── 4. Fill rooms largest-first, equal split per exam ─────────────
+            # ── 4. Fill rooms largest-first, proportional split ────────────────
             for room in rooms:
                 seats_left = room_available[room.id]
                 if seats_left <= 0:
@@ -2061,47 +2082,39 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
                 if not active:
                     break
 
-                n_exams = len(active)
-
-                # ── Equal share calculation ───────────────────────────────────
-                # Base equal share per exam
-                base_share = seats_left // n_exams
-                remainder  = seats_left % n_exams   # leftover seats from floor division
-
-                # Each exam gets base_share seats, capped by how many it has left.
-                # If an exam has fewer students than base_share, the unused seats
-                # are pooled and redistributed equally to exams that still need more.
-                allocation = {}
-                for exam, queue in active.items():
-                    allocation[exam] = min(base_share, len(queue))
-
-                # Redistribute unused seats from small exams
-                # (those that had fewer students than base_share)
-                unused = sum(
-                    base_share - allocation[e]
-                    for e in active
-                    if len(active[e]) < base_share
+                # ── Proportional allocation ───────────────────────────────────
+                #
+                # Sort largest queue first so that rounding remainder
+                # always favours the exam with the most waiting students.
+                sorted_active = sorted(
+                    active.items(), key=lambda x: -len(x[1])
                 )
+                total_waiting = sum(len(q) for _, q in sorted_active)
 
-                # Also add the floor-division remainder seats
-                pool = unused + remainder
+                allocation = {}
+                seats_given = 0
 
-                if pool > 0:
-                    # Give extra seats to exams that can still absorb them
-                    # (those whose queue > base_share), largest queue first
-                    can_absorb = sorted(
-                        [e for e in active if len(active[e]) > base_share],
-                        key=lambda e: -len(active[e]),
-                    )
-                    for exam in can_absorb:
-                        if pool <= 0:
-                            break
-                        extra = min(pool, len(active[exam]) - allocation[exam])
-                        allocation[exam] += extra
-                        pool -= extra
+                for i, (exam, queue) in enumerate(sorted_active):
+                    is_last = (i == len(sorted_active) - 1)
+
+                    if is_last:
+                        # Give all remaining unallocated seats to the last
+                        # (smallest) exam — this avoids any rounding gap.
+                        # It is already capped by what the exam actually needs.
+                        proportional = seats_left - seats_given
+                    else:
+                        proportional = round(
+                            seats_left * len(queue) / total_waiting
+                        )
+
+                    take = min(proportional, len(queue))
+                    allocation[exam] = take
+                    seats_given += take
 
                 # ── Assign students to this room ──────────────────────────────
                 ids_to_update = []
+                room_summary = []
+
                 for exam, take in allocation.items():
                     if take <= 0:
                         continue
@@ -2110,24 +2123,53 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
                     exam_queues[exam] = exam_queues[exam][actual:]
                     ids_to_update.extend(se.id for se in assigned)
 
+                    course_title = (
+                        exam.group.course.title
+                        if exam.group and exam.group.course
+                        else f"Exam {exam.id}"
+                    )
+                    room_summary.append(f"{course_title}: {actual}")
+
                 if ids_to_update:
-                    StudentExam.objects.filter(id__in=ids_to_update).update(room=room)
+                    StudentExam.objects.filter(id__in=ids_to_update).update(
+                        room=room
+                    )
+                    summary_str = " | ".join(room_summary)
                     logger.debug(
                         f"Room '{room.name}' ({room.capacity} seats) | "
                         f"{date} [{start}–{end}] | "
                         f"Seated {len(ids_to_update)} students | "
-                        f"Split: { {str(e.id): v for e, v in allocation.items()} }"
+                        f"{summary_str}"
+                    )
+                    _progress(
+                        f"Room '{room.name}' ({room.capacity} seats) — "
+                        f"{len(ids_to_update)} students seated. "
+                        f"({summary_str})"
                     )
 
             # ── 5. Collect overflow ───────────────────────────────────────────
+            slot_overflow = 0
             for exam, leftover in exam_queues.items():
                 if leftover:
+                    course_title = (
+                        exam.group.course.title
+                        if exam.group and exam.group.course
+                        else f"Exam {exam.id}"
+                    )
                     logger.warning(
-                        f"Exam {exam.id} | {date} [{start}–{end}] | "
+                        f"Exam '{course_title}' ({exam.id}) | "
+                        f"{date} [{start}–{end}] | "
                         f"{len(leftover)} students could not be seated"
                     )
-                    
                     unaccommodated_students.extend(se.student for se in leftover)
+                    slot_overflow += len(leftover)
+
+            if slot_overflow:
+                _progress(
+                    f"WARNING: {slot_overflow} students could not be seated "
+                    f"for slot {date} [{start}–{end}] — "
+                    f"insufficient room capacity."
+                )
 
             # ── 6. Update Exam.room ───────────────────────────────────────────
             for exam in exams_students:
@@ -2136,18 +2178,37 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
                     .values_list("room_id", flat=True)
                     .distinct()
                 )
-                exam.room_id = (
-                    distinct_rooms[0]
-                    if len(distinct_rooms) == 1 and distinct_rooms[0]
-                    else None
+
+                single_room = (
+                    len(distinct_rooms) == 1 and distinct_rooms[0] is not None
                 )
+                exam.room_id = distinct_rooms[0] if single_room else None
                 exam.save(update_fields=["room"])
-                if current_step and total_steps and progress_callback:
-                    progress_callback(
-                        current_step,
-                        total_steps,
-                        f"Exam {exam.id}, assigned: {exam.room.name if exam.room else 'N/A'} on: {exam.date} at {exam.start_time}"
-                    )
+
+                course_title = (
+                    exam.group.course.title
+                    if exam.group and exam.group.course
+                    else f"Exam {exam.id}"
+                )
+                room_label = (
+                    exam.room.name
+                    if single_room and exam.room
+                    else f"{len(distinct_rooms)} rooms"
+                )
+                _progress(
+                    f"Exam '{course_title}' on {exam.date} at {exam.start_time} "
+                    f"→ {room_label}"
+                )
+
+    # ── 7. Final summary ──────────────────────────────────────────────────────
+    if unaccommodated_students:
+        _progress(
+            f"Room allocation done. "
+            f"{len(unaccommodated_students)} students could not be seated — "
+            f"add more rooms or reduce slot sizes."
+        )
+    else:
+        _progress("Room allocation complete — all students seated successfully.")
 
     return unaccommodated_students
 
@@ -2216,7 +2277,7 @@ def generate_exam_schedule(
     location=None, constraints=None,
     progress_callback=None
 ):
-    TOTAL_STEPS = 8
+    TOTAL_STEPS = 7
     stats = defaultdict(int)
     errors = []
     try:
