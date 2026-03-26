@@ -421,10 +421,10 @@ def _build_flat_timetable_table(exams: list) -> Table:
                 tbl_data.append([""] * 5)
                 style_cmds += [
                     ("SPAN", (1, row_idx), (-1, row_idx)),
-                    ("BACKGROUND", (0, row_idx), (-1, row_idx), SLOT_SEP_COL),
-                    ("ROWHEIGHT", (0, row_idx), (-1, row_idx), 5),
-                    ("TOPPADDING", (0, row_idx), (-1, row_idx), 0),
-                    ("BOTTOMPADDING", (0, row_idx), (-1, row_idx), 0),
+                    ("BACKGROUND", (1, row_idx), (-1, row_idx), SLOT_SEP_COL),
+                    ("ROWHEIGHT", (1, row_idx), (-1, row_idx), 5),
+                    ("TOPPADDING", (1, row_idx), (-1, row_idx), 0),
+                    ("BOTTOMPADDING", (1, row_idx), (-1, row_idx), 0),
                 ]
                 row_idx += 1  # separator row — NOT counted in total_data_rows
 
