@@ -17,50 +17,40 @@ from reportlab.pdfbase.pdfmetrics import registerFontFamily
 import os
 import io
 from django.utils import timezone
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 from exams.models import Exam, StudentExam
-from schedules.models import MasterTimetable    
+from schedules.models import MasterTimetable
 import datetime
 
 # ── Font Registration ─────────────────────────────────────────────────────────
-FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+FONT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.jpeg")
 
 
 def _register_century_gothic() -> tuple:
-    alias_reg      = "centurygothic"
-    alias_bold     = "centurygothic_bold"
-    alias_italic   = "centurygothic"
-    alias_bold_ita = "centurygothic"
+    alias_reg  = "centurygothic"
+    alias_bold = "centurygothic_bold"
 
-    reg_path      = os.path.join(FONT_DIR, "centurygothic.ttf")
-    bold_path     = os.path.join(FONT_DIR, "centurygothic_bold.ttf")
-    italic_path   = os.path.join(FONT_DIR, "centurygothic.ttf")
-    bold_ita_path = os.path.join(FONT_DIR, "centurygothic.ttf")
+    reg_path  = os.path.join(FONT_DIR, "centurygothic.ttf")
+    bold_path = os.path.join(FONT_DIR, "centurygothic_bold.ttf")
 
-    for label, path in [("Regular  → centurygothic.ttf",  reg_path),
-                         ("Bold     → centurygothic_bold.ttf", bold_path)]:
+    for label, path in [("Regular", reg_path), ("Bold", bold_path)]:
         if not os.path.isfile(path):
             raise RuntimeError(
-                f"Century Gothic {label} not found.\n"
-                f"Expected location: {path}"
+                f"Century Gothic {label} not found.\nExpected: {path}"
             )
 
     pdfmetrics.registerFont(TTFont(alias_reg,  reg_path))
     pdfmetrics.registerFont(TTFont(alias_bold, bold_path))
-    if os.path.isfile(italic_path):
-        pdfmetrics.registerFont(TTFont(alias_italic, italic_path))
-    if os.path.isfile(bold_ita_path):
-        pdfmetrics.registerFont(TTFont(alias_bold_ita, bold_ita_path))
 
     registered = pdfmetrics.getRegisteredFontNames()
     registerFontFamily(
         alias_reg,
         normal=alias_reg,
         bold=alias_bold,
-        italic=alias_italic   if alias_italic   in registered else alias_reg,
-        boldItalic=alias_bold_ita if alias_bold_ita in registered else alias_bold,
+        italic=alias_reg,
+        boldItalic=alias_bold,
     )
     return alias_reg, alias_bold
 
@@ -69,17 +59,15 @@ FONT_REGULAR, FONT_BOLD = _register_century_gothic()
 
 
 # ── Colours ───────────────────────────────────────────────────────────────────
-PRIMARY      = colors.HexColor("#004594")
-BLUE_HEADER  = colors.HexColor("#004594")
-COL_HEADER   = colors.HexColor("#D9E1F2")
-DAY_ROW      = colors.HexColor("#FFFFFF")
-DATE_ROW     = colors.HexColor("#FFFFFF")
-SPACER_ROW   = colors.HexColor("#B8CCE4")
-BORDER_COL   = colors.HexColor("#004594")
+PRIMARY      = colors.HexColor("#3467A1")   # blue — day-banner rows
+BLUE_HEADER  = colors.HexColor("#2168B9")   # table column header bg
+COL_HEADER   = colors.HexColor("#D9E1F2")   # light blue header cells
+AMBER_SLOT   = colors.HexColor("#E29C55")   # orange-amber time-slot separator
+AMBER_LIGHT  = colors.HexColor("#FFF3E0")   # very light amber tint (slot rows)
+BORDER_COL   = colors.HexColor("#216ABD")
 TEXT_DARK    = colors.HexColor("#000000")
 TEXT_WHITE   = colors.HexColor("#FFFFFF")
-CROSS_TINT   = colors.HexColor("#FFF3E0")   # warm tint for cross-listed rows
-CROSS_BADGE  = "#CC6600"                    # amber colour for badge text
+ROW_ALT      = colors.HexColor("#F5F8FF")   # subtle alternating row tint
 
 
 # ── Numbered-page canvas ──────────────────────────────────────────────────────
@@ -113,21 +101,17 @@ class _NumberedCanvas(rl_canvas.Canvas):
 
 
 # ── Style helpers ─────────────────────────────────────────────────────────────
-def _s(name, **kwargs):
-    """Shortcut to build a ParagraphStyle with Century Gothic."""
+def _s(name, **kw):
     base = getSampleStyleSheet()
-    return ParagraphStyle(name, parent=base["Normal"],
-                          fontName=FONT_REGULAR, **kwargs)
+    return ParagraphStyle(name, parent=base["Normal"], fontName=FONT_REGULAR, **kw)
 
 
-def _sb(name, **kwargs):
-    """Shortcut to build a BOLD Century Gothic ParagraphStyle."""
+def _sb(name, **kw):
     base = getSampleStyleSheet()
-    return ParagraphStyle(name, parent=base["Normal"],
-                          fontName=FONT_BOLD, **kwargs)
+    return ParagraphStyle(name, parent=base["Normal"], fontName=FONT_BOLD, **kw)
 
 
-# ── Logo helper ───────────────────────────────────────────────────────────────
+# ── Logo / header block ───────────────────────────────────────────────────────
 def _logo_and_header(timetable_name: str, faculty: str) -> list:
     story = []
 
@@ -136,14 +120,14 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
     else:
         logo_img = Paragraph("", _s("NoLogo"))
 
-    header_data = [[logo_img],
-                   [Paragraph("Adventist University of Central Africa",
-                               _sb("UniName", fontSize=16, textColor=TEXT_DARK,
-                                   alignment=TA_CENTER, leading=22))],
-                   [Paragraph("P.O. Box 2461 Kigali, Rwanda  |  www.auca.ac.rw  |  info@auca.ac.rw",
-                               _s("UniSub", fontSize=8, textColor=TEXT_DARK,
-                                  alignment=TA_CENTER))]]
-
+    header_data = [
+        [logo_img],
+        [Paragraph("Adventist University of Central Africa",
+                   _sb("UniName", fontSize=16, textColor=TEXT_DARK,
+                       alignment=TA_CENTER, leading=22))],
+        [Paragraph("P.O. Box 2461 Kigali, Rwanda  |  www.auca.ac.rw  |  info@auca.ac.rw",
+                   _s("UniSub", fontSize=8, textColor=TEXT_DARK, alignment=TA_CENTER))],
+    ]
     header_tbl = Table(header_data, colWidths=["100%"])
     header_tbl.setStyle(TableStyle([
         ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
@@ -158,59 +142,68 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
     story.append(header_tbl)
     story.append(Spacer(1, 0.25 * cm))
 
+    # Faculty name
     story.append(Paragraph(
-        timetable_name,
-        _sb("Faculty", fontSize=13, alignment=TA_CENTER, textColor=TEXT_DARK),
+        faculty,
+        _sb("FacTitle", fontSize=14, alignment=TA_CENTER, textColor=TEXT_DARK),
     ))
+    story.append(Spacer(1, 0.15 * cm))
+
+    # Blue banner: timetable label
+    banner_data = [[Paragraph(
+        timetable_name,
+        _sb("Banner", fontSize=12, textColor=TEXT_WHITE, alignment=TA_CENTER),
+    )]]
+    banner_tbl = Table(banner_data, colWidths=["100%"])
+    banner_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), PRIMARY),
+        ("TOPPADDING",    (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+    ]))
+    story.append(banner_tbl)
     story.append(Spacer(1, 0.2 * cm))
-    story.append(Spacer(1, 0.1 * cm))
 
     return story
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  HELPERS
+#  CORE TIMETABLE TABLE  (flat — no department grouping, no duplicates)
 # ═══════════════════════════════════════════════════════════════════════════════
-def _dept_banner(dept_name: str) -> Table:
-    """Blue department separator banner."""
-    data = [[Paragraph(
-        dept_name.upper(),
-        _sb("DeptBanner", fontSize=11, textColor=TEXT_WHITE, alignment=TA_CENTER),
-    )]]
-    tbl = Table(data, colWidths=["100%"])
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, -1), BLUE_HEADER),
-        ("TOPPADDING",    (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
-    ]))
-    return tbl
 
-
-def _build_dept_table(dept_exams: list) -> Table:
+def _build_flat_timetable_table(exams: list) -> Table:
     """
-    Build one exam table for a single department.
-    Grouping: date → time slot → merge same-course rows.
+    Single flat table that mirrors the PDF design:
 
-    Each exam may carry a `_cross_dept_codes` attribute (list of dept codes)
-    set by the caller — when present an amber badge is shown in the course cell
-    and the row gets a warm tint so the duplication is visually intentional.
+    • Column headers row  — light-blue background
+    • DAY banner rows     — PRIMARY blue background, white bold text
+    • Time-slot rows      — white background, exam data
+    • Slot separator rows — thin AMBER_SLOT coloured stripe between time slots
+
+    Cross-departmental courses appear ONCE only (first department alphabetically).
+    Courses at the same date+time are merged into one row (groups concatenated).
     """
-    from collections import OrderedDict
 
-    hdr  = _sb("TH",  fontSize=9, textColor=TEXT_DARK, alignment=TA_LEFT)
-    cell = _s("TD",   fontSize=8, textColor=TEXT_DARK, alignment=TA_LEFT,   leading=11)
-    celc = _s("TDC",  fontSize=8, textColor=TEXT_DARK, alignment=TA_CENTER, leading=11)
+    hdr  = _sb("TH",  fontSize=9,  textColor=TEXT_DARK,  alignment=TA_CENTER)
+    celc = _s("TDC",  fontSize=8,  textColor=TEXT_DARK,  alignment=TA_CENTER, leading=11)
+    cell = _s("TD",   fontSize=8,  textColor=TEXT_DARK,  alignment=TA_LEFT,   leading=11)
+    day_s = _sb("DAY", fontSize=9, textColor=TEXT_WHITE, alignment=TA_LEFT)
 
-    COL_W   = [2.5*cm, 2.0*cm, 6.0*cm, 8.5*cm, 3.5*cm]
-    headers = ["Day&Date", "Time", "Teacher", "Course", "Group"]
+    # Portrait A4 usable width ≈ 18 cm  (21 – 1.5 – 1.5)
+    # Day&Date | Time | Teacher | Course | Group
+    COL_W   = [2.6*cm, 1.8*cm, 5.5*cm, 5.8*cm, 2.3*cm]
+    HEADERS = ["Day&Date", "Time", "Teacher", "Course", "Group"]
 
-    tbl_data   = [[Paragraph(h, hdr) for h in headers]]
+    tbl_data   = [[Paragraph(h, hdr) for h in HEADERS]]
     style_cmds = [
+        # Column header row
         ("BACKGROUND",    (0, 0), (-1, 0), COL_HEADER),
-        ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_COL),
-        ("INNERGRID",     (0, 0), (-1, -1), 0.3, colors.HexColor("#93A8C8")),
+        ("FONTNAME",      (0, 0), (-1, 0), FONT_BOLD),
+        ("ALIGN",         (0, 0), (-1, 0), "CENTER"),
+        # Global
+        ("BOX",           (0, 0), (-1, -1), 0.6, BORDER_COL),
+        ("INNERGRID",     (0, 0), (-1, -1), 0.3, colors.HexColor("#AABFDC")),
         ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING",    (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
@@ -218,99 +211,114 @@ def _build_dept_table(dept_exams: list) -> Table:
         ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
     ]
 
+    # ── Deduplicate cross-dept courses: keep only the primary (FK) department ──
+    # We track seen exam PKs so each physical exam row is added exactly once.
+    seen_exam_ids = set()
+    unique_exams  = []
+    for exam in exams:
+        if exam.id not in seen_exam_ids:
+            seen_exam_ids.add(exam.id)
+            unique_exams.append(exam)
+
+    # ── Group by date ─────────────────────────────────────────────────────────
     by_date = defaultdict(list)
-    for exam in dept_exams:
+    for exam in unique_exams:
         by_date[exam.date or "No Date"].append(exam)
 
-    row_idx = 1
+    row_idx = 1   # 0 = header
 
     for date_key in sorted(by_date.keys(),
-                           key=lambda d: d if d != "No Date" else "9999-99-99"):
+                           key=lambda d: d if d != "No Date" else datetime.date(9999, 12, 31)):
+        # ── DAY BANNER ROW ────────────────────────────────────────────────────
+        try:
+            day_name = date_key.strftime("%A")
+            date_str = f"{date_key.day}-{date_key.strftime('%b')}"
+            day_label = f"{day_name}   {date_str}"
+        except AttributeError:
+            day_label = str(date_key)
+
+        # Span all 5 columns for the day banner
+        tbl_data.append([
+            Paragraph(day_label, day_s),
+            Paragraph("", day_s),
+            Paragraph("", day_s),
+            Paragraph("", day_s),
+            Paragraph("", day_s),
+        ])
+        style_cmds += [
+            ("BACKGROUND",    (0, row_idx), (-1, row_idx), PRIMARY),
+            ("SPAN",          (0, row_idx), (-1, row_idx)),
+            ("ROWHEIGHT",     (0, row_idx), (-1, row_idx), 16),
+            ("TOPPADDING",    (0, row_idx), (-1, row_idx), 4),
+            ("BOTTOMPADDING", (0, row_idx), (-1, row_idx), 4),
+        ]
+        row_idx += 1
+
+        # ── Group exams by time slot ──────────────────────────────────────────
         by_time = defaultdict(list)
         for exam in by_date[date_key]:
             by_time[exam.start_time].append(exam)
 
-        try:
-            day_name = date_key.strftime("%A")
-            date_str = f"{date_key.day}-{date_key.strftime('%b')}"
-        except AttributeError:
-            day_name = str(date_key)
-            date_str = ""
+        sorted_times = sorted(by_time.keys(),
+                              key=lambda t: t if t else datetime.time(23, 59))
 
-        date_shown = False
-
-        for time_key in sorted(by_time.keys(),
-                               key=lambda t: t if t else "99:99"):
+        for t_idx, time_key in enumerate(sorted_times):
             slot_exams = by_time[time_key]
             time_str   = time_key.strftime("%I:%M%p").lstrip("0") if time_key else "–"
 
+            # ── Merge same course (same course id) within this slot ───────────
             course_rows = OrderedDict()
             for exam in slot_exams:
                 course    = exam.group.course if exam.group else None
                 c_id      = course.id if course else 0
-                merge_key = (c_id, time_key)
+                merge_key = c_id
 
                 if merge_key not in course_rows:
-                    cross_codes = getattr(exam, "_cross_dept_codes", [])
                     course_rows[merge_key] = {
                         "course_title": course.title if course else "–",
                         "course_code":  course.code  if course else "–",
-                        "is_cross":     bool(cross_codes),
-                        "cross_codes":  cross_codes,
-                        "groups":       [],
-                        "teachers":     [],
+                        "groups":    [],
+                        "teachers":  [],
                     }
-
                 if exam.group:
-                    course_rows[merge_key]["groups"].append(exam.group.group_name)
+                    g = exam.group.group_name
+                    if g and g not in course_rows[merge_key]["groups"]:
+                        course_rows[merge_key]["groups"].append(g)
                 if exam.group and exam.group.instructor:
-                    instructor_name = exam.group.instructor.get_full_name()
-                    if instructor_name and instructor_name not in course_rows[merge_key]["teachers"]:
-                        course_rows[merge_key]["teachers"].append(instructor_name)
+                    name = exam.group.instructor.get_full_name()
+                    if name and name not in course_rows[merge_key]["teachers"]:
+                        course_rows[merge_key]["teachers"].append(name)
 
+            # ── Emit one table row per merged course ──────────────────────────
             for slot_i, row_data in enumerate(course_rows.values()):
-                teacher_str = ", ".join(sorted(set(row_data["teachers"]))) if row_data["teachers"] else ""
-                groups_str  = ", ".join(sorted(set(row_data["groups"])))  if row_data["groups"]   else "–"
+                teacher_str = ", ".join(row_data["teachers"]) if row_data["teachers"] else "–"
+                groups_str  = ", ".join(sorted(row_data["groups"])) if row_data["groups"] else "–"
+                course_disp = (
+                    f"<b>{row_data['course_code']}</b>  {row_data['course_title']}"
+                )
 
-                if not date_shown and slot_i == 0:
-                    day_cell_text = f"<b>{day_name}</b><br/>{date_str}"
-                    date_shown = True
-                elif slot_i == 0:
-                    day_cell_text = date_str
-                else:
-                    day_cell_text = ""
-
-                # Course cell — add amber badge for cross-listed courses
-                course_display = f"<b>{row_data['course_code']}</b><br/>{row_data['course_title']}"
-                if row_data["is_cross"] and row_data["cross_codes"]:
-                    badge = " | ".join(row_data["cross_codes"])
-                    course_display += (
-                        f'<br/><font size="7" color="{CROSS_BADGE}">'
-                        f' </font>'
-                    )
+                # Show time only on the first sub-row of this slot
+                t_cell = Paragraph(time_str if slot_i == 0 else "", celc)
 
                 tbl_data.append([
-                    Paragraph(day_cell_text,                       celc),
-                    Paragraph(time_str if slot_i == 0 else "",     celc),
-                    Paragraph(teacher_str,                         cell),
-                    Paragraph(course_display,                      cell),
-                    Paragraph(groups_str,                          celc),
+                    Paragraph("", celc),          # Day&Date — blank (day banner above)
+                    t_cell,
+                    Paragraph(teacher_str, cell),
+                    Paragraph(course_disp,  cell),
+                    Paragraph(groups_str,  celc),
                 ])
-
-                # Warm tint for cross-listed rows
-                if row_data["is_cross"]:
-                    style_cmds.append(
-                        ("BACKGROUND", (0, row_idx), (-1, row_idx), CROSS_TINT)
-                    )
-
                 row_idx += 1
 
-        # Separator row after each date block
-        sep_row = [Paragraph("", cell)] * len(headers)
-        tbl_data.append(sep_row)
-        style_cmds.append(("BACKGROUND", (0, row_idx), (-1, row_idx), SPACER_ROW))
-        style_cmds.append(("ROWHEIGHT",  (0, row_idx), (-1, row_idx), 8))
-        row_idx += 1
+            # ── Thin amber separator between time slots ───────────────────────
+            if t_idx < len(sorted_times) - 1:
+                tbl_data.append([Paragraph("", celc)] * 5)
+                style_cmds += [
+                    ("BACKGROUND", (0, row_idx), (-1, row_idx), AMBER_SLOT),
+                    ("ROWHEIGHT",  (0, row_idx), (-1, row_idx), 4),
+                    ("TOPPADDING",    (0, row_idx), (-1, row_idx), 0),
+                    ("BOTTOMPADDING", (0, row_idx), (-1, row_idx), 0),
+                ]
+                row_idx += 1
 
     tbl = Table(tbl_data, colWidths=COL_W, repeatRows=1)
     tbl.setStyle(TableStyle(style_cmds))
@@ -318,36 +326,33 @@ def _build_dept_table(dept_exams: list) -> Table:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  REPORT 1 — EXAM TIMETABLE grouped by DEPARTMENT
+#  REPORT 1 — EXAM TIMETABLE  (flat, portrait A4, matches PDF design)
 # ═══════════════════════════════════════════════════════════════════════════════
-def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
-    """
-    Landscape A4 timetable grouped by Department.
 
-    Cross-departmental courses appear under every department they belong to
-    BUT only if that department actually has exams in THIS timetable (campus).
-    Departments from other campuses are silently omitted.
+def _build_timetable_pdf(timetable, exams) -> bytes:
+    """
+    Portrait A4 timetable — one flat table, no department duplication.
+    Design mirrors the uploaded PDF reference.
     """
     buffer = io.BytesIO()
 
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=landscape(A4),
+        pagesize=A4,
         leftMargin=1.5 * cm, rightMargin=1.5 * cm,
         topMargin=1.5 * cm, bottomMargin=1.8 * cm,
         title=f"Exam Timetable – {timetable.id}",
     )
 
+    # ── Fetch & order exams ───────────────────────────────────────────────────
     exams = list(
         exams.select_related(
             "group",
             "group__course",
             "group__course__department",
+            "group__instructor",
             "room",
-        ).prefetch_related(
-            "group__course__associated_departments"
         ).order_by(
-            "group__course__department__name",
             "date",
             "start_time",
             "group__course__title",
@@ -355,80 +360,48 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
         )
     )
 
-    # ── Thin proxy so we can attach badge data per-dept without mutating ORM ──
-    class _ExamProxy:
-        __slots__ = ("_exam", "_cross_dept_codes")
-
-        def __init__(self, exam, cross_codes):
-            object.__setattr__(self, "_exam", exam)
-            object.__setattr__(self, "_cross_dept_codes", cross_codes)
-
-        def __getattr__(self, name):
-            return getattr(object.__getattribute__(self, "_exam"), name)
-
-    # ── Build set of department IDs that actually have exams in THIS timetable ─
-    # This is the key fix: we only show a cross-listed course under a dept if
-    # that dept genuinely exists in this campus/timetable — silently omitting
-    # departments that belong to other campuses.
-    active_dept_ids = set()
-    for exam in exams:
-        if exam.group and exam.group.course and exam.group.course.department:
-            active_dept_ids.add(exam.group.course.department.id)
-
-    # ── Group exams by every ACTIVE department they belong to ─────────────────
-    by_dept   = defaultdict(list)
-    has_cross = False
-
-    for exam in exams:
-        if not (exam.group and exam.group.course):
-            by_dept["No Department"].append(_ExamProxy(exam, []))
-            continue
-
-        course      = exam.group.course
-        fk_dept     = course.department
-        assoc_depts = (list(course.associated_departments.all())
-                       if course.is_cross_departmental else [])
-        all_depts   = [fk_dept] + assoc_depts if fk_dept else assoc_depts
-
-        # ── Silently drop any department not active in this timetable ─────────
-        all_depts = [d for d in all_depts if d and d.id in active_dept_ids]
-
-        if len(all_depts) > 1:
-            has_cross = True
-
-        for dept in all_depts:
-            other_codes = [d.code for d in all_depts if d and d.id != dept.id]
-            by_dept[dept.name].append(_ExamProxy(exam, other_codes))
-
-    # ── Assemble story ────────────────────────────────────────────────────────
-    faculty_name  = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
-    timetable_lbl = (
-        f"Campus: {timetable.location.name.capitalize()}, "
-        f"Academic year: {timetable.academic_year}, "
-        f"Semester: {timetable.semester.name.capitalize()} "
-        f"({timetable.category.capitalize()})"
+    # ── Build labels ──────────────────────────────────────────────────────────
+    faculty_name = (
+        getattr(timetable, "faculty", None)
+        or "Faculty of Information Technology"
     )
 
-    story = _logo_and_header(timetable_lbl, faculty_name)
+    # Header banner text
+    # e.g. "FINAL MID-SEM EXAM TIMETABLE  2025-2026(2)"
+    category_upper = timetable.category.upper() if timetable.category else "MID-SEM"
+    timetable_banner = (
+        f"FINAL {category_upper} EXAM TIMETABLE\n"
+        f"{timetable.academic_year}"
+        + (f"({timetable.semester.name})" if timetable.semester else "")
+    )
 
-    for dept_name in sorted(by_dept.keys()):
-        dept_exams = by_dept[dept_name]
-        if not dept_exams:
-            continue
+    # Sub-label (campus / location line shown inside header)
+    location_label = (
+        f"Campus: {timetable.location.name.capitalize()}"
+        if timetable.location else ""
+    )
 
-        story.append(Spacer(1, 0.3 * cm))
-        story.append(_dept_banner(dept_name))
-        story.append(Spacer(1, 0.1 * cm))
-        story.append(_build_dept_table(dept_exams))
+    story = _logo_and_header(timetable_banner, faculty_name)
 
-    # ── Legend (only when cross-listed courses exist) ─────────────────────────
-    if has_cross:
-        story.append(Spacer(1, 0.3 * cm))
-        story.append(HRFlowable(
-            width="100%", thickness=0.5, color=colors.grey,
-            spaceBefore=2, spaceAfter=2,
+    if location_label:
+        story.append(Paragraph(
+            location_label,
+            _s("LocLabel", fontSize=9, alignment=TA_CENTER, textColor=colors.grey),
         ))
-        
+        story.append(Spacer(1, 0.15 * cm))
+
+    story.append(_build_flat_timetable_table(exams))
+
+    # ── Footer contact line (matches PDF: email / EO name / phone) ────────────
+    story.append(Spacer(1, 0.3 * cm))
+    story.append(HRFlowable(
+        width="100%", thickness=0.5, color=colors.grey,
+        spaceBefore=2, spaceAfter=4,
+    ))
+    story.append(Paragraph(
+        "Email: it.examoffice@auca.ac.rw  |  EO &amp; AR",
+        _s("FooterContact", fontSize=8, alignment=TA_CENTER, textColor=colors.grey),
+    ))
 
     doc.build(story, canvasmaker=_NumberedCanvas)
     return buffer.getvalue()
@@ -438,15 +411,14 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
 #  REPORT 2 — STUDENT SEATING  (original — untouched)
 # ═══════════════════════════════════════════════════════════════════════════════
 def _build_seating_pdf(
-    timetable: MasterTimetable,
+    timetable,
     student_exams,
     room_id=None,
     date=None,
     start_time=None,
-    end_time=None
+    end_time=None,
 ) -> bytes:
     import datetime as dt
-    from collections import OrderedDict
 
     buffer = io.BytesIO()
 
@@ -475,7 +447,11 @@ def _build_seating_pdf(
     room_header_s = _sb("RoomHeader", fontSize=10, textColor=PRIMARY,     alignment=TA_LEFT, spaceBefore=8, spaceAfter=4)
 
     faculty_name  = getattr(timetable, "faculty", None) or "Faculty of Information Technology"
-    timetable_lbl = f"Campus: {timetable.location.name.capitalize()}, Academic year: {timetable.academic_year}, Semester: {timetable.semester.name.capitalize()}"
+    timetable_lbl = (
+        f"Campus: {timetable.location.name.capitalize()}, "
+        f"Academic year: {timetable.academic_year}, "
+        f"Semester: {timetable.semester.name.capitalize()}"
+    )
 
     report_title = f"STUDENT SEATING REPORT – {timetable_lbl}"
     if room_id:
@@ -506,7 +482,7 @@ def _build_seating_pdf(
         error_msg += " in this timetable."
         story.append(Paragraph(
             error_msg,
-            _s("NoData", fontSize=12, alignment=TA_CENTER, textColor=colors.grey)
+            _s("NoData", fontSize=12, alignment=TA_CENTER, textColor=colors.grey),
         ))
         doc.build(story, canvasmaker=_NumberedCanvas)
         return buffer.getvalue()
@@ -514,13 +490,13 @@ def _build_seating_pdf(
     if room_id and date and start_time and end_time:
         story.append(Paragraph(
             f"<b>SLOT REPORT – {format_time(str(start_time))} to {format_time(str(end_time))}</b>",
-            _sb("Summary", fontSize=10, textColor=PRIMARY, alignment=TA_CENTER)
+            _sb("Summary", fontSize=10, textColor=PRIMARY, alignment=TA_CENTER),
         ))
         story.append(Spacer(1, 0.2 * cm))
     elif room_id and date:
         story.append(Paragraph(
-            f"<b>FULL DAY REPORT</b>",
-            _sb("Summary", fontSize=10, textColor=PRIMARY, alignment=TA_CENTER)
+            "<b>FULL DAY REPORT</b>",
+            _sb("Summary", fontSize=10, textColor=PRIMARY, alignment=TA_CENTER),
         ))
         story.append(Spacer(1, 0.2 * cm))
 
@@ -542,12 +518,12 @@ def _build_seating_pdf(
                     story.append(Spacer(1, 0.4 * cm))
                     story.append(HRFlowable(
                         width="100%", thickness=1, color=PRIMARY,
-                        spaceBefore=2, spaceAfter=2
+                        spaceBefore=2, spaceAfter=2,
                     ))
                 current_room = room_name
                 story.append(Paragraph(
                     f"ROOM: {room_name.upper()}",
-                    room_header_s
+                    room_header_s,
                 ))
                 story.append(Spacer(1, 0.1 * cm))
 
@@ -620,9 +596,7 @@ def _build_seating_pdf(
             ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
         ]
         if room_id:
-            table_style.extend([
-                ("BACKGROUND", (4, 0), (5, 0), colors.HexColor("#E6F0FA")),
-            ])
+            table_style.append(("BACKGROUND", (4, 0), (5, 0), colors.HexColor("#E6F0FA")))
 
         s_tbl = Table(s_data, colWidths=col_widths, repeatRows=1)
         s_tbl.setStyle(TableStyle(table_style))
@@ -633,7 +607,7 @@ def _build_seating_pdf(
         if room_id:
             story.append(Paragraph(
                 "<i>Note: Students must sign in before exam and sign out after completion.</i>",
-                _s("Note", fontSize=7, textColor=colors.grey, alignment=TA_RIGHT)
+                _s("Note", fontSize=7, textColor=colors.grey, alignment=TA_RIGHT),
             ))
             story.append(Spacer(1, 0.2 * cm))
 
@@ -653,7 +627,7 @@ def format_time(time_str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  VIEWS  (original — untouched)
+#  VIEWS
 # ══════════════════════════════════════════════════════════════════════════════
 class TimetablePDFView(generics.GenericAPIView):
     """
@@ -667,7 +641,6 @@ class TimetablePDFView(generics.GenericAPIView):
     permission_classes     = []
 
     def _resolve_timetable(self, request):
-        """Return (timetable, error_response). One of them will be None."""
         timetable_id = request.GET.get("id")
 
         if timetable_id:
@@ -702,7 +675,8 @@ class TimetablePDFView(generics.GenericAPIView):
             return err
 
         exams = Exam.objects.filter(
-            mastertimetableexam__master_timetable_id=timetable.id, master_timetable=timetable
+            mastertimetableexam__master_timetable_id=timetable.id,
+            master_timetable=timetable,
         ).all()
 
         if not exams.exists():
@@ -713,10 +687,10 @@ class TimetablePDFView(generics.GenericAPIView):
             })
 
         report_type = request.GET.get("report", "timetable").lower()
-        room_id = request.GET.get("room_id")
-        date = request.GET.get("date")
-        start_time = request.GET.get("start_time")
-        end_time = request.GET.get("end_time")
+        room_id     = request.GET.get("room_id")
+        date        = request.GET.get("date")
+        start_time  = request.GET.get("start_time")
+        end_time    = request.GET.get("end_time")
 
         if room_id:
             try:
@@ -724,7 +698,7 @@ class TimetablePDFView(generics.GenericAPIView):
             except ValueError:
                 return Response({
                     "success": False,
-                    "message": "Invalid room ID — must be an integer."
+                    "message": "Invalid room ID — must be an integer.",
                 }, status=400)
 
         try:
@@ -745,12 +719,15 @@ class TimetablePDFView(generics.GenericAPIView):
                     room_id=room_id,
                     date=date,
                     start_time=start_time,
-                    end_time=end_time
+                    end_time=end_time,
                 )
 
                 if room_id:
                     if date and start_time and end_time:
-                        filename = f"room{room_id}_slot_{date}_{start_time.replace(':','')}-{end_time.replace(':','')}.pdf"
+                        filename = (
+                            f"room{room_id}_slot_{date}_"
+                            f"{start_time.replace(':','')}-{end_time.replace(':','')}.pdf"
+                        )
                     elif date:
                         filename = f"room{room_id}_fullday_{date}.pdf"
                     else:
@@ -759,7 +736,7 @@ class TimetablePDFView(generics.GenericAPIView):
                     filename = f"seating_report_{timetable.id}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
             else:
                 pdf_bytes = _build_timetable_pdf(timetable, exams)
-                filename = f"exam_timetable_{timetable.id}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
+                filename  = f"exam_timetable_{timetable.id}_{timezone.now().strftime('%Y%m%d_%H%M')}.pdf"
 
         except Exception as exc:
             return Response(
