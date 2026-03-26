@@ -147,7 +147,7 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
     else:
         logo_img = Paragraph("", _s("NoLogo"))
 
-    # Right-side text (stacked)
+    # Text block
     text_block = [
         [
             Paragraph(
@@ -157,7 +157,7 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
                     fontSize=16,
                     textColor=TEXT_DARK,
                     alignment=TA_LEFT,
-                    leading=20,
+                    leading=18,
                 ),
             )
         ],
@@ -174,7 +174,7 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
         ],
     ]
 
-    text_table = Table(text_block, colWidths=["100%"])
+    text_table = Table(text_block)
     text_table.setStyle(
         TableStyle(
             [
@@ -186,20 +186,21 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
         )
     )
 
-    # Main header row (LOGO | TEXT)
-    header_data = [[logo_img, text_table]]
+    # Main header (side-by-side)
+    header_tbl = Table(
+        [[logo_img, text_table]],
+        colWidths=["30%", "70%"],
+    )
 
-    header_tbl = Table(header_data, colWidths=["30%", "70%"])
     header_tbl.setStyle(
         TableStyle(
             [
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("VALIGN", (1, 0), (1, 0), "TOP"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),  
                 ("ALIGN", (0, 0), (0, 0), "LEFT"),
                 ("ALIGN", (1, 0), (1, 0), "LEFT"),
+                ("LEFTPADDING", (1, 0), (1, 0), 12),   
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("LEFTPADDING", (1, 0), (1, 0), 10),  # space between logo & text
             ]
         )
     )
@@ -207,18 +208,12 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
     story.append(header_tbl)
     story.append(Spacer(1, 0.25 * cm))
 
-    # Faculty title
-    story.append(
-        Paragraph(
-            faculty,
-            _sb("FacTitle", fontSize=14, alignment=TA_CENTER, textColor=TEXT_DARK),
-        )
-    )
+    
     story.append(Spacer(1, 0.15 * cm))
 
     # Banner
-    banner_data = [
-        [
+    banner_tbl = Table(
+        [[
             Paragraph(
                 timetable_name,
                 _sb(
@@ -226,21 +221,18 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
                     fontSize=10,
                     textColor=TEXT_WHITE,
                     alignment=TA_CENTER,
-                    leading=15,
                 ),
             )
-        ]
-    ]
+        ]],
+        colWidths=["100%"],
+    )
 
-    banner_tbl = Table(banner_data, colWidths=["100%"])
     banner_tbl.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, -1), PRIMARY),
                 ("TOPPADDING", (0, 0), (-1, -1), 8),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-                ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
             ]
         )
     )
