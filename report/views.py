@@ -189,16 +189,16 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
     # Main header (side-by-side)
     header_tbl = Table(
         [[logo_img, text_table]],
-        colWidths=["30%", "70%"],
+        colWidths=[3.2 * cm, None],
     )
 
     header_tbl.setStyle(
         TableStyle(
             [
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),  
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("ALIGN", (0, 0), (0, 0), "LEFT"),
                 ("ALIGN", (1, 0), (1, 0), "LEFT"),
-                ("LEFTPADDING", (1, 0), (1, 0), 12),   
+                ("LEFTPADDING", (1, 0), (1, 0), 12),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
             ]
@@ -208,22 +208,23 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
     story.append(header_tbl)
     story.append(Spacer(1, 0.25 * cm))
 
-    
     story.append(Spacer(1, 0.15 * cm))
 
     # Banner
     banner_tbl = Table(
-        [[
-            Paragraph(
-                timetable_name,
-                _sb(
-                    "Banner",
-                    fontSize=10,
-                    textColor=TEXT_WHITE,
-                    alignment=TA_CENTER,
-                ),
-            )
-        ]],
+        [
+            [
+                Paragraph(
+                    timetable_name,
+                    _sb(
+                        "Banner",
+                        fontSize=10,
+                        textColor=TEXT_WHITE,
+                        alignment=TA_CENTER,
+                    ),
+                )
+            ]
+        ],
         colWidths=["100%"],
     )
 
@@ -241,6 +242,7 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
     story.append(Spacer(1, 0.2 * cm))
 
     return story
+
 
 _WEEK_ORDINALS = {1: "FIRST", 2: "SECOND", 3: "THIRD", 4: "FOURTH", 5: "FIFTH"}
 
