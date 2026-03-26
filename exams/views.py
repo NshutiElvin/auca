@@ -244,12 +244,14 @@ def _run_generate_timetable(request, progress_callback, serializer):
                         )
 
         return {
-            "success": True,
-            "message": f"{len(exams)} exams scheduled successfully.",
-            "data": serializer.data,
-            "unaccomodated": [],
-            "unscheduled": unScheduled,
-        }
+        "success": True,
+        "message": f"{len(exams)} exams scheduled successfully.",
+        "data": serializer.data,
+        "unaccomodated": [],
+        "unscheduled": unScheduled,
+        "errors": errors,    
+        "stats": stats,    
+    }
 
 
 class ExamViewSet(viewsets.ModelViewSet):
