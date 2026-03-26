@@ -61,9 +61,8 @@ def _progress(step, total_steps, message, stats=None):
 def _done(stats, warnings, unscheduled=None):
     return _sse_event("done", {
         "message": (
-            "Import completed successfully"
-            if not warnings
-            else "Import completed with warnings"
+            "Completed successfully"
+            
         ),
         "stats": stats,
         "warnings": warnings[:20],
