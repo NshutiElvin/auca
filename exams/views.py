@@ -58,19 +58,17 @@ def _progress(step, total_steps, message, stats=None):
     return _sse_event("progress", event)
 
 
-def _done(stats, warnings):
-    return _sse_event(
-        "done",
-        {
-            "message": (
-                "Import completed successfully"
-                if not warnings
-                else "Import completed with warnings"
-            ),
-            "stats": stats,
-            "warnings": warnings[:20],
-        },
-    )
+def _done(stats, warnings, unscheduled=None):
+    return _sse_event("done", {
+        "message": (
+            "Import completed successfully"
+            if not warnings
+            else "Import completed with warnings"
+        ),
+        "stats": stats,
+        "warnings": warnings[:20],
+        "unscheduled": unscheduled or [],
+    })
 
 
 def _error(message):
@@ -576,9 +574,13 @@ class ExamViewSet(viewsets.ModelViewSet):
             async def run_generate_timetable():
                 try:
                     result = await sync_to_async(
-                        _run_generate_timetable, thread_sensitive=False
+                    _run_generate_timetable, thread_sensitive=False
                     )(request, progress_callback, serializer)
-                    queue.put_nowait(_done(result["stats"], result["errors"]))
+                    queue.put_nowait(_done(
+                        stats=result["stats"],
+                        warnings=result.get("errors", []),
+                        unscheduled=result.get("unscheduled", []),
+            ))
                 except Exception as e:
                     queue.put_nowait(_error(f"Import failed: {str(e)}"))
                 finally:
