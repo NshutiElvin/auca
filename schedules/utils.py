@@ -1950,7 +1950,7 @@ def verify_room_capacity():
 #     return unaccommodated_students
 
 
-def allocate_shared_rooms(location_id):
+def allocate_shared_rooms(location_id, current_step=None, total_steps=None, progress_callback=None, errors=None):
     """
     Allocates rooms using strict equal-split (half-half) seating.
 
@@ -2126,6 +2126,7 @@ def allocate_shared_rooms(location_id):
                         f"Exam {exam.id} | {date} [{start}–{end}] | "
                         f"{len(leftover)} students could not be seated"
                     )
+                    
                     unaccommodated_students.extend(se.student for se in leftover)
 
             # ── 6. Update Exam.room ───────────────────────────────────────────
@@ -2141,6 +2142,12 @@ def allocate_shared_rooms(location_id):
                     else None
                 )
                 exam.save(update_fields=["room"])
+                if current_step and total_steps and progress_callback:
+                    progress_callback(
+                        current_step,
+                        total_steps,
+                        f"Exam {exam.id}, assigned: {exam.room.name if exam.room else 'N/A'} on: {exam.date} at {exam.start_time}"
+                    )
 
     return unaccommodated_students
 
@@ -2206,28 +2213,22 @@ def get_total_room_capacity():
 def generate_exam_schedule(
     slots=None, course_ids=None,
     master_timetable: MasterTimetable = None,
-    location=None, constraints=None
+    location=None, constraints=None,
+    progress_callback=None
 ):
-    """
-    Main entry point. Builds a full exam timetable respecting:
-      - Room capacity (per location)
-      - Student conflict constraints (no two exams same slot)
-      - Max exams per day per student
-      - Minimum gap between exam days
-      - SDA no-Saturday rule
-      - Friday evening exclusion
-    """
+    TOTAL_STEPS = 8
+    stats = defaultdict(int)
+    errors = []
     try:
         if not constraints:
             constraints = {}
-
+        progress_callback(1, TOTAL_STEPS, "Processing and Validating Timetable configuration")
         time_constraints    = constraints.get("time_constraints", {})
         student_constraints = constraints.get("student_constraints", {})
         room_constraints    = constraints.get("room_constraints", {})
         group_preferences   = constraints.get("group_preferences", {})
         course_constraints  = constraints.get("course_constraints", {})
 
-        # Time slot definitions (from constraints or hardcoded fallback)
         config_manager= JsonConfigManager()
         config= config_manager.read_config()
         time_config= config.get("time_constraints", {})
@@ -2257,13 +2258,16 @@ def generate_exam_schedule(
             )
 
         # Step 1 — compatibility grouping
+        progress_callback(2, TOTAL_STEPS, "Finding merging compatible courses ...")
         compatible_groups, course_conflicts = find_compatible_courses_within_group(
             course_ids, location_id=location
         )
         if not compatible_groups:
             return [], "No compatible course groups found", [], {}
+        progress_callback(2, TOTAL_STEPS, f"Found {len(compatible_groups)} compatible courses")
 
         # Step 2 — date list
+        progress_callback(3, TOTAL_STEPS, "Listing Dates and Exam Days...")
         slots_by_date = get_slots_by_date(slots) if slots else {}
         dates = sorted([
             d for d in slots_by_date
@@ -2276,8 +2280,10 @@ def generate_exam_schedule(
                     for gid in c["groups"]:
                         reasons[gid] = "No available dates"
             return [], [], compatible_groups, reasons
+        progress_callback(3, TOTAL_STEPS, f"Found {len(dates)} Days")
 
         # Step 3 — pre-fetch data
+        progress_callback(4, TOTAL_STEPS, "Preparing courses and rooms information ...")
         total_seats = Room.objects.filter(
             location_id=location
         ).aggregate(total=Sum("capacity"))["total"] or 0
@@ -2293,6 +2299,7 @@ def generate_exam_schedule(
         }
         groups_dict  = fetch_course_groups(all_group_ids)
         courses_dict = fetch_courses(course_ids)
+        progress_callback(4, TOTAL_STEPS, f"Found {total_seats} Seats and {len(groups_dict)} Groups")
 
         # Step 4 — state tracking
         # student_daily_exams[student_id][date] = set of slot_names
@@ -2304,6 +2311,7 @@ def generate_exam_schedule(
         existing_exams = Exam.objects.filter(date__in=dates,master_timetable=master_timetable ).prefetch_related(
             "studentexam_set"
         )
+        
         for ex in existing_exams:
             for se in ex.studentexam_set.all():
                 student_daily_exams[se.student_id][ex.date].add(ex.slot_name)
@@ -2316,6 +2324,7 @@ def generate_exam_schedule(
             slot_seats_usage[ex.date][ex.slot_name] += ex.studentexam_set.count()
 
         # Step 5 — scheduling loop
+        progress_callback(5, TOTAL_STEPS, f"Generating Timetable ...")
         exams_created      = []
         unscheduled_groups = []
         unscheduled_reasons = {}
@@ -2349,6 +2358,7 @@ def generate_exam_schedule(
                     if scheduled:
                         break
                     weekday = current_date.strftime("%A")
+                    
 
                     # Build allowed slots for this day
                     day_slots = preferred_slots[:]
@@ -2363,6 +2373,7 @@ def generate_exam_schedule(
                                 cfg_names.add(s[1])
                         if cfg_names:
                             day_slots = [s for s in day_slots if s in cfg_names]
+                    progress_callback(5, TOTAL_STEPS, f"Scheduling day: {current_date}, {weekday} slots: {', '.join(day_slots)}")
 
                     if weekday in special_rules:
                         rule = special_rules[weekday]
@@ -2471,6 +2482,7 @@ def generate_exam_schedule(
                                     slot_name=slot_name,
                                     master_timetable=master_timetable
                                 )
+                                progress_callback(5, TOTAL_STEPS, f"Exam: {exam.group.course.title} scheduled {exam.date} at: {exam.start_time}")
                                 if master_timetable:
                                     master_timetable.exams.add(exam)
                                 exams_created.append(exam)
@@ -2493,6 +2505,8 @@ def generate_exam_schedule(
                             f"Scheduled {course_group['student_count']} students "
                             f"on {current_date} [{slot_name}]"
                         )
+                        progress_callback(5, TOTAL_STEPS, f"Scheduled {course_group['student_count']} students "
+                            f"on {current_date} [{slot_name}]")
 
                 if not scheduled:
                     unscheduled_groups.append(course_group)
@@ -2501,17 +2515,24 @@ def generate_exam_schedule(
                             unscheduled_reasons[gid] = "No suitable slot found"
 
             # Step 6 — room allocation
+            progress_callback(6, TOTAL_STEPS, f"Allocating rooms ...")
             try:
-                unaccommodated = allocate_shared_rooms(location)
+                unaccommodated = allocate_shared_rooms(location, current_step=6, total_steps=TOTAL_STEPS, progress_callback= progress_callback, errors=errors)
             except Exception as exc:
                 logger.error(f"Room allocation error: {exc}", exc_info=True)
+                errors.append(f"Room allocation error: {exc}")
                 unaccommodated = []
 
         logger.info(
             f"Done: {len(exams_created)} exams created, "
             f"{len(unscheduled_groups)} groups unscheduled."
         )
-        return exams_created, unaccommodated, unscheduled_groups, unscheduled_reasons
+        progress_callback(7, TOTAL_STEPS,f"{len(exams_created)} exams created, "
+            f"{len(unscheduled_groups)} groups unscheduled.")
+        stats["exam_created"]= len(exams_created)
+        stats["unscheduled"]= (unscheduled_groups)
+        progress_callback(7, TOTAL_STEPS,f"Finalizing ...")
+        return exams_created, unaccommodated, unscheduled_groups, unscheduled_reasons, errors, stats
 
     except Exception as exc:
         logger.error(f"generate_exam_schedule failed: {exc}", exc_info=True)

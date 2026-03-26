@@ -1,16 +1,3 @@
-"""
-ImportEnrollmentsData — Optimized Async SSE Streaming Version v2
-================================================================
-Optimizations:
- 1. make_password called ONCE (was: bcrypt × 30k users)
- 2. course_dept_mapping built with groupby, not iterrows loop
- 3. update_or_create loop replaced with bulk_create + bulk_update for courses
- 4. associated_departments.set() batched via through-model bulk_create
- 5. Enrollment existence check uses course_id__in (232 values) not student_id__in (22k values)
- 6. All heavy sections chunked with live progress callbacks
- 7. DataFrame operations vectorized wherever possible
- 8. Enrollment deduplication before bulk_create
-"""
 
 from departments.models import Department
 from rest_framework import generics, parsers
