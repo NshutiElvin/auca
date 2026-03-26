@@ -155,7 +155,7 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
                 _sb(
                     "UniName",
                     fontSize=16,
-                    textColor=TEXT_DARK,
+                    textColor=PRIMARY,   
                     alignment=TA_LEFT,
                     leading=18,
                 ),
