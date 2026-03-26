@@ -28,6 +28,7 @@ FONT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.jpeg")
 
 
+
 def _register_century_gothic() -> tuple:
     alias_reg      = "centurygothic"
     alias_bold     = "centurygothic_bold"
@@ -81,6 +82,9 @@ CROSS_BADGE  = "#E29C55"                    # kept — imported by attendance_vi
 BORDER_COL   = colors.HexColor("#216ABD")
 TEXT_DARK    = colors.HexColor("#000000")
 TEXT_WHITE   = colors.HexColor("#FFFFFF")
+DAY_SEP_COL  = colors.HexColor("#F4B183")      # Amber/orange for between days
+SLOT_SEP_COL = colors.HexColor("#FFA500")      # Orange for between slots
+SPACER_ROW   = colors.HexColor("#B8CCE4")      # Light primary between days
 
 
 # ── Numbered-page canvas ──────────────────────────────────────────────────────
@@ -183,20 +187,7 @@ def _logo_and_header(timetable_name: str, faculty: str) -> list:
     return story
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  CORE TIMETABLE TABLE — matches PDF exactly
-#
-#  Structure:
-#    Row 0              : column headers (light-blue bg)
-#    Week banner row    : "FIRST WEEK" / "SECOND WEEK" etc. — PRIMARY blue, white text
-#    Day block          : N data rows; Day&Date cell SPANS all N rows
-#    Between days       : thin salmon stripe (~6 px)
-#    Between time slots : thin light-blue stripe (SPACER_ROW, ~5 px)
-#
-#  No department banners. No duplicates.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# Ordinal helpers for week banner labels
+ 
 _WEEK_ORDINALS = {1: "FIRST", 2: "SECOND", 3: "THIRD", 4: "FOURTH", 5: "FIFTH"}
 
 
@@ -206,14 +197,13 @@ def _week_label(week_num: int) -> str:
 
 
 def _build_flat_timetable_table(exams: list) -> Table:
-
     hdr_s  = _sb("TH",   fontSize=9, textColor=TEXT_DARK,  alignment=TA_CENTER)
     day_s  = _sb("DAY",  fontSize=8, textColor=TEXT_DARK,  alignment=TA_CENTER, leading=12)
     celc   = _s("TDC",   fontSize=8, textColor=TEXT_DARK,  alignment=TA_CENTER, leading=11)
     cell   = _s("TD",    fontSize=8, textColor=TEXT_DARK,  alignment=TA_LEFT,   leading=11)
     week_s = _sb("WEEK", fontSize=9, textColor=TEXT_WHITE, alignment=TA_CENTER)
 
-    # Portrait A4 usable ≈ 18 cm
+    # Column widths
     COL_W   = [2.5*cm, 1.8*cm, 5.4*cm, 6.0*cm, 2.3*cm]
     HEADERS = ["Day&Date", "Time", "Teacher", "Course", "Group"]
 
@@ -231,7 +221,7 @@ def _build_flat_timetable_table(exams: list) -> Table:
         ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
     ]
 
-    # ── Deduplicate: each exam appears exactly once (no cross-dept repeats) ───
+    # Deduplicate exams
     seen_ids     = set()
     unique_exams = []
     for exam in exams:
@@ -239,7 +229,7 @@ def _build_flat_timetable_table(exams: list) -> Table:
             seen_ids.add(exam.id)
             unique_exams.append(exam)
 
-    # ── Group by date ─────────────────────────────────────────────────────────
+    # Group by date
     by_date = defaultdict(list)
     for exam in unique_exams:
         by_date[exam.date or "No Date"].append(exam)
@@ -251,34 +241,32 @@ def _build_flat_timetable_table(exams: list) -> Table:
 
     row_idx      = 1      # row 0 = header
     first_day    = True
-    current_week = None   # ISO week number of the date currently being rendered
-    week_counter = 0      # human-readable week counter (1-based)
+    current_week = None
+    week_counter = 0
 
     for date_key in sorted_dates:
-
-        # ── Week banner — inserted when the ISO week changes ──────────────────
+        # Week banner logic
         if isinstance(date_key, datetime.date):
-            iso_week = date_key.isocalendar()[1]   # ISO week number
+            iso_week = date_key.isocalendar()[1]
         else:
             iso_week = None
 
         if iso_week is not None and iso_week != current_week:
-            # Increment human week counter
             week_counter += 1
 
-            # Salmon separator before the week banner (except at very start)
+            # Amber/orange separator before week banner
             if not first_day:
                 tbl_data.append([Paragraph("", celc)] * 5)
                 style_cmds += [
                     ("SPAN",          (0, row_idx), (-1, row_idx)),
-                    ("BACKGROUND",    (0, row_idx), (-1, row_idx), DAY_SEP_COL),
+                    ("BACKGROUND",    (0, row_idx), (-1, row_idx), DAY_SEP_COL),  # Amber/orange
                     ("ROWHEIGHT",     (0, row_idx), (-1, row_idx), 6),
                     ("TOPPADDING",    (0, row_idx), (-1, row_idx), 0),
                     ("BOTTOMPADDING", (0, row_idx), (-1, row_idx), 0),
                 ]
                 row_idx += 1
 
-            # Week banner row — PRIMARY blue, white bold text, full span
+            # Week banner row
             tbl_data.append([
                 Paragraph(_week_label(week_counter), week_s),
                 Paragraph("", week_s),
@@ -295,14 +283,14 @@ def _build_flat_timetable_table(exams: list) -> Table:
             ]
             row_idx     += 1
             current_week = iso_week
-            first_day    = True   # reset so no duplicate salmon after week banner
+            first_day    = True
 
-        # ── Salmon separator between days (within same week) ──────────────────
+        # Light primary separator between days (within same week)
         if not first_day:
             tbl_data.append([Paragraph("", celc)] * 5)
             style_cmds += [
                 ("SPAN",          (0, row_idx), (-1, row_idx)),
-                ("BACKGROUND",    (0, row_idx), (-1, row_idx), DAY_SEP_COL),
+                ("BACKGROUND",    (0, row_idx), (-1, row_idx), SPACER_ROW),  # Light primary
                 ("ROWHEIGHT",     (0, row_idx), (-1, row_idx), 6),
                 ("TOPPADDING",    (0, row_idx), (-1, row_idx), 0),
                 ("BOTTOMPADDING", (0, row_idx), (-1, row_idx), 0),
@@ -310,7 +298,7 @@ def _build_flat_timetable_table(exams: list) -> Table:
             row_idx += 1
         first_day = False
 
-        # ── Group by time, merge same-course rows per slot ────────────────────
+        # Group by time for this date
         by_time = defaultdict(list)
         for exam in by_date[date_key]:
             by_time[exam.start_time].append(exam)
@@ -320,24 +308,34 @@ def _build_flat_timetable_table(exams: list) -> Table:
             key=lambda t: t if t else datetime.time(23, 59),
         )
 
-        # Build per-slot data rows, tagging each with its slot index
-        # so we can insert light-blue separators between slots
-        slot_blocks = []   # list of lists-of-row-dicts, one inner list per slot
-        for time_key in sorted_times:
-            # ── original time format, unchanged ──────────────────────────────
+        # Prepare data for this day with row spanning
+        day_cell_text = ""
+        try:
+            day_name = date_key.strftime("%A")
+            date_str = f"{date_key.day}-{date_key.strftime('%b')}"
+            day_cell_text = f"<b>{day_name}</b><br/>{date_str}"
+        except AttributeError:
+            day_cell_text = str(date_key)
+
+        day_span_start = row_idx
+        day_data_rows = []  # Store all rows for this day
+        
+        # Process each time slot
+        for slot_idx, time_key in enumerate(sorted_times):
             time_str = (
                 time_key.strftime("%I:%M%p").lstrip("0") if time_key else "–"
             )
 
+            # Group by course within this time slot
             course_map = OrderedDict()
             for exam in by_time[time_key]:
                 course = exam.group.course if exam.group else None
-                c_id   = course.id if course else 0
+                c_id = course.id if course else 0
                 if c_id not in course_map:
                     course_map[c_id] = {
                         "course_title": course.title if course else "–",
-                        "course_code":  course.code  if course else "–",
-                        "groups":   [],
+                        "course_code": course.code if course else "–",
+                        "groups": [],
                         "teachers": [],
                     }
                 if exam.group:
@@ -349,67 +347,55 @@ def _build_flat_timetable_table(exams: list) -> Table:
                     if name and name not in course_map[c_id]["teachers"]:
                         course_map[c_id]["teachers"].append(name)
 
+            # Create rows for this time slot
             slot_rows = []
-            for slot_i, row in enumerate(course_map.values()):
-                teacher_str = ", ".join(row["teachers"]) if row["teachers"] else ""
-                groups_str  = ", ".join(sorted(row["groups"])) if row["groups"] else "–"
-                course_disp = f"<b>{row['course_code']}</b> {row['course_title']}"
+            for course_data in course_map.values():
+                teacher_str = ", ".join(course_data["teachers"]) if course_data["teachers"] else ""
+                groups_str = ", ".join(sorted(course_data["groups"])) if course_data["groups"] else "–"
+                course_disp = f"<b>{course_data['course_code']}</b> {course_data['course_title']}"
                 slot_rows.append({
-                    "time":    time_str if slot_i == 0 else "",
+                    "time": time_str,
                     "teacher": teacher_str,
-                    "course":  course_disp,
-                    "groups":  groups_str,
+                    "course": course_disp,
+                    "groups": groups_str,
                 })
-            slot_blocks.append(slot_rows)
+            
+            # Add rows to day_data_rows with row spanning info
+            day_data_rows.append({
+                "slot_index": slot_idx,
+                "time": time_str,
+                "rows": slot_rows,
+                "row_count": len(slot_rows)
+            })
 
-        # ── Day&Date label ────────────────────────────────────────────────────
-        try:
-            day_name      = date_key.strftime("%A")
-            date_str      = f"{date_key.day}-{date_key.strftime('%b')}"
-            day_cell_text = f"<b>{day_name}</b><br/>{date_str}"
-        except AttributeError:
-            day_cell_text = str(date_key)
-
-        day_span_start = row_idx
-        first_data_row = True   # for day cell text placement
-        total_data_rows = 0     # count only real data rows for the SPAN
-
-        # ── Emit slot blocks with light-blue separators between them ──────────
-        for s_idx, slot_rows in enumerate(slot_blocks):
-
-            # Light-blue slot separator between slots (not before the first)
-            if s_idx > 0:
+        # Build the table rows for this day with row spanning
+        for slot_data in day_data_rows:
+            # Add orange separator between slots (except before first slot)
+            if slot_data["slot_index"] > 0:
                 tbl_data.append([Paragraph("", celc)] * 5)
                 style_cmds += [
-                    ("BACKGROUND",    (0, row_idx), (-1, row_idx), SPACER_ROW),
+                    ("BACKGROUND",    (0, row_idx), (-1, row_idx), SLOT_SEP_COL),  # Orange separator
                     ("ROWHEIGHT",     (0, row_idx), (-1, row_idx), 5),
                     ("TOPPADDING",    (0, row_idx), (-1, row_idx), 0),
                     ("BOTTOMPADDING", (0, row_idx), (-1, row_idx), 0),
                 ]
-                # Slot separator must NOT be part of the day-cell SPAN
-                # so we do NOT increment total_data_rows here
                 row_idx += 1
-
-            for dr in slot_rows:
+            
+            # Add the actual data rows for this slot
+            for row_data in slot_data["rows"]:
                 tbl_data.append([
-                    Paragraph(day_cell_text if first_data_row else "", day_s),
-                    Paragraph(dr["time"],    celc),
-                    Paragraph(dr["teacher"], cell),
-                    Paragraph(dr["course"],  cell),
-                    Paragraph(dr["groups"],  celc),
+                    Paragraph(day_cell_text if len(day_data_rows) == 1 and row_data == slot_data["rows"][0] else "", day_s),
+                    Paragraph(row_data["time"], celc),
+                    Paragraph(row_data["teacher"], cell),
+                    Paragraph(row_data["course"], cell),
+                    Paragraph(row_data["groups"], celc),
                 ])
-                first_data_row   = False
-                total_data_rows += 1
-                row_idx         += 1
-
-        # ROWSPAN the Day&Date cell across all real data rows of this day
-        # (slot separator rows are excluded — they fall inside the span visually
-        #  because ReportLab span covers rows between start and end inclusive,
-        #  so we span from day_span_start to the last data row)
-        span_end = row_idx - 1
-        if span_end > day_span_start:
+                row_idx += 1
+        
+        # Apply row span for the day column across all rows of this day
+        if row_idx - 1 > day_span_start:
             style_cmds.append(
-                ("SPAN", (0, day_span_start), (0, span_end))
+                ("SPAN", (0, day_span_start), (0, row_idx - 1))
             )
 
     tbl = Table(tbl_data, colWidths=COL_W, repeatRows=1)
