@@ -447,10 +447,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
         )
     )
 
-    faculty_name = (
-        getattr(timetable, "faculty", None)
-        or "Faculty of Information Technology"
-    )
+    
 
     # ── Title label: EXACTLY as original code — not changed ──────────────────
     timetable_lbl = (
@@ -460,7 +457,7 @@ def _build_timetable_pdf(timetable: MasterTimetable, exams) -> bytes:
         f"({timetable.category.capitalize()})"
     )
 
-    story = _logo_and_header(timetable_lbl, faculty_name)
+    story = _logo_and_header(timetable_lbl, "")
     story.append(_build_flat_timetable_table(exams))
 
     doc.build(story, canvasmaker=_NumberedCanvas)
