@@ -2382,8 +2382,7 @@ def generate_exam_schedule(
                                 s for s in preferred_slots
                                 if s in rule["allowed_slots"]
                             ]
-                        elif rule.get("no_evening", False):
-                            day_slots = [s for s in preferred_slots if s != "Evening"]
+                         
 
                     for slot_name in day_slots:
                         if scheduled:
@@ -2430,8 +2429,6 @@ def generate_exam_schedule(
                             for gid in cd["groups"]:
                                 g_obj = groups_dict[gid]
                                 s_ids = enrollments_by_group.get(gid, set())
-                                # set start and end_time based on the what saved in database for this group and slot, then fallback to defined_time_slots, then fallback to SLOT_MAP, then default 8-11am
-                                # Resolve slot times
                                 group_start_time= g_obj.start_time
                                 group_end_time= g_obj.end_time
                                 st_time = en_time = None
