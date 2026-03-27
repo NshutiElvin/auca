@@ -2377,15 +2377,16 @@ def generate_exam_schedule(
                             day_slots = [s for s in day_slots if s in cfg_names]
                     progress_callback(5, TOTAL_STEPS, f"Scheduling day: {current_date}, {weekday} slots: {', '.join(day_slots)}")
 
+                    # ✅ FIX: filter from `day_slots`, not `preferred_slots`
                     if weekday in special_rules:
                         rule = special_rules[weekday]
                         if "allowed_slots" in rule:
                             day_slots = [
-                                s for s in preferred_slots
+                                s for s in day_slots          # ← was `preferred_slots`
                                 if s in rule["allowed_slots"]
                             ]
                         elif rule.get("no_evening", False):
-                            day_slots = [s for s in preferred_slots if s != "Evening"]
+                            day_slots = [s for s in day_slots if s != "Evening"]  # ← was `preferred_slots`
 
                     for slot_name in day_slots:
                         if scheduled:
