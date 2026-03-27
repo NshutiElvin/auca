@@ -275,7 +275,6 @@ def get_occupied_seats_by_time_slot(date, start_time):
 def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot):
     all_suggestions = []
     all_conflicts = defaultdict(list)
-    suggested_slot_conflicts = defaultdict(list)
     possible_slots = []
 
     day_of_week = date.weekday()
@@ -283,14 +282,14 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
     # Early exits for optimization
     if day_of_week == 5:  # Saturday
         all_conflicts["Saturday"].append("No exams can be scheduled on Saturday")
-        return new_group, None, all_suggestions, suggested_slot_conflicts, all_conflicts
+        return new_group, None, all_suggestions, all_conflicts
 
     if day_of_week == 4 and suggested_slot == "Evening":  # Friday evening
         suggested_slot = "Morning"
 
     # Get date range once
     date_range = Exam.objects.aggregate(
-        min_date=Min("date"),
+        min_date=Min("date"), 
         max_date=Max("date")
     )
     min_exam_date = date_range["min_date"]
@@ -298,17 +297,17 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
 
     # Calculate all dates to check upfront
     dates_to_check = []
-
+    
     # Current date
     dates_to_check.append(date)
-
+    
     # Past dates (up to min_exam_date)
     current_date = date - timedelta(days=1)
     while current_date >= min_exam_date:
         if current_date.weekday() != 5:  # Skip Saturday
             dates_to_check.append(current_date)
         current_date -= timedelta(days=1)
-
+    
     # Future dates (up to 14 days or max_exam_date)
     for days_after in range(1, 15):
         future_date = date + timedelta(days=days_after)
@@ -338,11 +337,11 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
     # Pre-process exam data into efficient lookup structures
     exams_by_date_slot = defaultdict(list)
     students_by_date_slot = defaultdict(set)
-
+    
     for exam in all_exams:
         key = (exam.date, exam.slot_name)
         exams_by_date_slot[key].append(exam)
-
+        
         # Get all students for this exam
         exam_students = {se.student_id for se in exam.studentexam_set.all()}
         students_by_date_slot[key].update(exam_students)
@@ -358,13 +357,15 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
         """Optimized conflict checking using pre-fetched data"""
         key = (check_date, slot)
         slot_students = students_by_date_slot.get(key, set())
-
+        
         conflicts = []
         conflicting_students = enrolled_students_new_group.intersection(slot_students)
-
+        
         if conflicting_students:
+            # Only get exam details for conflicting students
             slot_exams = exams_by_date_slot.get(key, [])
             for student_id in conflicting_students:
+                # Find the exam this student is enrolled in
                 for exam in slot_exams:
                     if exam.group:
                         exam_student_ids = {se.student_id for se in exam.studentexam_set.all()}
@@ -381,17 +382,14 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
         return conflicts, len(slot_students)
 
     def evaluate_slot_optimized(check_date, slot, is_suggested=False):
-        """Optimized slot evaluation with separated conflict tracking"""
+        """Optimized slot evaluation"""
         conflicts, student_count = check_slot_conflicts_optimized(check_date, slot)
         total_students = len(enrolled_students_new_group) + student_count
 
         suggestion_type = "Suggested slot" if is_suggested else "Slot"
-
+        
         if conflicts:
-            if is_suggested:
-                suggested_slot_conflicts[check_date].extend(conflicts)
-            else:
-                all_conflicts[check_date].extend(conflicts)
+            all_conflicts[check_date].extend(conflicts)
             all_suggestions.append({
                 "suggested": False,
                 "date": check_date,
@@ -399,13 +397,10 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
                 "reason": f"{suggestion_type} {check_date} {slot} is not available (conflicts)",
             })
             return False
-
+            
         elif not check_rooms_availability_for_slots(total_students):
             room_msg = f"{check_date} {slot} slot lacks room capacity"
-            if is_suggested:
-                suggested_slot_conflicts[check_date].append(room_msg)
-            else:
-                all_conflicts[check_date].append(room_msg)
+            all_conflicts[check_date].append(room_msg)
             all_suggestions.append({
                 "suggested": False,
                 "date": check_date,
@@ -413,7 +408,7 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
                 "reason": f"{suggestion_type} {check_date} {slot} is not available (insufficient rooms)",
             })
             return False
-
+            
         else:
             all_suggestions.append({
                 "suggested": True,
@@ -424,32 +419,36 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
             possible_slots.append({"date": check_date, "slot": slot})
             return True
 
-    # Always run full scan across all dates and slots
+    # Process dates in priority order for early termination
+    # Priority: 1) Current date with suggested slot, 2) Current date other slots, 3) Other dates
+    
     # Check suggested slot on current date first
-    evaluate_slot_optimized(date, suggested_slot, is_suggested=True)
+    if evaluate_slot_optimized(date, suggested_slot, is_suggested=True):
+        # If suggested slot is available, we can potentially return early
+        # depending on requirements
+        pass
 
-    # Check remaining slots on current date
+    # Check other slots on the same day
     available_slots = get_available_slots_for_date(date)
     for slot in available_slots:
         if slot != suggested_slot:
             evaluate_slot_optimized(date, slot)
 
-    # Check all other dates
-    for check_date in dates_to_check[1:]:
+    # Check other dates only if needed (based on business requirements)
+    for check_date in dates_to_check[1:]:  # Skip current date (already checked)
         available_slots = get_available_slots_for_date(check_date)
         for slot in available_slots:
             evaluate_slot_optimized(check_date, slot)
 
-    # Find best suggestion with priority:
-    # 1) Same date + suggested slot
-    # 2) Same date + any available slot
-    # 3) Earliest future/past date + first available slot
+    # Optimized best suggestion finding
     best_suggestion = None
     if possible_slots:
+        # Group by date for faster lookup
         slots_by_date = defaultdict(list)
         for slot_info in possible_slots:
             slots_by_date[slot_info["date"]].append(slot_info)
-
+        
+        # Prioritize: same date -> suggested slot -> earliest date
         if date in slots_by_date:
             same_date_slots = slots_by_date[date]
             # Look for suggested slot first
@@ -457,15 +456,14 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
                 if slot_info["slot"] == suggested_slot:
                     best_suggestion = slot_info
                     break
-            # Fall back to first available slot on same date
             if not best_suggestion:
                 best_suggestion = same_date_slots[0]
         else:
-            # Find earliest available date
+            # Find earliest date
             earliest_date = min(slots_by_date.keys())
             best_suggestion = slots_by_date[earliest_date][0]
 
-    return new_group, best_suggestion, all_suggestions, suggested_slot_conflicts, all_conflicts
+    return new_group, best_suggestion, all_suggestions, all_conflicts
 
  
 
@@ -2377,16 +2375,15 @@ def generate_exam_schedule(
                             day_slots = [s for s in day_slots if s in cfg_names]
                     progress_callback(5, TOTAL_STEPS, f"Scheduling day: {current_date}, {weekday} slots: {', '.join(day_slots)}")
 
-                    # ✅ FIX: filter from `day_slots`, not `preferred_slots`
                     if weekday in special_rules:
                         rule = special_rules[weekday]
                         if "allowed_slots" in rule:
                             day_slots = [
-                                s for s in day_slots          # ← was `preferred_slots`
+                                s for s in preferred_slots
                                 if s in rule["allowed_slots"]
                             ]
                         elif rule.get("no_evening", False):
-                            day_slots = [s for s in day_slots if s != "Evening"]  # ← was `preferred_slots`
+                            day_slots = [s for s in preferred_slots if s != "Evening"]
 
                     for slot_name in day_slots:
                         if scheduled:
@@ -2433,14 +2430,24 @@ def generate_exam_schedule(
                             for gid in cd["groups"]:
                                 g_obj = groups_dict[gid]
                                 s_ids = enrollments_by_group.get(gid, set())
-                                # set start and end_time based on the what saved in database for this group and slot, then fallback to defined_time_slots, then fallback to SLOT_MAP, then default 8-11am
-                                # Resolve slot times
                                 group_start_time= g_obj.start_time
                                 group_end_time= g_obj.end_time
                                 st_time = en_time = None
+                                group_start_time = g_obj.start_time
+                                group_end_time   = g_obj.end_time
+                                st_time = en_time = None
+
                                 if group_start_time and group_end_time:
-                                    st_time = group_start_time
-                                    en_time = group_end_time
+                                    slot_def = next(
+                                        (s for s in defined_time_slots if s["name"] == slot_name), None
+                                    )
+                                    if slot_def:
+                                        slot_start = time(*map(int, slot_def["start_time"].split(":")))
+                                        slot_end   = time(*map(int, slot_def["end_time"].split(":")))
+                                        if group_start_time >= slot_start and group_end_time <= slot_end:
+                                            st_time = group_start_time
+                                            en_time = group_end_time
+                                         
                                 else:
                                     if slots and current_date in slots_by_date:
                                         for s in slots_by_date[current_date]:
