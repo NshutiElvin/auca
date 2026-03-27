@@ -2634,7 +2634,7 @@ def generate_exam_schedule(
             # Step 6 — room allocation
             progress_callback(6, TOTAL_STEPS, f"Allocating rooms ...")
             try:
-                unaccommodated = allocate_shared_rooms(location, current_step=6, total_steps=TOTAL_STEPS, progress_callback= progress_callback, errors=errors)
+                unaccommodated = allocate_shared_rooms(location, current_step=6, total_steps=TOTAL_STEPS, progress_callback= progress_callback)
             except Exception as exc:
                 logger.error(f"Room allocation error: {exc}", exc_info=True)
                 errors.append(f"Room allocation error: {exc}")
