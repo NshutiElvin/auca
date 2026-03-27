@@ -84,7 +84,7 @@ def _error(message):
 
 
 # ── Sync Import Logic ──────────────────────────────────────────────────────────
-def _run_import(file_bytes, selected_semester, progress_callback):
+def _run_import(file_name,file_bytes, selected_semester, progress_callback):
     TOTAL_STEPS = 8
     stats = defaultdict(int)
     errors = []
@@ -93,7 +93,11 @@ def _run_import(file_bytes, selected_semester, progress_callback):
     progress_callback(1, TOTAL_STEPS, "Reading and validating file...")
 
     try:
-        df = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
+       
+        if file_name.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+        else:
+            df = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
     except Exception as exc:
         raise ValueError(f"Could not read file: {exc}")
 
@@ -652,6 +656,7 @@ class ImportEnrollmentsData(generics.GenericAPIView):
     def post(self, request, *args, **kwargs):
         file = request.FILES.get("myFile")
         selected_semester = request.data.get("selectedSemester")
+        file_name = getattr(file, "name", "").lower()
 
         if not file:
             return Response({"error": "No file provided."}, status=400)
