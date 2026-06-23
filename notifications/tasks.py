@@ -2,7 +2,7 @@ from celery import shared_task
 from django.contrib.auth import get_user_model
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.core.mail import send_mail
+from notifications.utils import send_mail
 @shared_task
 def send_notification( message,user_id=None, broadcast=False):
     user = get_user_model().objects.get(id=user_id)

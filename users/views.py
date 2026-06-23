@@ -2,7 +2,6 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework_simplejwt.views import TokenObtainPairView
-from django.contrib.auth import get_user_model
 from .serializers import (
     UserSerializer,
     CustomTokenObtainPairSerializer,
@@ -21,7 +20,8 @@ from rest_framework_simplejwt.token_blacklist.models import (
 from rest_framework import filters
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import User, UserOtp
-from django.core.mail import send_mail
+from notifications.utils import send_mail
+
 import pprint
 
 

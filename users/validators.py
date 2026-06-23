@@ -137,3 +137,5 @@ def get_password_strength(password, user=None):
     """
     validator = PasswordStrengthValidator()
     return validator.get_strength_score(password, user)
+
+
