@@ -1,4 +1,4 @@
-from rest_framework import viewsets, status, permissions
+from rest_framework import viewsets, status, permissions, generics
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -93,8 +93,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         try:
             serializer.is_valid(raise_exception=True)
             user = serializer.user
-        except Exception as e:
-            print(f"Error during token obtain: {str(e)}")
+        except Exception:
             return Response(
                 {"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED
             )
@@ -118,14 +117,16 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 
         return response
 
-    @action(
-        detail=False,
-        methods=["post"],
-        permission_classes=[permissions.IsAuthenticated],
-        url_path="otp/send",
-    )
-    def send_otp(self, request):
-        """Generate and email a fresh OTP to the authenticated user."""
+
+class SendOtpView(generics.GenericAPIView):
+    """
+    POST /api/users/token/otp/send/
+    Generates a fresh OTP and emails it to the authenticated user.
+    Called right after login, before the OTP verification step.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
         user = request.user
         otp_obj, _ = UserOtp.objects.get_or_create(user=user)
         otp_code = otp_obj.generate_otp()
@@ -149,9 +150,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        return Response(
-            {"success": True, "message": "OTP sent to your email address."}
-        )
+        return Response({"success": True, "message": "OTP sent to your email address."})
 
 
 class UserViewSet(viewsets.ModelViewSet):
