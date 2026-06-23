@@ -93,7 +93,8 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         try:
             serializer.is_valid(raise_exception=True)
             user = serializer.user
-        except Exception:
+        except Exception as e:
+            print(f"Error during token obtain: {str(e)}")
             return Response(
                 {"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED
             )
