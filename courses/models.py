@@ -19,9 +19,6 @@ class Course(TimeStampedModel):
     title = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     credits = models.PositiveIntegerField(default=3)
-
-    
-
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='courses')
     semester = models.ForeignKey(Semester, on_delete=models.CASCADE, related_name='courses')
     is_cross_departmental = models.BooleanField(default=False)

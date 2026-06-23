@@ -22,7 +22,6 @@ class Enrollment(TimeStampedModel):
         Student,
         on_delete=models.CASCADE,
         related_name='enrollments',
-        # limit_choices_to={'role': 'student'}  # Uncomment if role filtering is needed
     )
     course = models.ForeignKey(
         Course,

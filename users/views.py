@@ -20,7 +20,8 @@ from rest_framework_simplejwt.token_blacklist.models import (
 )
 from rest_framework import filters
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import User
+from .models import User, UserOtp
+from django.core.mail import send_mail
 import pprint
 
 
@@ -44,9 +45,7 @@ class CustomTokenRefreshView(TokenRefreshView):
                 if user_id:
                     user = User.objects.get(id=user_id)
 
-                    # Check if user is active - CORRECTED: use 'user' not 'self.user'
                     if not user.is_active:
-                        # Clear the invalid refresh token cookie
                         response.delete_cookie("refresh_token")
                         return Response(
                             {
@@ -56,7 +55,6 @@ class CustomTokenRefreshView(TokenRefreshView):
                             status=status.HTTP_401_UNAUTHORIZED,
                         )
 
-                    # Get user permissions
                     if hasattr(user, "get_permissions_list"):
                         user_permissions = user.get_permissions_list()
                     else:
@@ -73,15 +71,12 @@ class CustomTokenRefreshView(TokenRefreshView):
                             ).values_list("codename", flat=True)
                             user_permissions = list(set(user_perms) | set(group_perms))
 
-                    # Add permissions to the response
                     response.data["permissions"] = user_permissions
 
             except User.DoesNotExist:
-                # User not found, but token is valid - clear the invalid token
                 response.delete_cookie("refresh_token")
                 response.data["permissions"] = []
             except Exception as e:
-                # Log the error but don't fail the refresh
                 print(f"Error getting user permissions during refresh: {str(e)}")
                 response.data["permissions"] = []
 
@@ -93,24 +88,20 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
-        # First validate the credentials to get the authenticated user
         serializer = self.get_serializer(data=request.data)
 
         try:
             serializer.is_valid(raise_exception=True)
-            user = serializer.user  # Get the authenticated user
-        except Exception as e:
+            user = serializer.user
+        except Exception:
             return Response(
                 {"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # Now proceed with the token generation
         response = super().post(request, *args, **kwargs)
 
         if response.status_code == status.HTTP_200_OK:
             refresh_token = response.data.get("refresh")
-
-            # Get user permissions (make sure your User model has this method)
             user_permissions = user.get_permissions_list()
 
             response.set_cookie(
@@ -122,18 +113,51 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 max_age=60 * 60 * 24,
             )
             response.data.pop("refresh", None)
-
-            # Add permissions to the response data, not the response headers
             response.data["permissions"] = user_permissions
 
         return response
+
+    @action(
+        detail=False,
+        methods=["post"],
+        permission_classes=[permissions.IsAuthenticated],
+        url_path="otp/send",
+    )
+    def send_otp(self, request):
+        """Generate and email a fresh OTP to the authenticated user."""
+        user = request.user
+        otp_obj, _ = UserOtp.objects.get_or_create(user=user)
+        otp_code = otp_obj.generate_otp()
+
+        try:
+            send_mail(
+                subject="Your One-Time Password",
+                message=(
+                    f"Hello {user.get_full_name() or user.email},\n\n"
+                    f"Your OTP code is: {otp_code}\n\n"
+                    f"It will expire in {UserOtp.OTP_EXPIRY_MINUTES} minutes.\n"
+                    "If you did not request this, please ignore this email."
+                ),
+                from_email=None,  # uses DEFAULT_FROM_EMAIL from settings
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            return Response(
+                {"success": False, "message": f"Failed to send OTP email: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {"success": True, "message": "OTP sent to your email address."}
+        )
 
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     filter_backends = [filters.SearchFilter]
-    search_fields = [  'id', 'email', 'first_name', 'last_name']
+    search_fields = ["id", "email", "first_name", "last_name"]
 
     def get_permissions(self):
         if self.action == "logout":
@@ -144,14 +168,14 @@ class UserViewSet(viewsets.ModelViewSet):
             permission_classes = [permissions.IsAuthenticated]
         elif self.action in ["check_password_strength"]:
             permission_classes = [permissions.AllowAny]
-        elif self.action in ["change_password"]:
+        elif self.action in ["change_password", "verify_otp"]:
             permission_classes = [permissions.IsAuthenticated]
         else:
             permission_classes = [IsAdmin]
         return [permission() for permission in permission_classes]
 
     def create(self, request, *args, **kwargs):
-        data = request.data
+        data = request.data.copy()
         data.pop("permissions", None)
         pprint.pprint(data)
         serializer = self.get_serializer(data=data)
@@ -205,11 +229,10 @@ class UserViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
-        data = request.data
+        data = request.data.copy()
         pprint.pprint(data)
         data.pop("permissions", None)
         serializer = self.get_serializer(instance, data=data, partial=partial)
-
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         return Response(
@@ -245,7 +268,7 @@ class UserViewSet(viewsets.ModelViewSet):
         detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated]
     )
     def user_permissions(self, request):
-        user_permissionss = Permission.objects.all()
+        all_permissions = Permission.objects.all()
         known_models = [
             "course",
             "department",
@@ -258,26 +281,21 @@ class UserViewSet(viewsets.ModelViewSet):
             "claimresponse",
             "room",
         ]
-        data = []
-
-        for perm in user_permissionss:
-            if perm.content_type.model in known_models:
-                data.append(
-                    {
-                        "codename": perm.codename,
-                        "name": perm.name,
-                        "model": perm.content_type.model,
-                    }
-                )
+        data = [
+            {
+                "codename": perm.codename,
+                "name": perm.name,
+                "model": perm.content_type.model,
+            }
+            for perm in all_permissions
+            if perm.content_type.model in known_models
+        ]
         return Response(
-            {"success": True, "data": data, "message": "Profile fetched successfully"}
+            {"success": True, "data": data, "message": "Permissions fetched successfully"}
         )
 
     @action(detail=False, methods=["post"], permission_classes=[permissions.AllowAny])
     def check_password_strength(self, request):
-        """
-        Check the strength of a password without saving it
-        """
         password = request.data.get("password")
         if not password:
             return Response(
@@ -285,12 +303,8 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = None
-        if request.user.is_authenticated:
-            user = request.user
-
+        user = request.user if request.user.is_authenticated else None
         strength_info = get_password_strength(password, user)
-
         return Response(
             {
                 "success": True,
@@ -303,15 +317,11 @@ class UserViewSet(viewsets.ModelViewSet):
         detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated]
     )
     def change_password(self, request):
-        """
-        Change user password
-        """
         serializer = PasswordChangeSerializer(
             data=request.data, context={"request": request}
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
-
         return Response(
             {
                 "success": True,
@@ -321,12 +331,56 @@ class UserViewSet(viewsets.ModelViewSet):
         )
 
     @action(
+        detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated]
+    )
+    def verify_otp(self, request):
+        """Verify the OTP submitted by the authenticated user."""
+        otp_input = request.data.get("otp", "").strip()
+        if not otp_input:
+            return Response(
+                {"success": False, "message": "OTP is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            otp_obj = UserOtp.objects.get(user=request.user)
+        except UserOtp.DoesNotExist:
+            return Response(
+                {"success": False, "message": "No OTP found. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if otp_obj.is_verified:
+            return Response(
+                {"success": False, "message": "OTP has already been used. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if otp_obj.is_expired():
+            return Response(
+                {"success": False, "message": "OTP has expired. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if otp_obj.otp != otp_input:
+            return Response(
+                {"success": False, "message": "Invalid OTP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        otp_obj.is_verified = True
+        otp_obj.save(update_fields=["is_verified"])
+
+        return Response(
+            {"success": True, "message": "OTP verified successfully."}
+        )
+
+    @action(
         detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated]
     )
     def instructors(self, request):
-        Instructors = User.objects.filter(role="instructor")
-        serializer = self.get_serializer(Instructors, many=True)
-
+        instructors = User.objects.filter(role="instructor")
+        serializer = self.get_serializer(instructors, many=True)
         return Response(
             {
                 "success": True,
@@ -349,7 +403,6 @@ class UserViewSet(viewsets.ModelViewSet):
                     token.blacklist()
                 except Exception as e:
                     print(f"Error blacklisting refresh token: {str(e)}")
-
                 response.delete_cookie("refresh_token")
 
             auth_header = request.headers.get("Authorization")

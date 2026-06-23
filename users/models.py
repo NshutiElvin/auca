@@ -3,7 +3,7 @@ from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, Permis
 from django.utils import timezone
 from django.contrib.auth.models import Permission
 from django.contrib.contenttypes.models import ContentType
-
+from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.utils import timezone
 from django.contrib.auth.models import Permission
@@ -73,3 +73,23 @@ class User(AbstractBaseUser, PermissionsMixin):
         permissions = super().get_all_permissions()
         
         return permissions
+
+
+
+class UserOtp(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    otp = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now=True)
+    is_verified = models.BooleanField(default=False)
+
+    def is_expired(self):
+        return timezone.now() > self.created_at + timedelta(minutes=10)
+
+    def generate_otp(self):
+        self.otp = str(random.randint(100000, 999999))
+        self.is_verified = False
+        self.save()
+        return self.otp
+
+    def __str__(self):
+        return f"OTP for {self.user.email}"

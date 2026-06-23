@@ -2430,6 +2430,8 @@ def generate_exam_schedule(
                             for gid in cd["groups"]:
                                 g_obj = groups_dict[gid]
                                 s_ids = enrollments_by_group.get(gid, set())
+                                # set start and end_time based on the what saved in database for this group and slot, then fallback to defined_time_slots, then fallback to SLOT_MAP, then default 8-11am
+                                # Resolve slot times
                                 group_start_time= g_obj.start_time
                                 group_end_time= g_obj.end_time
                                 st_time = en_time = None
@@ -2438,16 +2440,18 @@ def generate_exam_schedule(
                                 st_time = en_time = None
 
                                 if group_start_time and group_end_time:
+                                    # Find what time range the chosen slot_name expects
                                     slot_def = next(
                                         (s for s in defined_time_slots if s["name"] == slot_name), None
                                     )
                                     if slot_def:
                                         slot_start = time(*map(int, slot_def["start_time"].split(":")))
                                         slot_end   = time(*map(int, slot_def["end_time"].split(":")))
+                                        # Only trust group times if they fall within the slot's range
                                         if group_start_time >= slot_start and group_end_time <= slot_end:
                                             st_time = group_start_time
                                             en_time = group_end_time
-                                         
+                                        # else: fall through to slot-based resolution below
                                 else:
                                     if slots and current_date in slots_by_date:
                                         for s in slots_by_date[current_date]:
