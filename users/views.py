@@ -1,4 +1,4 @@
-from rest_framework import viewsets, status, permissions, generics
+from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -115,42 +115,27 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             response.data.pop("refresh", None)
             response.data["permissions"] = user_permissions
 
+            # Generate and send OTP immediately after successful login
+            try:
+                otp_obj, _ = UserOtp.objects.get_or_create(user=user)
+                otp_code = otp_obj.generate_otp()
+                send_mail(
+                    subject="Your One-Time Password",
+                    message=(
+                        f"Hello {user.get_full_name() or user.email},\n\n"
+                        f"Your OTP code is: {otp_code}\n\n"
+                        f"It will expire in {UserOtp.OTP_EXPIRY_MINUTES} minutes.\n"
+                        "If you did not request this, please ignore this email."
+                    ),
+                    from_email=None,
+                    recipient_list=[user.email],
+                    fail_silently=False,
+                )
+            except Exception as e:
+                print(f"Error sending OTP email: {str(e)}")
+
         return response
 
-
-class SendOtpView(generics.GenericAPIView):
-    """
-    POST /api/users/token/otp/send/
-    Generates a fresh OTP and emails it to the authenticated user.
-    Called right after login, before the OTP verification step.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, *args, **kwargs):
-        user = request.user
-        otp_obj, _ = UserOtp.objects.get_or_create(user=user)
-        otp_code = otp_obj.generate_otp()
-
-        try:
-            send_mail(
-                subject="Your One-Time Password",
-                message=(
-                    f"Hello {user.get_full_name() or user.email},\n\n"
-                    f"Your OTP code is: {otp_code}\n\n"
-                    f"It will expire in {UserOtp.OTP_EXPIRY_MINUTES} minutes.\n"
-                    "If you did not request this, please ignore this email."
-                ),
-                from_email=None,  # uses DEFAULT_FROM_EMAIL from settings
-                recipient_list=[user.email],
-                fail_silently=False,
-            )
-        except Exception as e:
-            return Response(
-                {"success": False, "message": f"Failed to send OTP email: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        return Response({"success": True, "message": "OTP sent to your email address."})
 
 
 class UserViewSet(viewsets.ModelViewSet):
