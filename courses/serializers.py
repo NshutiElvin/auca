@@ -59,7 +59,9 @@ class CourseSerializer(serializers.ModelSerializer):
             'associated_departments', 'associated_department_ids',
         ]
     def get_students_enrolled(self, obj):
-        return obj.enrollments.filter(status='active').count()
+        # Enrollment.STATUS_CHOICES is enrolled/dropped/completed — 'active'
+        # was never a valid value, so this always returned 0.
+        return obj.enrollments.filter(status='enrolled').count()
      
     
 class CourseGroupSerializer(serializers.ModelSerializer):

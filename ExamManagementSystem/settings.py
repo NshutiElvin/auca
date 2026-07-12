@@ -64,7 +64,11 @@ CLOUDINARY_STORAGE = {
 }
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        # Enforces OTP verification (see users/authentication.py) — the
+        # frontend already withholds the token until OTP succeeds, but
+        # nothing server-side checked that before, so the OTP step was
+        # bypassable by anyone presenting a valid JWT through another route.
+        'users.authentication.OtpVerifiedJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',

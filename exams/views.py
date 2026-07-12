@@ -1,4 +1,4 @@
-from pprint import pprint
+import logging
 from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -9,7 +9,9 @@ from .models import Student, Exam, StudentExam
 from .serializers import ExamSerializer, StudentExamSerializer
 from schedules.utils import (
     allocate_shared_rooms_updated,
+    cancel_exam,
     generate_exam_schedule,
+    reschedule_exam,
     verify_groups_compatibility,
     which_suitable_slot_to_schedule_course_group,
 )
@@ -39,6 +41,8 @@ from collections import defaultdict
 import asyncio
 from asgiref.sync import sync_to_async
 from django.http import StreamingHttpResponse
+
+logger = logging.getLogger(__name__)
 
 
 def _sse_event(event_type, data):
@@ -319,42 +323,38 @@ class ExamViewSet(viewsets.ModelViewSet):
         else:
 
             if location:
-                print("location found", location, sep=" ")
                 recent_timetable = (
                     MasterTimetable.objects.filter(location_id=location)
                     .order_by("-created_at")
                     .first()
                 )
-                queryset = queryset.filter(
-                    mastertimetableexam__master_timetable_id=recent_timetable.id
-                )
-
-                serializer = self.get_serializer(queryset, many=True)
-                return Response(
-                    {
-                        "success": True,
-                        "data": serializer.data,
-                        "masterTimetable": recent_timetable.id,
-                        "message": "Exams fetched successfully",
-                    }
-                )
             else:
                 recent_timetable = MasterTimetable.objects.order_by(
                     "-created_at"
                 ).first()
-                if recent_timetable:
-                    queryset = queryset.filter(
-                        mastertimetableexam__master_timetable_id=recent_timetable.id
-                    ).distinct()
-                    serializer = self.get_serializer(queryset, many=True)
-                    return Response(
-                        {
-                            "success": True,
-                            "data": serializer.data,
-                            "masterTimetable": recent_timetable.id,
-                            "message": "Exams fetched successfully",
-                        }
-                    )
+
+            if not recent_timetable:
+                return Response(
+                    {
+                        "success": True,
+                        "data": [],
+                        "masterTimetable": None,
+                        "message": "No timetable found",
+                    }
+                )
+
+            queryset = queryset.filter(
+                mastertimetableexam__master_timetable_id=recent_timetable.id
+            ).distinct()
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(
+                {
+                    "success": True,
+                    "data": serializer.data,
+                    "masterTimetable": recent_timetable.id,
+                    "message": "Exams fetched successfully",
+                }
+            )
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -461,7 +461,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             )
 
         except Exception as e:
-            print(e)
+            logger.error(f"Error in confirm_scanning: {e}", exc_info=True)
             return Response(
                 {
                     "success": False,
@@ -617,9 +617,14 @@ class ExamViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # cancel_exam(exam_id)
+            cancel_exam(exam_id)
             return Response(
                 {"success": True, "message": f"Exam {exam_id} cancelled successfully"}
+            )
+        except Exam.DoesNotExist:
+            return Response(
+                {"success": False, "message": f"Exam {exam_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
             )
         except Exception as e:
             return Response(
@@ -654,7 +659,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             )
             student_exam.save()
             return Response(
-                {"success": True, "message": f"Exam {exam_id} cancelled successfully"}
+                {"success": True, "message": f"Sign-in attendance updated for exam {exam_id}"}
             )
         except Exception as e:
             return Response(
@@ -667,13 +672,22 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             exam_id = request.data.get("exam_id")
             student_id = request.data.get("student_id")
+            instructor = request.user
+            if instructor.role != "instructor":
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Only instructors can sign out students",
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             if not exam_id or not student_id:
                 return Response(
                     {"success": False, "message": "Missing exam_id and student_id"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             student_exam = StudentExam.objects.get(
-                exam__id=exam_id, student__id=student_id
+                exam__id=exam_id, student__id=student_id, instructor=instructor
             )
             student_exam.signout_attendance = (
                 True if not student_exam.signout_attendance else False
@@ -693,28 +707,40 @@ class ExamViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="reschedule-exam")
     def reschedule_exam_view(self, request):
-        try:
-            exam_id = request.data.get("exam_id")
-            new_date_str = request.data.get("new_date")
-            slot = request.data.get("slot", None)
+        exam_id = request.data.get("exam_id")
+        new_date_str = request.data.get("new_date")
+        slot = request.data.get("slot", None)
 
-            if not (exam_id and new_date_str):
-                return Response(
-                    {
-                        "success": False,
-                        "message": "Missing required fields: exam_id, new_date",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            queryset = self.filter_queryset(self.get_queryset())
-            serializer = self.get_serializer(queryset, many=True)
+        if not (exam_id and new_date_str):
             return Response(
                 {
-                    "success": True,
-                    "message": f"Exam {exam_id} rescheduled successfully",
-                    "data": serializer.data,
-                }
+                    "success": False,
+                    "message": "Missing required fields: exam_id, new_date",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        new_date = parse_date(new_date_str)
+        if not new_date:
+            return Response(
+                {
+                    "success": False,
+                    "message": f"Invalid new_date '{new_date_str}', expected YYYY-MM-DD",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            exam = reschedule_exam(exam_id, new_date, slot)
+        except Exam.DoesNotExist:
+            return Response(
+                {"success": False, "message": f"Exam {exam_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except ValueError as e:
+            return Response(
+                {"success": False, "message": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         except Exception as e:
             return Response(
@@ -722,13 +748,22 @@ class ExamViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        serializer = ExamSerializer(exam)
+        return Response(
+            {
+                "success": True,
+                "message": f"Exam {exam_id} rescheduled successfully",
+                "data": serializer.data,
+            }
+        )
+
     @action(
         detail=False,
         methods=["delete"],
         url_path="truncate-all",
         permission_classes=[permissions.IsAuthenticated],
     )
-    def truncate_all(self, request):
+    def truncate_all_exams(self, request):
         try:
             with transaction.atomic():
                 StudentExam.objects.all().delete()
@@ -800,11 +835,6 @@ class ExamViewSet(viewsets.ModelViewSet):
                 date = request.data.get("day")
                 new_group_to_add = request.data.get("course_group")
 
-                # Extract group IDs more efficiently
-                existing_groups = [
-                    group["group"]["id"] for group in existing_slot["exams"]
-                ]
-
                 # Simplified group extraction
                 if new_group_to_add.get("groups"):
                     new_groups = [
@@ -821,10 +851,17 @@ class ExamViewSet(viewsets.ModelViewSet):
                     )
                 )
 
-                # Merge and deduplicate groups
-                merged_groups = list(
-                    set(existing_groups + new_groups + scheduled_date_groups)
-                )
+                # `scheduled_date_groups` (freshly queried for `date_formatted`)
+                # already covers every group scheduled that day, including
+                # whatever's in `existing_slot`. We deliberately no longer mix
+                # in a client-supplied `existing_slot["exams"]` list: when the
+                # admin picks a different day from the suggestions list (the
+                # manual conflict-resolution flow), the frontend updates
+                # `day`/`slot.name` but the nested `slot.exams` array still
+                # reflects the ORIGINAL drop target's exams. Merging that
+                # stale, wrong-day group list in here manufactured false
+                # conflicts against days that were actually clean.
+                merged_groups = list(set(new_groups + scheduled_date_groups))
 
                 # Check for conflicts
                 conflicts = verify_groups_compatibility(merged_groups)
@@ -940,8 +977,6 @@ class ExamViewSet(viewsets.ModelViewSet):
             # Get group data
             g1_data = course_groups[group1_id].copy()
             g2_data = course_groups[group2_id].copy()
-            print(exam_slots)
-            print(group1_id, group2_id, sep="\n")
             # Add slot information if available
             if group1_id in exam_slots:
                 g1_data["slot"] = exam_slots[group1_id]
@@ -996,14 +1031,12 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             with transaction.atomic():
                 existing_slot = request.data.get("slotToChange")
-                print(existing_slot)
                 name = existing_slot.get("name")
                 start_time = time.fromisoformat(existing_slot.get("start"))
                 end_time = time.fromisoformat(existing_slot.get("end"))
                 date = existing_slot.get("date")
 
                 date = parse_date(date)
-                print(name, start_time, end_time, date, sep="\n")
                 exams = Exam.objects.filter(date=date, slot_name=name)
                 for exam in exams:
                     exam.start_time = start_time
@@ -1020,7 +1053,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 )
 
         except Exception as e:
-            print(e)
+            logger.error(f"Error updating time: {e}", exc_info=True)
             return Response(
                 {"success": False, "message": f"Error updating time: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1116,7 +1149,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK,
             )
         except Exception as e:
-            print(str(e))
+            logger.error(f"Error truncating data: {str(e)}", exc_info=True)
             return Response(
                 {"success": False, "message": f"Error truncating data: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1133,7 +1166,6 @@ class ExamViewSet(viewsets.ModelViewSet):
 
         # try:
         with transaction.atomic():
-            print(request.data)
             existing_slot = request.data.get("slot")
             date = request.data.get("day")
             new_group_to_add = request.data.get("course_group")
@@ -1209,7 +1241,6 @@ class ExamViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
         # except Exception as e:
-        #     print(str(e))
         #     return Response(
         #         {"success": False, "message": f"Error truncating data: {str(e)}"},
         #         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1226,7 +1257,6 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             with transaction.atomic():
                 existing_slot = request.data.get("slot")
-                print(request.data.get("slot"))
                 date = request.data.get("day")
                 new_group_to_add = request.data.get("course_group")
                 date_formatted = parse_date(date)
@@ -1282,7 +1312,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK,
             )
         except Exception as e:
-            print(str(e))
+            logger.error(f"Error truncating data: {str(e)}", exc_info=True)
             return Response(
                 {"success": False, "message": f"Error truncating data: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1372,7 +1402,7 @@ class ExamViewSet(viewsets.ModelViewSet):
 
         except Exception as e:
 
-            print(e)
+            logger.error(f"Error truncating data: {e}", exc_info=True)
             return Response(
                 {"success": False, "message": f"Error truncating data: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1418,12 +1448,15 @@ class StudentExamViewSet(viewsets.ModelViewSet):
     queryset = StudentExam.objects.select_related("student", "exam", "room").all()
     serializer_class = StudentExamSerializer
 
-    # permission_classes=[permissions.IsAuthenticated]
     def get_permissions(self):
         if self.action in ["list", "retrieve"]:
             permission_classes = [permissions.IsAuthenticated]
         else:
-            permission_classes = [permissions.IsAuthenticated]
+            # create/update/partial_update/destroy directly touch a student's
+            # room, exam link, and attendance flags — without this, any
+            # authenticated (including student) token could edit or delete
+            # any StudentExam record, not just their own.
+            permission_classes = [permissions.IsAdminUser]
         return [permission() for permission in permission_classes]
 
     def list(self, request, *args, **kwargs):
@@ -1509,17 +1542,19 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                 status=404,
             )
 
-        exams = StudentExam.objects.filter(student=student)
-        masterTimetable = MasterTimetableExam.objects.get(exam=exams[0].exam)
-        serializer = StudentExamSerializer(exams, many=True)
+        exams = list(StudentExam.objects.filter(student=student).select_related("exam"))
+        published_exam_ids = set(
+            MasterTimetableExam.objects.filter(
+                exam_id__in=[se.exam_id for se in exams],
+                master_timetable__status="PUBLISHED",
+            ).values_list("exam_id", flat=True)
+        )
+        published_exams = [se for se in exams if se.exam_id in published_exam_ids]
+        serializer = StudentExamSerializer(published_exams, many=True)
         return Response(
             {
                 "success": True,
-                "data": (
-                    serializer.data
-                    if masterTimetable.master_timetable.status == "PUBLISHED"
-                    else []
-                ),
+                "data": serializer.data,
                 "message": "Fetched successfully",
             }
         )
@@ -1538,7 +1573,7 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             )
 
         except Exception as e:
-            print(e)
+            logger.error(f"Error generating expiration time: {e}", exc_info=True)
             return Response(
                 {
                     "success": False,
@@ -1574,13 +1609,16 @@ class StudentExamViewSet(viewsets.ModelViewSet):
                         status=400,
                     )
 
-            except:
+            except Exception:
+                # A malformed/tampered/undecryptable QR payload is a client
+                # input error, not a server fault — 500 here previously made
+                # every bad scan look like a backend outage to monitoring.
                 return Response(
                     {
                         "success": False,
-                        "message": f"Invalid QR code",
+                        "message": "Invalid QR code",
                     },
-                    status=500,
+                    status=400,
                 )
             student_id = data.get("studentId")
             student = Student.objects.get(user_id=student_id)
@@ -1598,7 +1636,7 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             # Calculate totals across all enrollments
             total_to_pay = sum(enrollment.amount_to_pay for enrollment in enrollments)
             total_paid = sum(enrollment.amount_paid for enrollment in enrollments)
-            all_paid = total_to_pay == total_paid
+            all_paid = total_paid >= total_to_pay
 
             # Get first enrollment for the response format (maintaining your original structure)
             first_enrollment = enrollments.first()

@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from django.conf import settings
 import logging
 
@@ -36,10 +37,9 @@ class JsonConfigManager:
         try:
             # Validate it's valid JSON-serializable data
             json.dumps(config_data)  # Test serialization
-            
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, indent=2, ensure_ascii=False)
-            
+
+            self._write_config(config_data)
+
             logger.info(f"Config file updated: {self.config_path}")
             return True
         except (TypeError, ValueError) as e:
@@ -48,15 +48,30 @@ class JsonConfigManager:
         except Exception as e:
             logger.error(f"Error writing config file: {e}")
             raise
-    
+
     def update_config(self, updates):
         """Update specific fields in config"""
         current_config = self.read_config()
         current_config.update(updates)
         self.write_config(current_config)
         return current_config
-    
+
     def _write_config(self, config_data):
-        """Internal method to write config (for initialization)"""
-        with open(self.config_path, 'w', encoding='utf-8') as f:
-            json.dump(config_data, f, indent=2, ensure_ascii=False)
+        """
+        Write to a temp file in the same directory then atomically replace
+        the real config file (os.replace is atomic on both POSIX and
+        Windows). Writing `open(path, 'w')` directly, as before, leaves the
+        file truncated/corrupt if the process dies mid-write (e.g. worker
+        restart/OOM) — every subsequent read_config() call would then raise
+        an unhandled JSONDecodeError with no recovery path.
+        """
+        directory = os.path.dirname(self.config_path) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".config_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(config_data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, self.config_path)
+        except BaseException:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise

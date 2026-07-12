@@ -14,11 +14,14 @@ from rest_framework.decorators import action
 from .utils import get_exam_slots
 import json
 import datetime
+import logging
 from django.utils.dateparse import parse_date
 from pytz import timezone as pytz_timezone
 from django.conf import settings
 from django.utils import timezone
 from django.db.models import Count
+
+logger = logging.getLogger(__name__)
 
 
 class CourseScheduleViewSet(viewsets.ModelViewSet):
@@ -282,7 +285,7 @@ class CourseScheduleViewSet(viewsets.ModelViewSet):
             )
 
         except Exception as e:
-            print(f"Dashboard error: {str(e)}")
+            logger.error(f"Dashboard error: {str(e)}", exc_info=True)
             return Response(
                 {
                     "success": False,
@@ -561,7 +564,6 @@ class CourseScheduleViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="today-students")
     def today_students(self, request):
 
-        print("Fetching today's students data")
         try:
             location = request.GET.get("location")
             tz = pytz_timezone(settings.TIME_ZONE)
@@ -612,7 +614,7 @@ class CourseScheduleViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_200_OK)
 
         except Exception as e:
-            print(f"Error fetching today's students data: {str(e)}")
+            logger.error(f"Error fetching today's students data: {str(e)}", exc_info=True)
             return Response({
                 "success": False,
                 "message": "Failed to load today's students data",

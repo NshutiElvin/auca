@@ -1,7 +1,11 @@
+import logging
+
 from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 
 from semesters.models import Semester
+
+logger = logging.getLogger(__name__)
 from .models import Course
 from .serializers import (
     CourseSerializer,
@@ -11,6 +15,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter
 from enrollments.models import Enrollment
+from enrollments.serializers import EnrollmentSerializer
 from django.db.models import Count
 from rest_framework.response import Response
 from .models import CourseGroup
@@ -108,8 +113,23 @@ class BaseViewSet(viewsets.ModelViewSet):
         try:
             client_conf = request.data.get("configurations")
             semester = Semester.objects.get(is_active=True).id
+        except Semester.DoesNotExist:
+            return Response(
+                {"success": False, "message": "No active semester is set."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Semester.MultipleObjectsReturned:
+            logger.error("Multiple active semesters found while fetching timetable courses.")
+            return Response(
+                {
+                    "success": False,
+                    "message": "Multiple active semesters found; an admin must deactivate all but one.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
             location = client_conf.get("location")
-            print(semester, location)
             courses = Course.objects.filter(
                 semester__id=int(semester), department__location_id=int(location)
             )
@@ -123,6 +143,7 @@ class BaseViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK,
             )
         except Exception as e:
+            logger.error(f"Failed to get timetable courses: {e}", exc_info=True)
             return Response(
                 {"success": False, "message": "Failed to get the timetable courses"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,

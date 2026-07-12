@@ -9,7 +9,7 @@ class IsAdminOrInstructor(BasePermission):
     def has_permission(self, request, view):
         if request.method in SAFE_METHODS:
             return True
-        return request.user.role in ['admin', 'instructor']
+        return request.user.is_authenticated and request.user.role in ['admin', 'instructor']
 
 
 class IsStudent(BasePermission):
@@ -17,8 +17,7 @@ class IsStudent(BasePermission):
     Allow only students to create enrollments. Others can read.
     """
     def has_permission(self, request, view):
-        print(request.user.role)
         if request.method in SAFE_METHODS:
             return True
 
-        return request.user.role == 'student'
+        return request.user.is_authenticated and request.user.role == 'student'

@@ -26,7 +26,7 @@ from collections import defaultdict
 from django.db import transaction
 from django.utils import timezone
 from django.db.models import Sum
-from django.utils.dateparse import parse_date
+from django.utils.dateparse import parse_date, parse_time
 from pytz import timezone as pytz_timezone
 from datetime import time
 import logging
@@ -292,7 +292,8 @@ class RoomViewSet(viewsets.ModelViewSet):
                     {"success": True, "message": "Exam room changed successfully"},
                     status=status.HTTP_201_CREATED,
                 )
-        except:
+        except Exception as e:
+            logger.error(f"Error while changing room occupancy: {e}", exc_info=True)
             return Response(
                 {
                     "success": False,
@@ -443,7 +444,8 @@ class RoomViewSet(viewsets.ModelViewSet):
                     {"success": True, "message": "Exam room changed successfully"},
                     status=status.HTTP_201_CREATED,
                 )
-        except:
+        except Exception as e:
+            logger.error(f"Error while changing room occupancy: {e}", exc_info=True)
             return Response(
                 {
                     "success": False,
@@ -577,6 +579,100 @@ class RoomViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["get"], url_path="seat_map")
+    def seat_map(self, request, pk=None):
+        room = self.get_object()
+
+        date_str = request.GET.get("date")
+        start_time_str = request.GET.get("start_time")
+        end_time_str = request.GET.get("end_time")
+
+        exam_date = parse_date(date_str) if date_str else None
+        start_time = parse_time(start_time_str) if start_time_str else None
+        end_time = parse_time(end_time_str) if end_time_str else None
+
+        if not exam_date or not start_time or not end_time:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Valid 'date', 'start_time' and 'end_time' query params are required",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        student_exams = StudentExam.objects.filter(
+            room=room,
+            exam__date=exam_date,
+            exam__start_time=start_time,
+            exam__end_time=end_time,
+        ).select_related("student__user", "exam__group__course")
+
+        if not room.has_seat_layout():
+            return Response(
+                {
+                    "success": True,
+                    "data": {
+                        "room_id": room.id,
+                        "room_name": room.name,
+                        "capacity": room.capacity,
+                        "rows": None,
+                        "columns": None,
+                        "seats": [],
+                        "student_count": student_exams.count(),
+                    },
+                    "message": "This room has no seat layout (rows/columns) configured yet.",
+                }
+            )
+
+        exam_colors = {}
+        seats = []
+        for se in student_exams:
+            exam_id = se.exam_id
+            if exam_id not in exam_colors:
+                exam_colors[exam_id] = {
+                    "color_index": len(exam_colors),
+                    "course_code": se.exam.group.course.code,
+                    "course_title": se.exam.group.course.title,
+                    "course_group": se.exam.group.group_name,
+                }
+            seats.append(
+                {
+                    "row": se.seat_row,
+                    "column": se.seat_column,
+                    "student_exam_id": se.id,
+                    "student": {
+                        "id": se.student_id,
+                        "reg_no": se.student.reg_no,
+                        "first_name": se.student.user.first_name,
+                        "last_name": se.student.user.last_name,
+                    },
+                    "exam_id": exam_id,
+                    "course_code": exam_colors[exam_id]["course_code"],
+                    "course_group": exam_colors[exam_id]["course_group"],
+                    "color_index": exam_colors[exam_id]["color_index"],
+                }
+            )
+
+        return Response(
+            {
+                "success": True,
+                "data": {
+                    "room_id": room.id,
+                    "room_name": room.name,
+                    "capacity": room.capacity,
+                    "rows": room.rows,
+                    "columns": room.columns,
+                    "seats": seats,
+                    "student_count": len(seats),
+                    "legend": [
+                        {"exam_id": exam_id, **info}
+                        for exam_id, info in exam_colors.items()
+                    ],
+                },
+                "message": "Seat map fetched successfully",
+            }
+        )
+
     @action(detail=False, methods=["post"], url_path="verify")
     @permission_classes([])
     def verify_room_student(self, request, *args, **kwargs):
@@ -612,7 +708,8 @@ class RoomViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK,
             )
 
-        except:
+        except Exception as e:
+            logger.error(f"Error while changing room occupancy: {e}", exc_info=True)
             return Response(
                 {
                     "success": False,
@@ -711,7 +808,8 @@ class RoomViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK,
             )
 
-        except:
+        except Exception as e:
+            logger.error(f"Error while changing room occupancy: {e}", exc_info=True)
             return Response(
                 {
                     "success": False,
@@ -799,7 +897,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            print(
+            logger.info(
                 f"Assigning instructor {instructor.get_full_name()} to exams in room ID {room_id} on {date} during slot '{slot_name}' ({start_time} - {end_time})"
             )
 
@@ -862,7 +960,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                     enrollment.amount_to_pay for enrollment in enrollments
                 )
                 total_paid = sum(enrollment.amount_paid for enrollment in enrollments)
-                all_paid = total_to_pay == total_paid
+                all_paid = total_paid >= total_to_pay
                 students_info.append(
                     {
                         "id": student_exam.student.user.id,
@@ -937,7 +1035,7 @@ class RoomViewSet(viewsets.ModelViewSet):
             # Calculate totals across all enrollments
             total_to_pay = sum(enrollment.amount_to_pay for enrollment in enrollments)
             total_paid = sum(enrollment.amount_paid for enrollment in enrollments)
-            all_paid = total_to_pay == total_paid
+            all_paid = total_paid >= total_to_pay
 
             if all_paid:
                 student_exam.signin_attendance = True
@@ -994,7 +1092,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                     enrollment.amount_to_pay for enrollment in enrollments
                 )
                 total_paid = sum(enrollment.amount_paid for enrollment in enrollments)
-                all_paid = total_to_pay == total_paid
+                all_paid = total_paid >= total_to_pay
 
                 if all_paid:
                     return Response(
@@ -1034,7 +1132,8 @@ class RoomViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_200_OK,
                 )
 
-        except:
+        except Exception as e:
+            logger.error(f"Error while changing room occupancy: {e}", exc_info=True)
             return Response(
                 {
                     "success": False,

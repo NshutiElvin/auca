@@ -73,26 +73,49 @@ class UserSerializer(serializers.ModelSerializer):
         """
         # First run the default validators
         validate_password(value)
-        
+
         # Then check strength
         strength_info = get_password_strength(value)
-        
+
         # If password is too weak, raise validation error
         if strength_info['score'] < 40:  # Require at least medium strength
             raise serializers.ValidationError(
                 f"Password is too weak (strength: {strength_info['strength']}). "
                 f"Please address these issues: {', '.join(strength_info['feedback']['warnings'] + strength_info['feedback']['suggestions'])}"
             )
-        
+
         return value
-    
+
+    def validate(self, attrs):
+        # Registration (`create`) is open to anonymous callers (public sign-up).
+        # Only an already-privileged caller (admin / superuser) may hand out
+        # role=admin/instructor, is_staff, is_active=False, or permissions.
+        # Without this, anyone could POST {"role": "admin", "is_staff": true,
+        # "user_permissions": [...]} and self-escalate to a full admin account.
+        request = self.context.get('request')
+        is_privileged_caller = bool(
+            request and request.user and request.user.is_authenticated
+            and (request.user.is_superuser or getattr(request.user, 'role', None) == 'admin')
+        )
+        if self.instance is None and not is_privileged_caller:
+            requested_role = attrs.get('role')
+            if requested_role and requested_role != 'student':
+                raise serializers.ValidationError(
+                    {"role": "Only administrators can create accounts with this role."}
+                )
+            attrs['role'] = 'student'
+            attrs['is_active'] = True
+            attrs['is_staff'] = False
+            attrs.pop('user_permissions', None)
+        return attrs
+
     def create(self, validated_data):
         # Extract permissions if provided during creation
         permissions_data = validated_data.pop('user_permissions', None)
         
         role = validated_data.get('role')
-        if role not in ['admin', 'student', 'instructor', 'teacher']:
-            raise serializers.ValidationError("Invalid role. Must be 'admin', 'student', 'instructor', or 'teacher'.")
+        if role not in ['admin', 'student', 'instructor']:
+            raise serializers.ValidationError("Invalid role. Must be 'admin', 'student', or 'instructor'.")
 
         reg_no = validated_data.pop('reg_no', None)
         department = validated_data.pop('department', None)
@@ -141,13 +164,16 @@ class UserSerializer(serializers.ModelSerializer):
             if permissions_data is not None:
                 user.user_permissions.clear()
                 for perm_codename in permissions_data:
-                    print(perm_codename)
-                    try:
-                        permission = Permission.objects.filter(codename=perm_codename).first()
-                        user.user_permissions.add(permission)
-                    except Permission.DoesNotExist:
+                    # .filter().first() returns None (not a DoesNotExist
+                    # raise) when the codename doesn't match anything, so the
+                    # old try/except here never caught the missing-permission
+                    # case — it fell through to user_permissions.add(None),
+                    # which raises an unhandled error and 500s the request.
+                    permission = Permission.objects.filter(codename=perm_codename).first()
+                    if permission is None:
                         logging.warning(f"Permission {perm_codename} does not exist")
                         continue
+                    user.user_permissions.add(permission)
             
              
         

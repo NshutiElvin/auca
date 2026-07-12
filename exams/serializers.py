@@ -52,7 +52,7 @@ class StudentExamSerializer(serializers.ModelSerializer):
         model = StudentExam
         fields = (
             "id", "student", "student_id", "exam","exam_id" ,"signin_attendance","signout_attendance","instructor",
-            "status", "room_id", "room"
+            "status", "room_id", "room", "seat_row", "seat_column"
         )
 
 

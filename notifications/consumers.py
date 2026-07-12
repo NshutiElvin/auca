@@ -72,7 +72,6 @@ class RealTimeExamDataConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_discard(self.broadcast_group, self.channel_name)
 
     async def receive(self, text_data):
-        print(text_data)
         data = json.loads(text_data)
         message = data.get("message")
         broadcast = data.get("broadcast", False)  

@@ -8,7 +8,10 @@ class TimeStampedModel(models.Model):
 class Department(TimeStampedModel):
     code = models.CharField(max_length=255, unique=True)  
     name = models.CharField(max_length=100)
-    location= models.ForeignKey("rooms.Location", null=True, blank=True, on_delete=models.CASCADE)
+    # SET_NULL, not CASCADE: the field is optional (null=True), so deleting a
+    # Location must not cascade-delete every Department (and therefore every
+    # Course -> Enrollment, both CASCADE) that happened to reference it.
+    location= models.ForeignKey("rooms.Location", null=True, blank=True, on_delete=models.SET_NULL)
 
     def __str__(self):
         return f"{self.code} - {self.name}"

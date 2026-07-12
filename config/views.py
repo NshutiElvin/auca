@@ -1,4 +1,4 @@
-from rest_framework import viewsets, mixins, status
+from rest_framework import viewsets, mixins, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from .serializers import ConfigSerializer
@@ -15,10 +15,19 @@ class ConfigViewSet(
     ViewSet for configuration management
     """
     serializer_class = ConfigSerializer
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.config_manager = JsonConfigManager()
+
+    def get_permissions(self):
+        # This config drives exam time-slot scheduling system-wide — without
+        # this, any authenticated (including student) token could overwrite
+        # it via `create`/`partial`, since the view had no permission_classes
+        # at all (relying on the global default of just IsAuthenticated).
+        if self.action in ["list", "retrieve"]:
+            return [permissions.IsAuthenticated()]
+        return [permissions.IsAdminUser()]
     
     def list(self, request, *args, **kwargs):
         """Get current configuration"""

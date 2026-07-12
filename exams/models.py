@@ -13,6 +13,7 @@ class TimeStampedModel(models.Model):
 class Exam(TimeStampedModel):
     STATUS_CHOICES = [
         ('SCHEDULED', 'Scheduled'),
+        ('READY', 'Ready'),
         ('ONGOING', 'Ongoing'),
         ('COMPLETED', 'Completed'),
         ('CANCELLED', 'Cancelled'),
@@ -57,6 +58,8 @@ class StudentExam(TimeStampedModel):
     student = models.ForeignKey(Student, on_delete=models.CASCADE)
     exam = models.ForeignKey(Exam, on_delete=models.CASCADE)
     room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True)
+    seat_row = models.PositiveIntegerField(null=True, blank=True)
+    seat_column = models.PositiveIntegerField(null=True, blank=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='PENDING')
     instructor=models.ForeignKey("users.user", on_delete=models.SET_NULL, null=True, blank=True)
     signin_attendance= models.BooleanField(default=False)

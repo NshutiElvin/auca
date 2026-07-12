@@ -30,7 +30,10 @@ class Notification(models.Model):
      
     
     def __str__(self):
-        return f"{self.get_notification_type_display()} for {self.user}: {self.title}"
+        # There is no `notification_type` field on this model (never was),
+        # so get_notification_type_display() always raised AttributeError
+        # the moment anything tried to stringify a Notification.
+        return f"{self.title} for {self.user}"
     
     def mark_as_read(self):
         if not self.is_read:

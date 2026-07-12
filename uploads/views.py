@@ -1,5 +1,5 @@
 from departments.models import Department
-from rest_framework import generics, parsers
+from rest_framework import generics, parsers, permissions
 from rest_framework.response import Response
 from django.http import StreamingHttpResponse
 from asgiref.sync import sync_to_async
@@ -37,6 +37,20 @@ def _is_numeric(val):
         return True
     except (TypeError, ValueError):
         return False
+
+
+def _to_int(val, default=0):
+    """
+    Course.credits is a PositiveIntegerField, but CREDITS is read as a raw
+    string (dtype=str). Excel commonly stores a credit-hours cell as a
+    float-formatted value ("3.0"), and int("3.0") raises ValueError — which,
+    since this whole import runs in one transaction, used to roll back the
+    entire import (including the enrollment-table wipe) on a single bad cell.
+    """
+    try:
+        return int(float(val))
+    except (TypeError, ValueError):
+        return default
 
 
 def _safe_df(queryset, columns):
@@ -114,13 +128,24 @@ def _run_import(file_name, file_bytes, selected_semester, progress_callback):
     if missing:
         raise ValueError(f"Missing columns: {missing}")
 
+    rows_before = len(df)
     df = df.dropna(subset=["STUDNUM"])
+    if len(df) < rows_before:
+        errors.append(
+            f"{rows_before - len(df)} row(s) had a blank STUDNUM and were skipped."
+        )
+
     df["STUDNUM_STR"] = (
         df["STUDNUM"]
         .str.strip()
         .apply(lambda x: str(int(float(x))) if _is_numeric(x) else None)
     )
+    rows_before = len(df)
     df = df.dropna(subset=["STUDNUM_STR"])
+    if len(df) < rows_before:
+        errors.append(
+            f"{rows_before - len(df)} row(s) had a non-numeric STUDNUM and were skipped."
+        )
 
     if df.empty:
         raise ValueError("No valid student records found in file.")
@@ -424,12 +449,28 @@ def _run_import(file_name, file_bytes, selected_semester, progress_callback):
             .copy()
         )
         course_meta_df["semester_id"] = course_meta_df["TERM"].map(sem_map)
+        unmatched_term = course_meta_df[course_meta_df["semester_id"].isna()]
+        if not unmatched_term.empty:
+            codes = ", ".join(unmatched_term["COURSECODE"].astype(str).tolist()[:10])
+            errors.append(
+                f"{len(unmatched_term)} course(s) had a TERM that didn't match any "
+                f"semester and were skipped (their enrollments were skipped too): {codes}"
+                + (", ..." if len(unmatched_term) > 10 else "")
+            )
         course_meta_df = course_meta_df.dropna(subset=["semester_id"]).copy()
         course_meta_df["semester_id"] = course_meta_df["semester_id"].astype(int)
         course_meta_df["primary_dept"] = course_meta_df["COURSECODE"].map(
             primary_dept_series
         )
         course_meta_df["primary_dept_id"] = course_meta_df["primary_dept"].map(dept_map)
+        unmatched_dept = course_meta_df[course_meta_df["primary_dept_id"].isna()]
+        if not unmatched_dept.empty:
+            codes = ", ".join(unmatched_dept["COURSECODE"].astype(str).tolist()[:10])
+            errors.append(
+                f"{len(unmatched_dept)} course(s) had no resolvable department and "
+                f"were skipped (their enrollments were skipped too): {codes}"
+                + (", ..." if len(unmatched_dept) > 10 else "")
+            )
         course_meta_df = course_meta_df.dropna(subset=["primary_dept_id"]).copy()
         course_meta_df["primary_dept_id"] = course_meta_df["primary_dept_id"].astype(
             int
@@ -459,7 +500,7 @@ def _run_import(file_name, file_bytes, selected_semester, progress_callback):
             if row.COURSECODE in existing_courses:
                 c = existing_courses[row.COURSECODE]
                 c.title = row.COURSENAME
-                c.credits = row.CREDITS
+                c.credits = _to_int(row.CREDITS)
                 c.semester_id = row.semester_id
                 c.department_id = row.primary_dept_id
                 c.is_cross_departmental = row.is_cross
@@ -469,7 +510,7 @@ def _run_import(file_name, file_bytes, selected_semester, progress_callback):
                     Course(
                         code=row.COURSECODE,
                         title=row.COURSENAME,
-                        credits=row.CREDITS,
+                        credits=_to_int(row.CREDITS),
                         semester_id=row.semester_id,
                         department_id=row.primary_dept_id,
                         is_cross_departmental=row.is_cross,
@@ -714,6 +755,13 @@ def _run_import(file_name, file_bytes, selected_semester, progress_callback):
 
 # ── Main View ──────────────────────────────────────────────────────────────────
 class ImportEnrollmentsData(generics.GenericAPIView):
+    # This unconditionally deletes and rebuilds the entire Enrollment table
+    # (see _run_import) — without an explicit admin-only restriction, any
+    # authenticated user (student/instructor token) could wipe/rewrite
+    # university-wide enrollment data, since the view had no
+    # permission_classes at all (falling back to the global IsAuthenticated
+    # default).
+    permission_classes = [permissions.IsAdminUser]
     parser_classes = [parsers.MultiPartParser]
 
     def post(self, request, *args, **kwargs):

@@ -1,3 +1,5 @@
+import logging
+
 from celery import shared_task
 from django.utils import timezone
 
@@ -12,11 +14,13 @@ from notifications.models import Notification
 from notifications.tasks import send_notification, send_email_task
 
 from celery import group
- 
+
+logger = logging.getLogger(__name__)
+
 
 def _notify_students(exam, message):
     students = StudentExam.objects.filter(exam=exam).select_related('student__user')
-    print(f"[NOTIFY] Sending notifications to {students.count()} students for '{exam.group.course.title}'.")
+    logger.info(f"Sending notifications to {students.count()} students for '{exam.group.course.title}'.")
     
     notifications = []
     for student_exam in students:
@@ -59,47 +63,56 @@ def check_and_update_exams():
     now = timezone.now().astimezone(tz) 
     today = now.date()
 
-    exams_today = Exam.objects.filter(date=today)
-    masterTimetable= MasterTimetableExam.objects.filter(exam=exams_today.first()).first().master_timetable
+    # Cancelled exams must never be resurrected into READY/ONGOING/COMPLETED.
+    exams_today = Exam.objects.filter(date=today).exclude(status='CANCELLED')
 
-    print(f"[TASK] Checking {exams_today.count()} exams for {today}, current time: {now}")
+    logger.info(f"Checking {exams_today.count()} exams for {today}, current time: {now}")
 
-    if masterTimetable.status=="PUBLISHED":
-    
+    # Each exam is gated by its OWN timetable's publish status — not just
+    # whichever exam happens to be first in the queryset (today's exams can
+    # legitimately span multiple timetables, e.g. different locations).
+    published_exam_ids = set(
+        MasterTimetableExam.objects.filter(
+            exam__in=exams_today, master_timetable__status="PUBLISHED"
+        ).values_list("exam_id", flat=True)
+    )
 
-        for exam in exams_today:
-            start_dt = datetime.combine(exam.date, exam.start_time)
-            end_dt = datetime.combine(exam.date, exam.end_time)
+    for exam in exams_today:
+        if exam.id not in published_exam_ids:
+            continue
 
-            start_time = timezone.make_aware(start_dt) if timezone.is_naive(start_dt) else start_dt
-            end_time = timezone.make_aware(end_dt) if timezone.is_naive(end_dt) else end_dt
+        start_dt = datetime.combine(exam.date, exam.start_time)
+        end_dt = datetime.combine(exam.date, exam.end_time)
 
-            time_diff = (start_time - now).total_seconds()
+        start_time = timezone.make_aware(start_dt) if timezone.is_naive(start_dt) else start_dt
+        end_time = timezone.make_aware(end_dt) if timezone.is_naive(end_dt) else end_dt
 
-            print(f"[INFO] Exam: {exam.group.course.title}, Status: {exam.status}, "
-                f"Now: {now}, Start: {start_time}, End: {end_time}, Diff: {time_diff}s")
- 
-            if 0 < time_diff <= 900 and exam.status != 'READY':
-                exam.status = 'READY'
-                exam.save(update_fields=['status'])
-                _notify_students(exam,
-                    f"Your exam '{exam.group.course.title}' is starting soon "
-                    f"({exam.date} {exam.start_time}-{exam.end_time}).")
-                print(f"[UPDATE] Exam '{exam}' set to READY.")
+        time_diff = (start_time - now).total_seconds()
 
-            elif start_time <= now < end_time and exam.status != 'ONGOING':
-                exam.status = 'ONGOING'
-                exam.save(update_fields=['status'])
-                print(f"[UPDATE] Exam '{exam}' set to ONGOING.")
+        logger.debug(f"Exam: {exam.group.course.title}, Status: {exam.status}, "
+            f"Now: {now}, Start: {start_time}, End: {end_time}, Diff: {time_diff}s")
 
-            elif now >= end_time and exam.status != 'COMPLETED':
-                exam.status = 'COMPLETED'
-                exam.save(update_fields=['status'])
-                _notify_students(exam,
-                    f"Your exam '{exam.group.course.title}' scheduled on "
-                    f"{exam.date} {exam.start_time}-{exam.end_time} has been marked as completed.")
-                print(f"[UPDATE] Exam '{exam}' set to COMPLETED.")
+        if 0 < time_diff <= 900 and exam.status != 'READY':
+            exam.status = 'READY'
+            exam.save(update_fields=['status'])
+            _notify_students(exam,
+                f"Your exam '{exam.group.course.title}' is starting soon "
+                f"({exam.date} {exam.start_time}-{exam.end_time}).")
+            logger.info(f"Exam '{exam}' set to READY.")
 
-            else:
-                print(f"[NO CHANGE] Exam '{exam}' remains {exam.status}.")
+        elif start_time <= now < end_time and exam.status != 'ONGOING':
+            exam.status = 'ONGOING'
+            exam.save(update_fields=['status'])
+            logger.info(f"Exam '{exam}' set to ONGOING.")
+
+        elif now >= end_time and exam.status != 'COMPLETED':
+            exam.status = 'COMPLETED'
+            exam.save(update_fields=['status'])
+            _notify_students(exam,
+                f"Your exam '{exam.group.course.title}' scheduled on "
+                f"{exam.date} {exam.start_time}-{exam.end_time} has been marked as completed.")
+            logger.info(f"Exam '{exam}' set to COMPLETED.")
+
+        else:
+            logger.debug(f"Exam '{exam}' remains {exam.status}.")
 

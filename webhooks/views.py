@@ -1,3 +1,5 @@
+import hmac
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -40,7 +42,7 @@ def _notify_admins(exam, new_status):
         return
 
     title = f"Exam {new_status.title()} – {course_title}"
-    admins = User.objects.filter(is_superuser=True)
+    admins = User.objects.filter(role="admin")
 
     notifications = [
         Notification(user=admin, title=title, message=message)
@@ -119,15 +121,31 @@ def _notify_students(exam, message):
 
 
 class CheckAndUpdateExamsWebhookView(APIView):
+    # This endpoint is intentionally unauthenticated (called by an external
+    # cron pinger, see .github/workflows/ping-webhook.yml), so it is instead
+    # gated by a shared secret header. Without this check, anyone who finds
+    # the URL could force exam status transitions and trigger a bulk
+    # notification blast to every student/admin, repeatedly, with no limit.
     authentication_classes = []
     permission_classes = []
 
     def post(self, request):
+        provided_secret = request.headers.get("X-Webhook-Secret")
+        if not provided_secret or not hmac.compare_digest(
+            provided_secret, settings.WEBHOOK_SECRET
+        ):
+            return Response(
+                {"message": "Invalid or missing webhook secret."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
         tz = pytz_timezone(settings.TIME_ZONE)
         now = timezone.now().astimezone(tz)
         today = now.date()
 
-        exams_today = Exam.objects.filter(date=today).prefetch_related(
+        exams_today = Exam.objects.filter(date=today).exclude(
+            status='CANCELLED'
+        ).prefetch_related(
             'mastertimetableexam_set__master_timetable'
         )
 

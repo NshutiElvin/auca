@@ -22,7 +22,9 @@ from django_filters.rest_framework import DjangoFilterBackend
 from .models import User, UserOtp
 from notifications.utils import send_mail
 
-import pprint
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class CustomTokenRefreshView(TokenRefreshView):
@@ -77,7 +79,7 @@ class CustomTokenRefreshView(TokenRefreshView):
                 response.delete_cookie("refresh_token")
                 response.data["permissions"] = []
             except Exception as e:
-                print(f"Error getting user permissions during refresh: {str(e)}")
+                logger.error(f"Error getting user permissions during refresh: {e}", exc_info=True)
                 response.data["permissions"] = []
 
         return response
@@ -115,7 +117,11 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             response.data.pop("refresh", None)
             response.data["permissions"] = user_permissions
 
-            # Generate and send OTP immediately after successful login
+            # Generate and send OTP immediately after successful login.
+            # Access is now gated on OTP verification (see
+            # users/authentication.py), so silently swallowing a send
+            # failure here would leave the user stuck on the "enter OTP"
+            # screen with a code that never arrives and no way to know why.
             try:
                 otp_obj, _ = UserOtp.objects.get_or_create(user=user)
                 otp_code = otp_obj.generate_otp()
@@ -131,8 +137,14 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                     recipient_list=[user.email],
                     fail_silently=False,
                 )
+                response.data["otp_sent"] = True
             except Exception as e:
-                print(f"Error sending OTP email: {str(e)}")
+                logger.error(f"Error sending OTP email to {user.email}: {e}", exc_info=True)
+                response.data["otp_sent"] = False
+                response.data["otp_error"] = (
+                    "We couldn't send your OTP email. Please try logging in again "
+                    "or contact support."
+                )
 
         return response
 
@@ -162,7 +174,6 @@ class UserViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         data = request.data.copy()
         data.pop("permissions", None)
-        pprint.pprint(data)
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -215,7 +226,6 @@ class UserViewSet(viewsets.ModelViewSet):
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
         data = request.data.copy()
-        pprint.pprint(data)
         data.pop("permissions", None)
         serializer = self.get_serializer(instance, data=data, partial=partial)
         serializer.is_valid(raise_exception=True)
@@ -387,7 +397,7 @@ class UserViewSet(viewsets.ModelViewSet):
                     token = RefreshToken(refresh_token)
                     token.blacklist()
                 except Exception as e:
-                    print(f"Error blacklisting refresh token: {str(e)}")
+                    logger.error(f"Error blacklisting refresh token: {e}", exc_info=True)
                 response.delete_cookie("refresh_token")
 
             auth_header = request.headers.get("Authorization")
@@ -401,7 +411,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 except OutstandingToken.DoesNotExist:
                     pass
                 except Exception as e:
-                    print(f"Error blacklisting access token: {str(e)}")
+                    logger.error(f"Error blacklisting access token: {e}", exc_info=True)
 
             return response
 

@@ -5,7 +5,7 @@ from .serializers import (
  
     EnrollmentSerializer,
 )
-from .permissions import  IsStudent
+from .permissions import IsStudent, IsEnrollmentOwnerOrStaff
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter
 from rest_framework.decorators import action
@@ -26,6 +26,17 @@ class EnrollmentViewSet(viewsets.ModelViewSet):
     """
     Base ViewSet to format responses consistently
     """
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.role not in ('admin', 'instructor'):
+            try:
+                student = Student.objects.get(user=user)
+            except Student.DoesNotExist:
+                return queryset.none()
+            queryset = queryset.filter(student=student)
+        return queryset
+
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         serializer = self.get_serializer(queryset, many=True)
@@ -78,7 +89,11 @@ class EnrollmentViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
             return [permissions.IsAuthenticated()]
-        return [IsStudent()]
+        if self.action == 'create':
+            return [IsStudent()]
+        # update/partial_update/destroy: object-level ownership check so a
+        # student can only touch their own enrollment (see permissions.py).
+        return [IsEnrollmentOwnerOrStaff()]
     @action(detail=False, methods=['get'], url_path='mine')
     def mine(self, request, *args, **kwargs):
         try:

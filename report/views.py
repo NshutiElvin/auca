@@ -1,4 +1,5 @@
 from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.http import HttpResponse
 from reportlab.lib.pagesizes import A4, landscape
@@ -714,10 +715,13 @@ def _build_seating_pdf(
                 "Reg No",
                 "Student Name",
                 "Course",
+                "Seat",
                 "Signature (In)",
                 "Signature (Out)",
             ]
-            col_widths = [0.8 * cm, 2.5 * cm, 5.0 * cm, 4.5 * cm, 3.0 * cm, 3.0 * cm]
+            col_widths = [
+                0.8 * cm, 2.3 * cm, 4.5 * cm, 4.0 * cm, 1.8 * cm, 2.7 * cm, 2.7 * cm,
+            ]
         else:
             headers = ["#", "Reg No", "Student Name", "Course", "Room"]
             col_widths = [0.8 * cm, 2.5 * cm, 5.0 * cm, 4.5 * cm, 3.0 * cm]
@@ -738,12 +742,18 @@ def _build_seating_pdf(
             )
 
             if room_id:
+                seat_label = (
+                    f"R{se.seat_row}-C{se.seat_column}"
+                    if se.seat_row and se.seat_column
+                    else "–"
+                )
                 s_data.append(
                     [
                         Paragraph(str(idx), celc),
                         Paragraph(reg_no, cell),
                         Paragraph(full_name, cell),
                         Paragraph(course_title, cell),
+                        Paragraph(seat_label, celc),
                         Paragraph("___________________", celc),
                         Paragraph("___________________", celc),
                     ]
@@ -780,7 +790,7 @@ def _build_seating_pdf(
         if room_id:
             table_style.extend(
                 [
-                    ("BACKGROUND", (4, 0), (5, 0), colors.HexColor("#E6F0FA")),
+                    ("BACKGROUND", (5, 0), (6, 0), colors.HexColor("#E6F0FA")),
                 ]
             )
 
@@ -827,8 +837,11 @@ class TimetablePDFView(generics.GenericAPIView):
     ?id defaults to the most recent MasterTimetable if omitted.
     """
 
-    authentication_classes = []  # TODO: restore before going to production
-    permission_classes = []
+    # These PDFs contain student names and registration numbers; the
+    # frontend already sends an authenticated request for both report types
+    # (see RoomsOccupancies.tsx generateSeatingReport/generateFullTimetableReport),
+    # so requiring auth here doesn't change legitimate usage.
+    permission_classes = [IsAuthenticated]
 
     def _resolve_timetable(self, request):
         """Return (timetable, error_response). One of them will be None."""
@@ -903,9 +916,16 @@ class TimetablePDFView(generics.GenericAPIView):
 
         try:
             if report_type == "seating":
+                # Both conditions, mirroring how TimetablePDFView scopes its
+                # exams (see _resolve_timetable above): an exam can be linked
+                # to a timetable via the M2M through-table without its own
+                # `exam.master_timetable` FK agreeing (or vice versa), and
+                # only checking one of the two let the seating report include
+                # exams the timetable/attendance reports would exclude.
                 student_exams = (
                     StudentExam.objects.filter(
-                        exam__mastertimetableexam__master_timetable_id=timetable.id
+                        exam__mastertimetableexam__master_timetable_id=timetable.id,
+                        exam__master_timetable=timetable,
                     )
                     .select_related(
                         "student__user",

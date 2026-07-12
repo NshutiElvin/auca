@@ -2,6 +2,7 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 
 from .models import ClaimResponse, StudentClaim
+from .permissions import IsClaimManager
 from .serializers import StudentClaimSerializer, ClaimResponseSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
@@ -122,7 +123,7 @@ class BaseViewSet(viewsets.ModelViewSet):
         notifications_data = []
 
         # Notify every superuser admin
-        for admin in User.objects.filter(is_superuser=True):
+        for admin in User.objects.filter(role="admin"):
             notifications_data.append(
                 {
                     "user": admin,
@@ -230,7 +231,7 @@ class BaseViewSet(viewsets.ModelViewSet):
                 or student_user.username
             )
             editor_name = request.user.get_full_name() or request.user.username
-            for admin in User.objects.filter(is_superuser=True).exclude(id=request.user.id):
+            for admin in User.objects.filter(role="admin").exclude(id=request.user.id):
                 notifications_data.append(
                     {
                         "user": admin,
@@ -278,7 +279,7 @@ class BaseViewSet(viewsets.ModelViewSet):
         ]
 
         # Notify all other admins
-        for admin in User.objects.filter(is_superuser=True).exclude(id=request.user.id):
+        for admin in User.objects.filter(role="admin").exclude(id=request.user.id):
             notifications_data.append(
                 {
                     "user": admin,
@@ -314,18 +315,20 @@ class StudentClaimViewSet(BaseViewSet):
     filterset_fields = ["status", "student"]
 
     def get_permissions(self):
-        # if self.action in ["list", "retrieve", "create"]:
-        return [permissions.IsAuthenticated()]
-        # return [permissions.IsAdminUser()]
+        # Students may view (their own, via get_queryset) and create claims,
+        # but only claim managers (admins, or staff granted
+        # change_claimresponse — see IsClaimManager) may update/resolve or
+        # delete a claim — otherwise a student can PATCH their own claim's
+        # `status` straight to "approved"/"resolved" and bypass the review
+        # workflow entirely.
+        if self.action in ["list", "retrieve", "create"]:
+            return [permissions.IsAuthenticated()]
+        return [IsClaimManager()]
 
-    def perform_create(self, serializer):
-        try:
-            student_instance = Student.objects.get(user=self.request.user)
-            serializer.save(student=student_instance)
-        except Student.DoesNotExist:
-            serializer.save()
-        except TypeError:
-            serializer.save()
+    # perform_create is inherited from BaseViewSet, which correctly raises
+    # PermissionDenied when the requester has no linked Student record,
+    # instead of saving with student=None (StudentClaim.student is a
+    # required FK, so that used to crash with an unhandled IntegrityError).
 
     # ------------------------------------------------------------------ #
     #  ADD RESPONSE – notify student a reply was posted; alert other admins
@@ -361,7 +364,7 @@ class StudentClaimViewSet(BaseViewSet):
         ]
 
         # Notify all other admins
-        for admin in User.objects.filter(is_superuser=True).exclude(id=request.user.id):
+        for admin in User.objects.filter(role="admin").exclude(id=request.user.id):
             notifications_data.append(
                 {
                     "user": admin,
@@ -445,7 +448,7 @@ class ClaimResponseViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ["list", "retrieve", "by_claim"]:
             return [permissions.IsAuthenticated()]
-        return [permissions.IsAdminUser()]
+        return [IsClaimManager()]
 
     def perform_create(self, serializer):
         serializer.save(responder=self.request.user)
@@ -481,7 +484,7 @@ class ClaimResponseViewSet(viewsets.ModelViewSet):
             }
         ]
 
-        for admin in User.objects.filter(is_superuser=True).exclude(id=request.user.id):
+        for admin in User.objects.filter(role="admin").exclude(id=request.user.id):
             notifications_data.append(
                 {
                     "user": admin,

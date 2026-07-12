@@ -1,12 +1,13 @@
 """General web socket middlewares
 """
 
+import logging
+
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import UntypedToken
-from rest_framework_simplejwt.authentication import JWTTokenUserAuthentication
 from django.contrib.auth.models import User
 from channels.middleware import BaseMiddleware
 from channels.auth import AuthMiddlewareStack
@@ -15,18 +16,16 @@ from urllib.parse import parse_qs
 from jwt import decode as jwt_decode
 from django.conf import settings
 
+logger = logging.getLogger(__name__)
+
 
 @database_sync_to_async
 def get_user(validated_token):
     try:
         user = get_user_model().objects.get(id=validated_token["user_id"])
-        # return get_user_model().objects.get(id=toke_id)
-        print(f"{user}")
         return user
-   
     except User.DoesNotExist:
         return AnonymousUser()
-
 
 
 class JwtAuthMiddleware(BaseMiddleware):
@@ -46,7 +45,7 @@ class JwtAuthMiddleware(BaseMiddleware):
             UntypedToken(token)
         except (InvalidToken, TokenError) as e:
             # Token is invalid
-            print(e)
+            logger.warning(f"WebSocket auth rejected: {e}")
             scope["user"] = AnonymousUser()
         else:
             #  Then token is valid, decode it
@@ -57,9 +56,6 @@ class JwtAuthMiddleware(BaseMiddleware):
 
 def JwtAuthMiddlewareStack(inner):
     return JwtAuthMiddleware(AuthMiddlewareStack(inner))
-
-
-
 
 
 

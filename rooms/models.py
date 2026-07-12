@@ -16,9 +16,14 @@ class Room(TimeStampedModel):
     name = models.CharField(max_length=50, unique=True)
     capacity = models.PositiveIntegerField()
     location= models.ForeignKey(Location, null=True, blank=True, on_delete=models.SET_NULL )
+    rows = models.PositiveIntegerField(null=True, blank=True)
+    columns = models.PositiveIntegerField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.name} ({self.capacity} seats)"
+
+    def has_seat_layout(self):
+        return bool(self.rows and self.columns)
     
 
 

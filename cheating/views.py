@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
-from django.db.models import Count
+from django.db.models import Count, Q
 
 from .models import CheatingReport, CheatingEvidence
 from .permissions import IsInstructor, IsAdminUser, IsReportOwnerOrAdmin
@@ -94,7 +94,7 @@ class InstructorReportListCreateView(generics.ListCreateAPIView):
         ]
 
         # Notify all admins
-        admin_users = User.objects.filter(is_superuser=True)
+        admin_users = User.objects.filter(Q(role="admin") | Q(is_superuser=True))
         for admin in admin_users:
             notifications_data.append({
                 "user": admin,
@@ -112,7 +112,12 @@ class InstructorReportListCreateView(generics.ListCreateAPIView):
 
 
 class InstructorReportDetailView(generics.RetrieveAPIView):
-    permission_classes = [IsAuthenticated]
+    # IsReportOwnerOrAdmin restores the same "own reports only" scoping the
+    # list view already had — the detail view was missing it entirely, so
+    # any authenticated user could read any cheating report (accused
+    # student's identity, incident description, admin notes, evidence) by
+    # guessing/incrementing the report id.
+    permission_classes = [IsAuthenticated, IsReportOwnerOrAdmin]
     serializer_class = CheatingReportSerializer
 
     def get_queryset(self):
@@ -122,7 +127,7 @@ class InstructorReportDetailView(generics.RetrieveAPIView):
 
 
 class AdminReportListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminUser]
     serializer_class = CheatingReportListSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ["status", "severity", "exam", "student", "reported_by"]
@@ -140,7 +145,7 @@ class AdminReportListView(generics.ListAPIView):
 
 
 class AdminReportDetailView(generics.RetrieveUpdateAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminUser]
     queryset = CheatingReport.objects.select_related(
         "exam", "student", "reported_by", "reviewed_by"
     ).prefetch_related("evidence")
@@ -203,7 +208,7 @@ class AdminReportDetailView(generics.RetrieveUpdateAPIView):
             })
 
         # Always notify other admins when a report is edited (excluding the editor)
-        other_admins = User.objects.filter(is_superuser=True).exclude(pk=request.user.pk)
+        other_admins = User.objects.filter(Q(role="admin") | Q(is_superuser=True)).exclude(pk=request.user.pk)
         for admin in other_admins:
             notifications_data.append({
                 "user": admin,
@@ -246,7 +251,7 @@ class EvidenceCreateView(generics.CreateAPIView):
         notifications_data = []
 
         # Notify all admins that new evidence was attached
-        admin_users = User.objects.filter(is_superuser=True)
+        admin_users = User.objects.filter(Q(role="admin") | Q(is_superuser=True))
         for admin in admin_users:
             notifications_data.append({
                 "user": admin,
@@ -296,7 +301,7 @@ class EvidenceDeleteView(generics.DestroyAPIView):
         notifications_data = []
 
         # Notify admins about evidence removal
-        admin_users = User.objects.filter(is_superuser=True).exclude(pk=self.request.user.pk)
+        admin_users = User.objects.filter(Q(role="admin") | Q(is_superuser=True)).exclude(pk=self.request.user.pk)
         for admin in admin_users:
             notifications_data.append({
                 "user": admin,
@@ -323,7 +328,7 @@ class EvidenceDeleteView(generics.DestroyAPIView):
 
 
 class ReportStatsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminUser]
 
     def get(self, request):
         by_status   = CheatingReport.objects.values("status").annotate(count=Count("id"))
