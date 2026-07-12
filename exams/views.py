@@ -63,15 +63,20 @@ def _progress(step, total_steps, message, stats=None):
     return _sse_event("progress", event)
 
 
-def _done(stats, warnings, unscheduled=None):
+def _done(stats, warnings, unscheduled=None, unaccommodated=None):
     return _sse_event("done", {
         "message": (
             "Completed successfully"
-            
+
         ),
         "stats": stats,
         "warnings": warnings[:20],
         "unscheduled": unscheduled or [],
+        # Students whose exam WAS scheduled but who ran out of room during
+        # allocation — distinct from `unscheduled` (courses that never got a
+        # date/slot at all). This used to be computed and then silently
+        # discarded before ever reaching the response.
+        "unaccommodated": unaccommodated or [],
     })
 
 
@@ -120,7 +125,7 @@ def _run_generate_timetable(request, progress_callback, serializer):
         )
 
         # Generate exam schedule
-        exams, _, unscheduled, reasons, errors, stats = generate_exam_schedule(
+        exams, unaccommodated, unscheduled, reasons, errors, stats = generate_exam_schedule(
             slots=slots,
             course_ids=course_ids,
             master_timetable=master_timetable,
@@ -245,14 +250,46 @@ def _run_generate_timetable(request, progress_callback, serializer):
                             ]
                         )
 
+        # Students whose exam WAS scheduled but who ran out of room during
+        # allocation (distinct from `unScheduled` above — courses that never
+        # got a date/slot at all). This used to be computed and immediately
+        # discarded (`_`) with a hardcoded `"unaccomodated": []` stub here,
+        # so an admin had no way to know a generation left students seatless.
+        # Bulk-fetch student->user in one query instead of one per student
+        # (unaccommodated can easily be 100+ students for an oversubscribed
+        # slot).
+        student_users = {
+            s.id: s.user
+            for s in Student.objects.filter(
+                id__in=[item["student"].id for item in unaccommodated]
+            ).select_related("user")
+        }
+        unaccommodated_summary = [
+            {
+                "student_id": item["student"].id,
+                "reg_no": item["student"].reg_no,
+                "name": (
+                    f"{u.first_name} {u.last_name}".strip()
+                    if (u := student_users.get(item["student"].id))
+                    else ""
+                ),
+                "exam_id": item["exam"].id,
+                "course": item["exam"].group.course.title,
+                "group": item["exam"].group.group_name,
+                "date": item["exam"].date,
+                "start_time": item["exam"].start_time,
+            }
+            for item in unaccommodated
+        ]
+
         return {
         "success": True,
         "message": f"{len(exams)} exams scheduled successfully.",
         "data": serializer.data,
-        "unaccomodated": [],
+        "unaccommodated": unaccommodated_summary,
         "unscheduled": unScheduled,
-        "errors": errors,    
-        "stats": stats,    
+        "errors": errors,
+        "stats": stats,
     }
 
 
@@ -588,6 +625,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                         stats=result["stats"],
                         warnings=result.get("errors", []),
                         unscheduled=result.get("unscheduled", []),
+                        unaccommodated=result.get("unaccommodated", []),
             ))
                 except Exception as e:
                     queue.put_nowait(_error(f"Import failed: {str(e)}"))

@@ -1818,16 +1818,25 @@ def allocate_shared_rooms_updated(student_exams, location=None, exam_date=None, 
     
 
     with transaction.atomic():
-        # Get current room occupancy for this time slot
+        # Get current room occupancy for this time slot — one aggregated
+        # query instead of one .count() per room (was 20+ individual
+        # round-trips to a remote DB just to build this dict).
+        slot_date = exam_date or student_exams[0].exam.date
+        slot_start = start_time or student_exams[0].exam.start_time
+        slot_end = end_time or student_exams[0].exam.end_time
+        occupancy_counts = dict(
+            StudentExam.objects.filter(
+                room_id__in=[r.id for r in rooms],
+                exam__date=slot_date,
+                exam__start_time=slot_start,
+                exam__end_time=slot_end,
+            )
+            .values_list("room_id")
+            .annotate(count=Count("id"))
+        )
         room_occupancy = {}
         for room in rooms:
-            # Count students already assigned to this room at this time
-            occupied_count = StudentExam.objects.filter(
-                room=room,
-                exam__date=exam_date or student_exams[0].exam.date,
-                exam__start_time=start_time or student_exams[0].exam.start_time,
-                exam__end_time=end_time or student_exams[0].exam.end_time
-            ).count()
+            occupied_count = occupancy_counts.get(room.id, 0)
             room_occupancy[room.id] = {
                 'occupied': occupied_count,
                 'available': room.capacity - occupied_count,
@@ -1883,30 +1892,46 @@ def allocate_shared_rooms_updated(student_exams, location=None, exam_date=None, 
             # Track any students that couldn't be assigned
             unassigned_students.extend(students_to_assign)
 
-        # Final attempt for any remaining students (one by one)
+        # Final attempt for any remaining students — compute assignments in
+        # memory first, then write them with one bulk UPDATE per room instead
+        # of one .save() per student. That per-student save was the actual
+        # cause of "503, no meaningful error" on drag-and-drop: with ~200
+        # overflow students each round-tripping individually to a remote DB,
+        # this loop alone took 20-30+ seconds — long enough to trip the
+        # platform's gateway/worker timeout before Django ever got to send
+        # its own response. Also no longer bails out on the first student it
+        # can't seat; it now tries every remaining student before deciding.
+        final_assignments_by_room = defaultdict(list)
+        still_unassigned = []
         for se in unassigned_students:
-            assigned = False
+            assigned_room_id = None
             for room_id, room_info in room_occupancy.items():
                 if room_info['available'] > 0:
-                    se.room_id = room_id
-                    se.save()
-                    room_occupancy[room_id]['occupied'] += 1
-                    room_occupancy[room_id]['available'] -= 1
-                    assigned = True
+                    assigned_room_id = room_id
+                    room_info['occupied'] += 1
+                    room_info['available'] -= 1
                     break
-            
-            if not assigned:
-                logger.warning(f"Could not assign student {se.student_id} to any room")
-                return False
+            if assigned_room_id is not None:
+                final_assignments_by_room[assigned_room_id].append(se.id)
+            else:
+                still_unassigned.append(se)
 
-        slot_date = exam_date or student_exams[0].exam.date
-        slot_start = start_time or student_exams[0].exam.start_time
-        slot_end = end_time or student_exams[0].exam.end_time
+        for room_id, se_ids in final_assignments_by_room.items():
+            StudentExam.objects.filter(id__in=se_ids).update(room_id=room_id)
+
+        if still_unassigned:
+            logger.warning(
+                f"Could not assign {len(still_unassigned)} student(s) to any room"
+            )
+
         for room_id, room_info in room_occupancy.items():
             if room_info['occupied'] > 0:
                 assign_seat_positions_for_room_slot(
                     room_info['room'], slot_date, slot_start, slot_end
                 )
+
+        if still_unassigned:
+            return False
 
         logger.info(f"Successfully allocated all {len(unseated_student_exams)} new students to rooms")
         return True
@@ -2130,8 +2155,14 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
                         f"Exam {exam.id} | {date} [{start}–{end}] | "
                         f"{len(leftover)} students could not be seated"
                     )
-                    
-                    unaccommodated_students.extend(se.student for se in leftover)
+                    # Keep the exam alongside each student — a bare Student
+                    # list gives the caller no way to say *which* exam ran
+                    # out of room, which is exactly what an admin needs to
+                    # act on this (this used to be discarded before it ever
+                    # reached the API response — see _run_generate_timetable).
+                    unaccommodated_students.extend(
+                        {"student": se.student, "exam": exam} for se in leftover
+                    )
 
             # ── 6. Update Exam.room ───────────────────────────────────────────
             for exam in exams_students:

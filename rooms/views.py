@@ -520,14 +520,45 @@ class RoomViewSet(viewsets.ModelViewSet):
                 "exam__start_time",
                 "exam__end_time",
                 "exam__slot_name",
+            )
+            .annotate(student_count=Count("id"))
+            .order_by("room__name", "exam__date", "exam__start_time")
+        )
+
+        # instructor is assigned per-student (StudentExam.instructor), not
+        # per-exam, so including it in the values()/annotate() above used to
+        # GROUP BY it too — any exam with students split across a couple of
+        # instructor values (or unassigned vs assigned) got fragmented into
+        # several separate occupancy rows with partial student_counts each,
+        # instead of one row per exam. Looked up separately here, keyed by
+        # room+slot, so the headcount grouping above stays exam-accurate.
+        instructor_by_slot = {}
+        instructor_rows = (
+            StudentExam.objects.filter(
+                room__isnull=False,
+                instructor__isnull=False,
+                exam__group__course__department__location_id=recent_timetable.location.id,
+            )
+            .values(
+                "room__id",
+                "exam__date",
+                "exam__start_time",
+                "exam__end_time",
                 "instructor__id",
                 "instructor__first_name",
                 "instructor__last_name",
                 "instructor__email",
             )
-            .annotate(student_count=Count("id"))
-            .order_by("room__name", "exam__date", "exam__start_time")
+            .distinct()
         )
+        for row in instructor_rows:
+            key = (
+                row["room__id"],
+                row["exam__date"],
+                row["exam__start_time"],
+                row["exam__end_time"],
+            )
+            instructor_by_slot.setdefault(key, row)
 
         rooms = {}
         for item in student_exams:
@@ -553,6 +584,14 @@ class RoomViewSet(viewsets.ModelViewSet):
             )
 
             if not match:
+                instructor_row = instructor_by_slot.get(
+                    (
+                        rid,
+                        item["exam__date"],
+                        item["exam__start_time"],
+                        item["exam__end_time"],
+                    )
+                )
                 match = {
                     "date": item["exam__date"],
                     "start_time": item["exam__start_time"],
@@ -560,12 +599,12 @@ class RoomViewSet(viewsets.ModelViewSet):
                     "slot_name": item["exam__slot_name"],
                     "instructor": (
                         {
-                            "id": item["instructor__id"],
-                            "first_name": item["instructor__first_name"],
-                            "last_name": item["instructor__last_name"],
-                            "email": item["instructor__email"],
+                            "id": instructor_row["instructor__id"],
+                            "first_name": instructor_row["instructor__first_name"],
+                            "last_name": instructor_row["instructor__last_name"],
+                            "email": instructor_row["instructor__email"],
                         }
-                        if item["instructor__id"]
+                        if instructor_row
                         else None
                     ),
                     "exams": [],
