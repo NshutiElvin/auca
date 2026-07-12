@@ -124,12 +124,16 @@ class RoomViewSet(viewsets.ModelViewSet):
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                exam = Exam.objects.filter(id=course_group["courseId"]).first()
+                # courseIds (plural) covers the occupancies view merging
+                # several groups of the same course/room/slot into one card —
+                # falls back to the single courseId any other caller sends.
+                exam_ids = course_group.get("courseIds") or [course_group.get("courseId")]
+                exams = Exam.objects.filter(id__in=exam_ids)
 
                 existingRoom = Room.objects.filter(
                     name=course_group["roomName"]
                 ).first()
-                if not exam or not existingRoom:
+                if not exams.exists() or not existingRoom:
                     return Response(
                         {
                             "success": False,
@@ -137,7 +141,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                student_exams = StudentExam.objects.filter(exam=exam, room=existingRoom)
+                student_exams = StudentExam.objects.filter(exam__in=exams, room=existingRoom)
                 if not student_exams.exists():
                     return Response(
                         {
@@ -321,7 +325,12 @@ class RoomViewSet(viewsets.ModelViewSet):
                     )
 
                 # ✅ Fetch room and course details
-                exam = Exam.objects.filter(id=course_group.get("courseId")).first()
+                # courseIds (plural) covers the occupancies view merging
+                # several groups of the same course/room/slot into one card —
+                # falls back to the single courseId any other caller sends.
+                exam_ids = course_group.get("courseIds") or [course_group.get("courseId")]
+                exams = Exam.objects.filter(id__in=exam_ids)
+                exam = exams.first()
                 room = Room.objects.filter(name=room_data.get("roomName")).first()
                 existing_room = Room.objects.filter(
                     name=course_group.get("roomName")
@@ -344,7 +353,7 @@ class RoomViewSet(viewsets.ModelViewSet):
 
                 # ✅ Get all student exams currently assigned to the existing room
                 student_exams = StudentExam.objects.filter(
-                    exam=exam, room=existing_room
+                    exam__in=exams, room=existing_room
                 )
 
                 if not student_exams.exists():
@@ -415,12 +424,16 @@ class RoomViewSet(viewsets.ModelViewSet):
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                exam = Exam.objects.filter(id=course_group["courseId"]).first()
+                # courseIds (plural) covers the occupancies view merging
+                # several groups of the same course/room/slot into one card —
+                # falls back to the single courseId any other caller sends.
+                exam_ids = course_group.get("courseIds") or [course_group.get("courseId")]
+                exams = Exam.objects.filter(id__in=exam_ids)
                 room = Room.objects.filter(name=room["roomName"]).first()
                 existingRoom = Room.objects.filter(
                     name=course_group["roomName"]
                 ).first()
-                if not exam or not room or not existingRoom:
+                if not exams.exists() or not room or not existingRoom:
                     return Response(
                         {
                             "success": False,
@@ -428,7 +441,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                student_exams = StudentExam.objects.filter(exam=exam, room=existingRoom)
+                student_exams = StudentExam.objects.filter(exam__in=exams, room=existingRoom)
                 if not student_exams.exists():
                     return Response(
                         {

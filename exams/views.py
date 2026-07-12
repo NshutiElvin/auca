@@ -15,6 +15,7 @@ from schedules.utils import (
     verify_groups_compatibility,
     which_suitable_slot_to_schedule_course_group,
 )
+from .permissions import IsAdminOrInstructor
 from semesters.models import Semester
 
 from django.db.models import Prefetch
@@ -274,7 +275,15 @@ class ExamViewSet(viewsets.ModelViewSet):
         ]:
             permission_classes = [permissions.IsAuthenticated]
         else:
-            permission_classes = [permissions.IsAdminUser]
+            # Was permissions.IsAdminUser (Django is_staff) — but role="admin"
+            # accounts created through this app's own user-management UI
+            # never get is_staff=True (forced False on creation to prevent
+            # privilege escalation, see users/serializers.py), so every
+            # admin was rejected from generate-exam-schedule and every other
+            # mutating action here. IsAdminOrInstructor checks the app's
+            # actual role field, matching how schedules/views.py already
+            # gates the manual-timetable equivalent of these actions.
+            permission_classes = [IsAdminOrInstructor]
         return [permission() for permission in permission_classes]
 
     def list(self, request, *args, **kwargs):
@@ -1455,8 +1464,11 @@ class StudentExamViewSet(viewsets.ModelViewSet):
             # create/update/partial_update/destroy directly touch a student's
             # room, exam link, and attendance flags — without this, any
             # authenticated (including student) token could edit or delete
-            # any StudentExam record, not just their own.
-            permission_classes = [permissions.IsAdminUser]
+            # any StudentExam record, not just their own. Uses
+            # IsAdminOrInstructor (role-based) rather than IsAdminUser
+            # (is_staff-based) for the same reason as ExamViewSet above —
+            # role="admin" accounts are never is_staff=True in this app.
+            permission_classes = [IsAdminOrInstructor]
         return [permission() for permission in permission_classes]
 
     def list(self, request, *args, **kwargs):
