@@ -16,7 +16,8 @@ from courses.models import Course, CourseGroup
 from departments.models import Department
 from enrollments.models import Enrollment
 from exams.models import Exam, StudentExam
-from rooms.models import Room
+from notifications.utils import notify_students_room_changed
+from rooms.models import Room, RoomOutOfService
 from schedules.models import MasterTimetable
 from django.db.models import Min, Max
 from datetime import timedelta, time
@@ -333,7 +334,7 @@ def get_occupied_seats_by_time_slot(date, start_time):
     return occupied_count
 
 
-def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot):
+def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot, timetable_id=None):
     all_suggestions = []
     all_conflicts = defaultdict(list)
     possible_slots = []
@@ -399,10 +400,16 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
         .first()
     )
 
-    # Bulk fetch all exams and related data for the date range
+    # Bulk fetch all exams and related data for the date range — scoped to
+    # this group's own campus (location_id was already computed above but
+    # never actually applied here) and, when known, to the currently-open
+    # MasterTimetable. Unscoped, this checked slot availability against
+    # exams from every campus and every other timetable in the system,
+    # reporting slots as conflicted/full because of exams the admin
+    # scheduling this group can't even see.
     all_exams = (
         Exam.objects
-        .filter(date__in=dates_to_check)
+        .filter(date__in=dates_to_check, group__course__department__location_id=location_id)
         .select_related('group', 'group__course')
         .prefetch_related(
             Prefetch(
@@ -411,6 +418,8 @@ def which_suitable_slot_to_schedule_course_group(date, new_group, suggested_slot
             )
         )
     )
+    if timetable_id:
+        all_exams = all_exams.filter(mastertimetableexam__master_timetable_id=timetable_id)
 
     # Pre-process exam data into efficient lookup structures
     exams_by_date_slot = defaultdict(list)
@@ -1351,8 +1360,9 @@ def reschedule_exam(exam_id, new_date, slot=None):
                 room_requirements.append(student_count)
 
             # Check if we can fit all exams in available rooms (this
-            # location only — was every room system-wide).
-            rooms = list(Room.objects.filter(location=location).order_by("-capacity"))
+            # location only — was every room system-wide — and excluding
+            # any room flagged out of service for this date/slot).
+            rooms = list(get_available_rooms(location, new_date, new_start_time, new_end_time))
             if not can_accommodate_exams(room_requirements, rooms):
                 raise ValueError(
                     f"Cannot allocate rooms efficiently for all exams in this slot. "
@@ -1380,6 +1390,18 @@ def reschedule_exam(exam_id, new_date, slot=None):
             )
         )
 
+        # Snapshot room assignments before clearing them, so afterward we can
+        # tell which students actually landed in a DIFFERENT room (vs got
+        # reassigned to the exact same one) — this reschedule can silently
+        # move already-seated students of OTHER exams sharing the slot, not
+        # just the one being rescheduled, which is exactly the case worth
+        # notifying students about.
+        old_room_by_se_id = dict(
+            StudentExam.objects.filter(
+                exam__in=slot_exams, room__isnull=False
+            ).values_list("id", "room_id")
+        )
+
         # Clear existing room assignments for this slot
         StudentExam.objects.filter(exam__in=slot_exams).update(room=None)
 
@@ -1387,7 +1409,9 @@ def reschedule_exam(exam_id, new_date, slot=None):
         try:
             slot_student_exams = list(
                 StudentExam.objects.filter(exam__in=slot_exams).select_related(
-                    "exam__group__course__department__location", "student"
+                    "exam__group__course__department__location",
+                    "exam__group__course",
+                    "student__user",
                 )
             )
             success = allocate_shared_rooms_updated(
@@ -1408,6 +1432,24 @@ def reschedule_exam(exam_id, new_date, slot=None):
                     f"Room allocation failed: some students could not be accommodated. "
                     f"Exam rescheduling has been cancelled."
                 )
+
+            if old_room_by_se_id:
+                changed = [
+                    se for se in slot_student_exams
+                    if se.id in old_room_by_se_id
+                    and se.room_id
+                    and se.room_id != old_room_by_se_id[se.id]
+                ]
+                if changed:
+                    old_rooms = {
+                        r.id: r for r in Room.objects.filter(
+                            id__in=set(old_room_by_se_id.values())
+                        )
+                    }
+                    notify_students_room_changed(
+                        (se, old_rooms.get(old_room_by_se_id[se.id]), se.room)
+                        for se in changed
+                    )
         except Exception as e:
             # Rollback on any room allocation error
             exam.date = original_date
@@ -1828,6 +1870,29 @@ def schedule_unscheduled_group(course_id, group_id):
         )
         return False
 
+def get_available_rooms(location, date, start_time, end_time):
+    """
+    Rooms at `location` that are NOT blocked by a RoomOutOfService entry
+    covering (date, start_time, end_time) — the single place every
+    room-allocation path should get its room list from, so a room flagged
+    out of service is structurally excluded from ever receiving a seat
+    assignment during that window instead of relying on every caller to
+    remember to check.
+    """
+    blocked_room_ids = RoomOutOfService.objects.filter(
+        room__location=location,
+        start_date__lte=date,
+        end_date__gte=date,
+        start_time__lt=end_time,
+        end_time__gt=start_time,
+    ).values_list("room_id", flat=True)
+    return (
+        Room.objects.filter(location=location)
+        .exclude(id__in=blocked_room_ids)
+        .order_by("-capacity")
+    )
+
+
 def allocate_shared_rooms_updated(student_exams, location=None, exam_date=None, start_time=None, end_time=None):
 
     if not student_exams:
@@ -1853,19 +1918,20 @@ def allocate_shared_rooms_updated(student_exams, location=None, exam_date=None, 
     if not student_exams:
         return True
 
-    rooms = list(Room.objects.filter(location=location).order_by("-capacity"))
+    slot_date = exam_date or student_exams[0].exam.date
+    slot_start = start_time or student_exams[0].exam.start_time
+    slot_end = end_time or student_exams[0].exam.end_time
+
+    # Excludes any room flagged out of service for this date/slot — see
+    # get_available_rooms.
+    rooms = list(get_available_rooms(location, slot_date, slot_start, slot_end))
     if not rooms:
         raise Exception("No rooms available for allocation.")
-
-    
 
     with transaction.atomic():
         # Get current room occupancy for this time slot — one aggregated
         # query instead of one .count() per room (was 20+ individual
         # round-trips to a remote DB just to build this dict).
-        slot_date = exam_date or student_exams[0].exam.date
-        slot_start = start_time or student_exams[0].exam.start_time
-        slot_end = end_time or student_exams[0].exam.end_time
         occupancy_counts = dict(
             StudentExam.objects.filter(
                 room_id__in=[r.id for r in rooms],
@@ -2065,11 +2131,8 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
         logger.info(f"No students needing room allocation for location {location_id}")
         return []
 
-    # ── 2. Rooms sorted largest first ─────────────────────────────────────────
-    rooms = list(
-        Room.objects.filter(location_id=location_id).order_by("-capacity")
-    )
-    if not rooms:
+    # ── 2. Any rooms at all at this location? ──────────────────────────────────
+    if not Room.objects.filter(location_id=location_id).exists():
         logger.error(f"No rooms found for location {location_id}")
         return list(
             StudentExam.objects.filter(
@@ -2082,6 +2145,22 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
 
     # ── 3. Process each time slot ─────────────────────────────────────────────
     for date, start, end in slots_to_allocate:
+
+        # Fetched per-slot (not once upfront) — a room out of service on
+        # one date but not another must only be excluded for the dates it
+        # actually covers.
+        rooms = list(get_available_rooms(location_id, date, start, end))
+        if not rooms:
+            unaccommodated_students.extend(
+                StudentExam.objects.filter(
+                    room__isnull=True,
+                    exam__group__course__department__location_id=location_id,
+                    exam__date=date,
+                    exam__start_time=start,
+                    exam__end_time=end,
+                ).values_list("student", flat=True)
+            )
+            continue
 
         student_exams_qs = (
             StudentExam.objects.filter(

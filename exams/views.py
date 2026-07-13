@@ -885,6 +885,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 existing_slot = request.data.get("slot")
                 date = request.data.get("day")
                 new_group_to_add = request.data.get("course_group")
+                timetable_id = request.data.get("timetable_id")
 
                 # Simplified group extraction
                 if new_group_to_add.get("groups"):
@@ -894,12 +895,24 @@ class ExamViewSet(viewsets.ModelViewSet):
                 else:
                     new_groups = [new_group_to_add["group"]["id"]]
 
-                # Get scheduled groups for the date with a single query
+                # Get scheduled groups for the date with a single query —
+                # scoped to the timetable currently open on the manual
+                # timetable board. Unscoped, this pulled in groups from
+                # EVERY MasterTimetable in the system sharing that date
+                # (different campuses, old drafts, other generation runs),
+                # manufacturing phantom conflicts against exams the admin
+                # can't even see on their screen. Exam.master_timetable is
+                # NULL for every manually-scheduled exam (only set by the
+                # bulk auto-generator), so this has to go through the
+                # MasterTimetableExam M2M, not the direct FK.
                 date_formatted = parse_date(date)
-                scheduled_date_groups = list(
-                    Exam.objects.filter(date=date_formatted).values_list(
-                        "group_id", flat=True
+                scheduled_date_groups_qs = Exam.objects.filter(date=date_formatted)
+                if timetable_id:
+                    scheduled_date_groups_qs = scheduled_date_groups_qs.filter(
+                        mastertimetableexam__master_timetable_id=timetable_id
                     )
+                scheduled_date_groups = list(
+                    scheduled_date_groups_qs.values_list("group_id", flat=True)
                 )
 
                 # `scheduled_date_groups` (freshly queried for `date_formatted`)
@@ -921,7 +934,8 @@ class ExamViewSet(viewsets.ModelViewSet):
                     # No conflicts - can proceed with scheduling
                     new_group, best_suggestion, all_suggestions, all_conflicts = (
                         which_suitable_slot_to_schedule_course_group(
-                            date_formatted, new_groups, existing_slot.get("name")
+                            date_formatted, new_groups, existing_slot.get("name"),
+                            timetable_id=timetable_id,
                         )
                     )
                     return Response(
@@ -943,7 +957,8 @@ class ExamViewSet(viewsets.ModelViewSet):
 
                 new_group, best_suggestion, all_suggestions, all_conflicts = (
                     which_suitable_slot_to_schedule_course_group(
-                        date_formatted, new_groups, existing_slot.get("name")
+                        date_formatted, new_groups, existing_slot.get("name"),
+                        timetable_id=timetable_id,
                     )
                 )
 
@@ -1082,13 +1097,23 @@ class ExamViewSet(viewsets.ModelViewSet):
         try:
             with transaction.atomic():
                 existing_slot = request.data.get("slotToChange")
+                timetable_id = request.data.get("timetable_id")
                 name = existing_slot.get("name")
                 start_time = time.fromisoformat(existing_slot.get("start"))
                 end_time = time.fromisoformat(existing_slot.get("end"))
                 date = existing_slot.get("date")
 
                 date = parse_date(date)
+                # Scoped to the timetable currently open on the manual
+                # board — unscoped, this retimed every exam in the whole
+                # system sharing this date+slot name, silently editing
+                # unrelated campuses'/timetables' exams the admin never
+                # touched.
                 exams = Exam.objects.filter(date=date, slot_name=name)
+                if timetable_id:
+                    exams = exams.filter(
+                        mastertimetableexam__master_timetable_id=timetable_id
+                    )
                 for exam in exams:
                     exam.start_time = start_time
                     exam.end_time = end_time
@@ -1123,6 +1148,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 existing_slot = request.data.get("slot")
                 date = request.data.get("day")
                 new_group_to_add = request.data.get("course_group")
+                timetable_id = request.data.get("timetable_id")
                 date_formatted = parse_date(date)
                 course_id = new_group_to_add["course"]["id"]
                 course = Course.objects.get(id=course_id)
@@ -1182,6 +1208,10 @@ class ExamViewSet(viewsets.ModelViewSet):
                             )
                             .order_by("exam__date", "exam__start_time")
                         )
+                        if timetable_id:
+                            existing_student_exams = existing_student_exams.filter(
+                                exam__mastertimetableexam__master_timetable_id=timetable_id
+                            )
                         student_exams = (
                             StudentExam.objects.filter(
                                 student_id__in=student_ids, exam=exam
@@ -1230,6 +1260,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             existing_slot = request.data.get("slot")
             date = request.data.get("day")
             new_group_to_add = request.data.get("course_group")
+            timetable_id = request.data.get("timetable_id")
             date_formatted = parse_date(date)
             start_time = time.fromisoformat(existing_slot.get("start"))
             end_time = time.fromisoformat(existing_slot.get("end"))
@@ -1280,6 +1311,10 @@ class ExamViewSet(viewsets.ModelViewSet):
                     .select_related("exam", "exam__group__course__semester", "student")
                     .order_by("exam__date", "exam__start_time")
                 )
+                if timetable_id:
+                    existing_student_exams = existing_student_exams.filter(
+                        exam__mastertimetableexam__master_timetable_id=timetable_id
+                    )
                 student_exams = (
                     StudentExam.objects.filter(student_id__in=student_ids, exam=exam)
                     .select_related("exam", "exam__group__course__semester", "student")
@@ -1324,6 +1359,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                 existing_slot = request.data.get("slot")
                 date = request.data.get("day")
                 new_group_to_add = request.data.get("course_group")
+                timetable_id = request.data.get("timetable_id")
                 date_formatted = parse_date(date)
                 weekday = date_formatted.strftime("%A")
                 exam = new_group_to_add.get("exam")
@@ -1357,6 +1393,10 @@ class ExamViewSet(viewsets.ModelViewSet):
                         )
                         .order_by("exam__date", "exam__start_time")
                     )
+                    if timetable_id:
+                        existing_student_exams = existing_student_exams.filter(
+                            exam__mastertimetableexam__master_timetable_id=timetable_id
+                        )
                     student_exams = (
                         StudentExam.objects.filter(
                             student_id__in=student_ids, exam=exam
@@ -1398,10 +1438,20 @@ class ExamViewSet(viewsets.ModelViewSet):
             with transaction.atomic():
                 date = request.data.get("day")
                 group_id = request.data.get("group_id")
+                timetable_id = request.data.get("timetable_id")
                 date_formatted = parse_date(date)
-                exam = Exam.objects.filter(
-                    group__id=group_id, date=date_formatted
-                ).first()
+                # The same group+date can legitimately exist in two
+                # different MasterTimetables (an old draft alongside a
+                # fresh generation, or two campuses' runs) — without
+                # scoping by timetable, .first() could silently remove a
+                # DIFFERENT timetable's exam than the one the admin is
+                # actually looking at.
+                exam_qs = Exam.objects.filter(group__id=group_id, date=date_formatted)
+                if timetable_id:
+                    exam_qs = exam_qs.filter(
+                        mastertimetableexam__master_timetable_id=timetable_id
+                    )
+                exam = exam_qs.first()
                 master_timetable = MasterTimetableExam.objects.get(
                     exam=exam
                 ).master_timetable
@@ -1443,6 +1493,10 @@ class ExamViewSet(viewsets.ModelViewSet):
                     .select_related("exam", "exam__group__course__semester", "student")
                     .order_by("exam__date", "exam__start_time")
                 )
+                if timetable_id:
+                    existing_student_exams = existing_student_exams.filter(
+                        exam__mastertimetableexam__master_timetable_id=timetable_id
+                    )
 
                 allocate_shared_rooms_updated(existing_student_exams, location=location)
                 master_timetable.exams.remove(exam)

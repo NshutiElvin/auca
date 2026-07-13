@@ -1,4 +1,3 @@
-from pprint import pprint
 from django.conf import settings
 from django.shortcuts import render
 
@@ -12,15 +11,18 @@ from exams.serializers import StudentExamSerializer
 from schedules.models import MasterTimetable
 
 from semesters.models import Semester
-from .models import Location, Room, RoomAllocationSwitch
+from .models import Location, Room, RoomAllocationSwitch, RoomOutOfService
+from .permissions import IsAdminOrInstructor as RoomsIsAdminOrInstructor
 from rest_framework.decorators import action, permission_classes
 from .serializers import (
     LocationSerializer,
     RoomSerializer,
     RoomAllocationSwitchSerializer,
+    RoomOutOfServiceSerializer,
 )
 from django.contrib.auth import get_user_model
 from exams.models import Exam, StudentExam
+from notifications.utils import notify_students_room_changed
 from django.db.models import Count
 from collections import defaultdict
 from django.db import transaction
@@ -28,7 +30,7 @@ from django.utils import timezone
 from django.db.models import Sum
 from django.utils.dateparse import parse_date, parse_time
 from pytz import timezone as pytz_timezone
-from datetime import time
+from datetime import time, timedelta
 import logging
 
 User = get_user_model()
@@ -279,7 +281,9 @@ class RoomViewSet(viewsets.ModelViewSet):
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                student_exams = StudentExam.objects.filter(id__in=exams)
+                student_exams = StudentExam.objects.filter(id__in=exams).select_related(
+                    "student__user", "exam__group__course", "room"
+                )
 
                 if not student_exams.exists():
                     return Response(
@@ -289,9 +293,19 @@ class RoomViewSet(viewsets.ModelViewSet):
                         },
                         status=status.HTTP_404_NOT_FOUND,
                     )
+                # Unlike change_room (always "was in existingRoom"), this
+                # endpoint takes an arbitrary list of StudentExam ids — some
+                # could already be unseated (room was null), so only notify
+                # where there's a genuine prior room being changed away from.
+                room_changes = []
                 for student_exam in student_exams:
+                    old_room = student_exam.room
+                    if old_room and old_room.id != room.id:
+                        room_changes.append((student_exam, old_room, room))
                     student_exam.room = room
                     student_exam.save()
+                if room_changes:
+                    notify_students_room_changed(room_changes)
                 return Response(
                     {"success": True, "message": "Exam room changed successfully"},
                     status=status.HTTP_201_CREATED,
@@ -441,7 +455,9 @@ class RoomViewSet(viewsets.ModelViewSet):
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                student_exams = StudentExam.objects.filter(exam__in=exams, room=existingRoom)
+                student_exams = StudentExam.objects.filter(
+                    exam__in=exams, room=existingRoom
+                ).select_related("student__user", "exam__group__course")
                 if not student_exams.exists():
                     return Response(
                         {
@@ -450,9 +466,15 @@ class RoomViewSet(viewsets.ModelViewSet):
                         },
                         status=status.HTTP_404_NOT_FOUND,
                     )
+                is_actual_change = room.id != existingRoom.id
+                room_changes = []
                 for student_exam in student_exams:
+                    if is_actual_change:
+                        room_changes.append((student_exam, existingRoom, room))
                     student_exam.room = room
                     student_exam.save()
+                if room_changes:
+                    notify_students_room_changed(room_changes)
                 return Response(
                     {"success": True, "message": "Exam room changed successfully"},
                     status=status.HTTP_201_CREATED,
@@ -722,6 +744,101 @@ class RoomViewSet(viewsets.ModelViewSet):
                     ],
                 },
                 "message": "Seat map fetched successfully",
+            }
+        )
+
+    @action(detail=True, methods=["get"], url_path="usage")
+    def usage(self, request, pk=None):
+        """
+        Hotel-style day-by-day usage for a room: which dates have exam
+        bookings (with course/group/slot detail) and which are blocked by a
+        RoomOutOfService entry, over a date range (defaults to the next 30
+        days from today).
+        """
+        room = self.get_object()
+
+        start_str = request.GET.get("start")
+        end_str = request.GET.get("end")
+        start_date = parse_date(start_str) if start_str else timezone.localdate()
+        end_date = (
+            parse_date(end_str) if end_str else start_date + timedelta(days=30)
+        )
+
+        if not start_date or not end_date or start_date > end_date:
+            return Response(
+                {"success": False, "message": "Invalid 'start'/'end' date range"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        bookings_by_date = defaultdict(list)
+        exam_rows = (
+            StudentExam.objects.filter(
+                room=room, exam__date__range=(start_date, end_date)
+            )
+            .values(
+                "exam__date", "exam__slot_name", "exam__start_time", "exam__end_time",
+                "exam__group__course__code", "exam__group__course__title",
+                "exam__group__group_name",
+            )
+            .annotate(student_count=Count("id"))
+            .distinct()
+        )
+        for row in exam_rows:
+            bookings_by_date[row["exam__date"]].append(
+                {
+                    "slot_name": row["exam__slot_name"],
+                    "start_time": row["exam__start_time"],
+                    "end_time": row["exam__end_time"],
+                    "course_code": row["exam__group__course__code"],
+                    "course_title": row["exam__group__course__title"],
+                    "course_group": row["exam__group__group_name"],
+                    "student_count": row["student_count"],
+                }
+            )
+
+        blocks = RoomOutOfService.objects.filter(
+            room=room, start_date__lte=end_date, end_date__gte=start_date
+        )
+        blocks_data = [
+            {
+                "id": b.id,
+                "start_date": b.start_date,
+                "end_date": b.end_date,
+                "start_time": b.start_time,
+                "end_time": b.end_time,
+                "reason": b.reason,
+            }
+            for b in blocks
+        ]
+
+        days = []
+        current = start_date
+        while current <= end_date:
+            day_blocks = [
+                b for b in blocks_data
+                if b["start_date"] <= current <= b["end_date"]
+            ]
+            days.append(
+                {
+                    "date": current,
+                    "bookings": bookings_by_date.get(current, []),
+                    "blocked": bool(day_blocks),
+                    "blocks": day_blocks,
+                }
+            )
+            current += timedelta(days=1)
+
+        return Response(
+            {
+                "success": True,
+                "data": {
+                    "room_id": room.id,
+                    "room_name": room.name,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "days": days,
+                },
+                "message": "Room usage fetched successfully",
             }
         )
 
@@ -1260,5 +1377,55 @@ class RoomAllocationSwitchViewSet(viewsets.ModelViewSet):
         self.perform_destroy(instance)
         return Response(
             {"success": True, "message": "Deleted successfully"},
+            status=status.HTTP_204_NO_CONTENT,
+        )
+
+
+class RoomOutOfServiceViewSet(viewsets.ModelViewSet):
+    queryset = RoomOutOfService.objects.select_related("room", "created_by").all()
+    serializer_class = RoomOutOfServiceSerializer
+    permission_classes = [RoomsIsAdminOrInstructor]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        room_id = self.request.GET.get("room")
+        if room_id:
+            queryset = queryset.filter(room_id=room_id)
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(
+            {"success": True, "data": serializer.data, "message": "Fetched successfully"}
+        )
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(
+            {"success": True, "data": serializer.data, "message": "Room blocked successfully"},
+            status=status.HTTP_201_CREATED,
+        )
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(
+            {"success": True, "data": serializer.data, "message": "Updated successfully"}
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        self.perform_destroy(instance)
+        return Response(
+            {"success": True, "message": "Room block removed successfully"},
             status=status.HTTP_204_NO_CONTENT,
         )
