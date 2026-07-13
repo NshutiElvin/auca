@@ -2501,7 +2501,19 @@ def generate_exam_schedule(
                                 cfg_names.add(s[1])
                         if cfg_names:
                             day_slots = [s for s in day_slots if s in cfg_names]
-                    progress_callback(5, TOTAL_STEPS, f"Scheduling day: {current_date}, {weekday} slots: {', '.join(day_slots)}")
+                    # Used to progress_callback() a "Scheduling day: ..." message
+                    # here — but this fires once per (course_group, date) pair
+                    # scanned, so a run with e.g. 53 groups x 15 candidate dates
+                    # produced 700+ near-duplicate SSE events on top of the
+                    # per-exam messages below (a real generation run's SSE log
+                    # exceeded 50,000 characters and got truncated). The
+                    # frontend's onDownloadProgress handler re-reads the ENTIRE
+                    # accumulated response text on every single event, so more
+                    # events means quadratically more frontend work — a likely
+                    # contributor to reported slowness/memory issues on
+                    # generation. The per-course-group "Scheduled N students on
+                    # DATE [SLOT]" summary below already conveys the meaningful
+                    # progress.
 
                     if weekday in special_rules:
                         rule = special_rules[weekday]
@@ -2624,7 +2636,13 @@ def generate_exam_schedule(
                                     slot_name=slot_name,
                                     master_timetable=master_timetable
                                 )
-                                progress_callback(5, TOTAL_STEPS, f"Exam: {exam.group.course.title} scheduled {exam.date} at: {exam.start_time}")
+                                # Fired once per constituent group here (a
+                                # course_group bundle can hold 5-9 groups), so
+                                # this alone produced thousands of near-
+                                # identical SSE events for a full run — the
+                                # "Scheduled N students on DATE [SLOT]" summary
+                                # right after this whole bundle is placed
+                                # already covers it.
                                 if master_timetable:
                                     master_timetable.exams.add(exam)
                                 exams_created.append(exam)
