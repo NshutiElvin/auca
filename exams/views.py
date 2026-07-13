@@ -280,8 +280,17 @@ def _run_generate_timetable(request, progress_callback, serializer):
                 "exam_id": item["exam"].id,
                 "course": item["exam"].group.course.title,
                 "group": item["exam"].group.group_name,
-                "date": item["exam"].date,
-                "start_time": item["exam"].start_time,
+                # ISO strings, not raw date/time objects — this SSE stream
+                # is encoded with plain json.dumps() (see _sse_event), not
+                # DRF's date-aware renderer, so a raw datetime.date/time
+                # object here throws "Object of type date is not JSON
+                # serializable" and takes down the whole "done" event after
+                # generation otherwise completed successfully.
+                "date": item["exam"].date.isoformat() if item["exam"].date else None,
+                "start_time": (
+                    item["exam"].start_time.isoformat()
+                    if item["exam"].start_time else None
+                ),
             }
             for item in unaccommodated
         ]
