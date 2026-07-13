@@ -723,8 +723,13 @@ def _build_seating_pdf(
                 0.8 * cm, 2.3 * cm, 4.5 * cm, 4.0 * cm, 1.8 * cm, 2.7 * cm, 2.7 * cm,
             ]
         else:
-            headers = ["#", "Reg No", "Student Name", "Course", "Room"]
-            col_widths = [0.8 * cm, 2.5 * cm, 5.0 * cm, 4.5 * cm, 3.0 * cm]
+            # Was missing seat position entirely — only the per-room branch
+            # (room_id present) included it, so the full/all-rooms export
+            # told a student which room but never which exact seat.
+            headers = ["#", "Reg No", "Student Name", "Course", "Room", "Seat"]
+            col_widths = [
+                0.8 * cm, 2.2 * cm, 4.2 * cm, 3.8 * cm, 2.3 * cm, 2.2 * cm,
+            ]
 
         s_data = [[Paragraph(h, hdr) for h in headers]]
 
@@ -760,6 +765,13 @@ def _build_seating_pdf(
                 )
             else:
                 s_room = se.room.name if se.room else "–"
+                if se.seat_row and se.seat_column:
+                    seat_label = f"R{se.seat_row}-C{se.seat_column}"
+                    if se.room and se.room.columns:
+                        seat_number = (se.seat_row - 1) * se.room.columns + se.seat_column
+                        seat_label = f"{seat_label} (#{seat_number})"
+                else:
+                    seat_label = "–"
                 s_data.append(
                     [
                         Paragraph(str(idx), celc),
@@ -767,6 +779,7 @@ def _build_seating_pdf(
                         Paragraph(full_name, cell),
                         Paragraph(course_title, cell),
                         Paragraph(s_room, celc),
+                        Paragraph(seat_label, celc),
                     ]
                 )
 

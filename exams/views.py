@@ -102,7 +102,11 @@ def _run_generate_timetable(request, progress_callback, serializer):
             )
         location = client_config.get("location")
         academic_year = client_config.get("academicYear")
-        category = client_config.get("category", "Provisional")
+        # .get(key, default) only falls back when the key is entirely
+        # absent — the frontend was sending category as "" (present, just
+        # empty), so this default never actually applied. `or` also catches
+        # the empty-string case.
+        category = client_config.get("category") or "Provisional"
 
         # Parse dates more efficiently
         if start_date_str and "T" in start_date_str:
@@ -1156,12 +1160,22 @@ class ExamViewSet(viewsets.ModelViewSet):
                                 student_id=student_id, exam=exam
                             )
                             student_exam.save()
-                        # assigning rooms
+                        # assigning rooms — scoped to this course's own
+                        # location. Unscoped, this pulled in every
+                        # StudentExam sharing this exact date/time across
+                        # the ENTIRE system (all locations): on the busiest
+                        # slot in production that's ~4,800 rows, each fully
+                        # materialized through a 3-level select_related join,
+                        # for a single group's drag-and-drop — most of it
+                        # irrelevant, since allocate_shared_rooms_updated
+                        # only ever assigns rooms within one location anyway.
+                        location = course.department.location
                         existing_student_exams = (
                             StudentExam.objects.filter(
                                 exam__date=date_formatted,
                                 exam__start_time=start_time,
                                 exam__end_time=end_time,
+                                exam__group__course__department__location=location,
                             )
                             .select_related(
                                 "exam", "exam__group__course__semester", "student"
@@ -1178,7 +1192,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                             .order_by("exam__date", "exam__start_time")
                         )
                         student_exams = student_exams.union(existing_student_exams)
-                        allocate_shared_rooms_updated(student_exams)
+                        allocate_shared_rooms_updated(student_exams, location=location)
 
                     except Exception as e:
                         raise Exception(str(e))
@@ -1253,11 +1267,15 @@ class ExamViewSet(viewsets.ModelViewSet):
                         student_id=student_id, exam=exam
                     )
                     student_exam.save()
+                # Scoped to this course's own location — see the identical
+                # comment in schedule_new_exam above for why.
+                location = course.department.location
                 existing_student_exams = (
                     StudentExam.objects.filter(
                         exam__date=date_formatted,
                         exam__start_time=start_time,
                         exam__end_time=end_time,
+                        exam__group__course__department__location=location,
                     )
                     .select_related("exam", "exam__group__course__semester", "student")
                     .order_by("exam__date", "exam__start_time")
@@ -1268,7 +1286,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                     .order_by("exam__date", "exam__start_time")
                 )
                 student_exams = student_exams.union(existing_student_exams)
-                allocate_shared_rooms_updated(student_exams)
+                allocate_shared_rooms_updated(student_exams, location=location)
             except UnscheduledExam.DoesNotExist:
                 pass
 
@@ -1324,11 +1342,15 @@ class ExamViewSet(viewsets.ModelViewSet):
                     student_ids = Enrollment.objects.filter(
                         course=exam.group.course, group=exam.group
                     ).values_list("student_id", flat=True)
+                    # Scoped to this course's own location — see the
+                    # identical comment in schedule_new_exam above.
+                    location = exam.group.course.department.location
                     existing_student_exams = (
                         StudentExam.objects.filter(
                             exam__date=date_formatted,
                             exam__start_time=start_time,
                             exam__end_time=end_time,
+                            exam__group__course__department__location=location,
                         )
                         .select_related(
                             "exam", "exam__group__course__semester", "student"
@@ -1345,7 +1367,7 @@ class ExamViewSet(viewsets.ModelViewSet):
                         .order_by("exam__date", "exam__start_time")
                     )
                     student_exams = student_exams.union(existing_student_exams)
-                    allocate_shared_rooms_updated(student_exams)
+                    allocate_shared_rooms_updated(student_exams, location=location)
 
                 except Exception as e:
                     raise Exception(str(e))
@@ -1408,17 +1430,21 @@ class ExamViewSet(viewsets.ModelViewSet):
                 ).order_by(
                     "exam__date", "exam__start_time"
                 ).delete()
+                # Scoped to this course's own location — see the identical
+                # comment in schedule_new_exam above.
+                location = course.department.location
                 existing_student_exams = (
                     StudentExam.objects.filter(
                         exam__date=date_formatted,
                         exam__start_time=exam.start_time,
                         exam__end_time=exam.end_time,
+                        exam__group__course__department__location=location,
                     )
                     .select_related("exam", "exam__group__course__semester", "student")
                     .order_by("exam__date", "exam__start_time")
                 )
 
-                allocate_shared_rooms_updated(existing_student_exams)
+                allocate_shared_rooms_updated(existing_student_exams, location=location)
                 master_timetable.exams.remove(exam)
                 exam.delete()
                 exams = UnscheduledExam.objects.all()

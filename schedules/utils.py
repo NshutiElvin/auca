@@ -13,6 +13,7 @@ from django.db.models import Count, Sum
 
 # Local Models
 from courses.models import Course, CourseGroup
+from departments.models import Department
 from enrollments.models import Enrollment
 from exams.models import Exam, StudentExam
 from rooms.models import Room
@@ -1237,7 +1238,12 @@ def reschedule_exam(exam_id, new_date, slot=None):
                 )
 
         # 3. CHECK STUDENT CONFLICTS
-        enrolled_students = Enrollment.objects.filter(course=exam.course)
+        # Exam has no `course` field — only `group` (FK to CourseGroup), with
+        # the course reached via `group.course`. Every `.course` reference in
+        # this function used to raise AttributeError immediately, so
+        # reschedule-exam crashed on every real call.
+        location = exam.group.course.department.location
+        enrolled_students = Enrollment.objects.filter(course=exam.group.course)
         conflicted_students = []
 
         for enrollment in enrolled_students:
@@ -1250,7 +1256,7 @@ def reschedule_exam(exam_id, new_date, slot=None):
                     {
                         "student": enrollment.student.reg_no,
                         "conflicting_exams": [
-                            se.exam.course.title for se in existing_exams
+                            se.exam.group.course.title for se in existing_exams
                         ],
                     }
                 )
@@ -1271,11 +1277,17 @@ def reschedule_exam(exam_id, new_date, slot=None):
 
         # 4. CHECK ROOM CAPACITY CONFLICTS
         # Get number of students for this exam
-        exam_student_count = Enrollment.objects.filter(course=exam.course).count()
+        exam_student_count = Enrollment.objects.filter(course=exam.group.course).count()
 
-        # Check existing exams in the same time slot
+        # Check existing exams in the same time slot — scoped to this exam's
+        # own location. Unscoped, this both pulled in unrelated exams from
+        # every other location and checked capacity against the WHOLE
+        # SYSTEM's room capacity below instead of just this location's.
         existing_slot_exams = Exam.objects.filter(
-            date=new_date, start_time=new_start_time, end_time=new_end_time
+            date=new_date,
+            start_time=new_start_time,
+            end_time=new_end_time,
+            group__course__department__location=location,
         ).exclude(id=exam_id)
 
         # Calculate total students that would need accommodation in this slot
@@ -1284,13 +1296,13 @@ def reschedule_exam(exam_id, new_date, slot=None):
 
         for other_exam in existing_slot_exams:
             other_exam_students = Enrollment.objects.filter(
-                course=other_exam.course
+                course=other_exam.group.course
             ).count()
             other_exams_students += other_exam_students
             total_students_needed += other_exam_students
 
-        # Check available room capacity
-        total_room_capacity = get_total_room_capacity()
+        # Check available room capacity (this location only)
+        total_room_capacity = get_total_room_capacity(location_id=location.id)
 
         if total_students_needed > total_room_capacity:
             raise ValueError(
@@ -1304,14 +1316,14 @@ def reschedule_exam(exam_id, new_date, slot=None):
         # Ensure courses scheduled together don't share students
         if existing_slot_exams:
             exam_students = set(
-                Enrollment.objects.filter(course=exam.course).values_list(
+                Enrollment.objects.filter(course=exam.group.course).values_list(
                     "student_id", flat=True
                 )
             )
 
             for other_exam in existing_slot_exams:
                 other_students = set(
-                    Enrollment.objects.filter(course=other_exam.course).values_list(
+                    Enrollment.objects.filter(course=other_exam.group.course).values_list(
                         "student_id", flat=True
                     )
                 )
@@ -1321,7 +1333,7 @@ def reschedule_exam(exam_id, new_date, slot=None):
                     common_count = len(common_students)
                     raise ValueError(
                         f"Course compatibility conflict: {common_count} student(s) are enrolled in both "
-                        f"'{exam.course.name}' and '{other_exam.course.name}'. "
+                        f"'{exam.group.course.title}' and '{other_exam.group.course.title}'. "
                         f"These courses cannot be scheduled in the same time slot."
                     )
 
@@ -1334,12 +1346,13 @@ def reschedule_exam(exam_id, new_date, slot=None):
 
             for slot_exam in all_slot_exams:
                 student_count = Enrollment.objects.filter(
-                    course=slot_exam.course
+                    course=slot_exam.group.course
                 ).count()
                 room_requirements.append(student_count)
 
-            # Check if we can fit all exams in available rooms
-            rooms = list(Room.objects.order_by("-capacity"))
+            # Check if we can fit all exams in available rooms (this
+            # location only — was every room system-wide).
+            rooms = list(Room.objects.filter(location=location).order_by("-capacity"))
             if not can_accommodate_exams(room_requirements, rooms):
                 raise ValueError(
                     f"Cannot allocate rooms efficiently for all exams in this slot. "
@@ -1353,10 +1366,17 @@ def reschedule_exam(exam_id, new_date, slot=None):
         exam.save()
 
         # 8. REALLOCATE ROOMS FOR THIS TIME SLOT
-        # Get all exams in the new time slot (including the rescheduled one)
+        # Get all exams in the new time slot (including the rescheduled one),
+        # scoped to this location — was every exam system-wide sharing this
+        # date/time, so rescheduling one exam at one campus was clearing
+        # room assignments (room=None) for every student at every OTHER
+        # campus sharing that date/time too.
         slot_exams = list(
             Exam.objects.filter(
-                date=new_date, start_time=new_start_time, end_time=new_end_time
+                date=new_date,
+                start_time=new_start_time,
+                end_time=new_end_time,
+                group__course__department__location=location,
             )
         )
 
@@ -1372,6 +1392,7 @@ def reschedule_exam(exam_id, new_date, slot=None):
             )
             success = allocate_shared_rooms_updated(
                 slot_student_exams,
+                location=location,
                 exam_date=new_date,
                 start_time=new_start_time,
                 end_time=new_end_time,
@@ -1511,7 +1532,7 @@ def check_reschedule_feasibility(exam_id, new_date, slot_name):
         _, new_start_time, new_end_time = slot_match
 
         # Check student conflicts
-        enrolled_students = Enrollment.objects.filter(course=exam.course)
+        enrolled_students = Enrollment.objects.filter(course=exam.group.course)
         student_conflicts = 0
 
         for enrollment in enrolled_students:
@@ -1525,19 +1546,23 @@ def check_reschedule_feasibility(exam_id, new_date, slot_name):
         if student_conflicts > 0:
             conflicts.append(f"{student_conflicts} student conflicts")
 
-        # Check room capacity
-        exam_students = Enrollment.objects.filter(course=exam.course).count()
+        # Check room capacity (scoped to this exam's own location)
+        location = exam.group.course.department.location
+        exam_students = Enrollment.objects.filter(course=exam.group.course).count()
         existing_slot_exams = Exam.objects.filter(
-            date=new_date, start_time=new_start_time, end_time=new_end_time
+            date=new_date,
+            start_time=new_start_time,
+            end_time=new_end_time,
+            group__course__department__location=location,
         ).exclude(id=exam_id)
 
         total_students = exam_students
         for other_exam in existing_slot_exams:
             total_students += Enrollment.objects.filter(
-                course=other_exam.course
+                course=other_exam.group.course
             ).count()
 
-        total_capacity = get_total_room_capacity()
+        total_capacity = get_total_room_capacity(location_id=location.id)
         if total_students > total_capacity:
             conflicts.append(
                 f"Insufficient capacity ({total_students} needed, {total_capacity} available)"
@@ -1555,7 +1580,7 @@ def get_unaccommodated_students():
     """
     # Students without a room assignment
     unaccommodated = StudentExam.objects.filter(room__isnull=True).select_related(
-        "student", "exam__course"
+        "student", "exam__group__course"
     )
 
     result = []
@@ -1563,7 +1588,7 @@ def get_unaccommodated_students():
         result.append(
             {
                 "student": student_exam.student,
-                "course": student_exam.exam.course,
+                "course": student_exam.exam.group.course,
                 "exam_date": student_exam.exam.date,
                 "exam_slot": (student_exam.exam.start_time, student_exam.exam.end_time),
             }
@@ -1648,12 +1673,12 @@ def verify_exam_schedule():
             for exam2 in slot_exams[i + 1 :]:
                 # Check if these exams share any students
                 students1 = set(
-                    Enrollment.objects.filter(course=exam1.course).values_list(
+                    Enrollment.objects.filter(course=exam1.group.course).values_list(
                         "student_id", flat=True
                     )
                 )
                 students2 = set(
-                    Enrollment.objects.filter(course=exam2.course).values_list(
+                    Enrollment.objects.filter(course=exam2.group.course).values_list(
                         "student_id", flat=True
                     )
                 )
@@ -1663,8 +1688,8 @@ def verify_exam_schedule():
                     conflicts.append(
                         {
                             "type": "student_exam_conflict",
-                            "course1": exam1.course.id,
-                            "course2": exam2.course.id,
+                            "course1": exam1.group.course.id,
+                            "course2": exam2.group.course.id,
                             "common_students": list(common_students),
                             "slot": slot,
                         }
@@ -1804,13 +1829,30 @@ def schedule_unscheduled_group(course_id, group_id):
         return False
 
 def allocate_shared_rooms_updated(student_exams, location=None, exam_date=None, start_time=None, end_time=None):
-   
+
     if not student_exams:
         return True
-     
+
     if location is None:
         location = student_exams[0].exam.group.course.department.location
-    
+
+    # Defensive: only ever allocate rooms to students whose course is
+    # actually at `location` — callers have historically forgotten to scope
+    # their query by location before passing student_exams in here (fixed
+    # at several call sites, but this guards against the next one). Uses
+    # department_id (a plain column already present via select_related on
+    # every current caller) rather than traversing .department.location, so
+    # this can't introduce N+1 queries.
+    valid_department_ids = set(
+        Department.objects.filter(location=location).values_list("id", flat=True)
+    )
+    student_exams = [
+        se for se in student_exams
+        if se.exam.group.course.department_id in valid_department_ids
+    ]
+    if not student_exams:
+        return True
+
     rooms = list(Room.objects.filter(location=location).order_by("-capacity"))
     if not rooms:
         raise Exception("No rooms available for allocation.")
