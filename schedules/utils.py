@@ -2083,7 +2083,7 @@ def verify_room_capacity():
 
 
 
-def allocate_shared_rooms(location_id, current_step=None, total_steps=None, progress_callback=None, errors=None):
+def allocate_shared_rooms(location_id, current_step=None, total_steps=None, progress_callback=None, errors=None, master_timetable=None):
     """
     Allocates rooms using strict equal-split (half-half) seating.
 
@@ -2115,14 +2115,31 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
 
         Next room gets:  Exam 1 (5 remaining), Exam 2 (20 remaining)
         Equal share = floor(room_capacity / 2) each, capped at what's left.
+
+    `master_timetable`, when given, scopes both the "who still needs a
+    room" query AND the "how much of this room is already occupied" query
+    to that one timetable's own exams (via the MasterTimetableExam M2M —
+    Exam.master_timetable is NULL for manually-scheduled exams so the
+    direct FK can't be used). Unscoped, every DRAFT timetable ever
+    generated for a location competed for the exact same physical rooms as
+    every other one — regenerating a timetable 5 times during testing left
+    5 drafts' worth of "demand" stacked on the same rooms, making later
+    runs report huge numbers of unaccommodated students while rooms sat
+    genuinely free because their capacity was recorded as already consumed
+    by an abandoned earlier draft that will never be published.
     """
+
+    def _scope_by_timetable(qs):
+        if master_timetable is not None:
+            return qs.filter(exam__mastertimetableexam__master_timetable=master_timetable)
+        return qs
 
     # ── 1. Find slots needing allocation ──────────────────────────────────────
     slots_to_allocate = list(
-        StudentExam.objects.filter(
+        _scope_by_timetable(StudentExam.objects.filter(
             room__isnull=True,
             exam__group__course__department__location_id=location_id,
-        )
+        ))
         .values_list("exam__date", "exam__start_time", "exam__end_time")
         .distinct()
     )
@@ -2135,10 +2152,10 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
     if not Room.objects.filter(location_id=location_id).exists():
         logger.error(f"No rooms found for location {location_id}")
         return list(
-            StudentExam.objects.filter(
+            _scope_by_timetable(StudentExam.objects.filter(
                 room__isnull=True,
                 exam__group__course__department__location_id=location_id,
-            ).values_list("student", flat=True)
+            )).values_list("student", flat=True)
         )
 
     unaccommodated_students = []
@@ -2152,24 +2169,24 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
         rooms = list(get_available_rooms(location_id, date, start, end))
         if not rooms:
             unaccommodated_students.extend(
-                StudentExam.objects.filter(
+                _scope_by_timetable(StudentExam.objects.filter(
                     room__isnull=True,
                     exam__group__course__department__location_id=location_id,
                     exam__date=date,
                     exam__start_time=start,
                     exam__end_time=end,
-                ).values_list("student", flat=True)
+                )).values_list("student", flat=True)
             )
             continue
 
         student_exams_qs = (
-            StudentExam.objects.filter(
+            _scope_by_timetable(StudentExam.objects.filter(
                 room__isnull=True,
                 exam__group__course__department__location_id=location_id,
                 exam__date=date,
                 exam__start_time=start,
                 exam__end_time=end,
-            )
+            ))
             .select_related("exam", "student")
         )
 
@@ -2185,15 +2202,19 @@ def allocate_shared_rooms(location_id, current_step=None, total_steps=None, prog
 
         with transaction.atomic():
 
-            # Account for students already seated (re-run safety)
+            # Account for students already seated (re-run safety). Scoped to
+            # this master_timetable so an abandoned draft's phantom seat
+            # assignments (e.g. from a prior test-generation run that was
+            # never published) don't count as "occupying" real capacity
+            # against the timetable actually being generated now.
             room_available = {}
             for room in rooms:
-                already = StudentExam.objects.filter(
+                already = _scope_by_timetable(StudentExam.objects.filter(
                     room=room,
                     exam__date=date,
                     exam__start_time=start,
                     exam__end_time=end,
-                ).count()
+                )).count()
                 room_available[room.id] = room.capacity - already
 
             # ── 4. Fill rooms largest-first, equal split per exam ─────────────
@@ -2677,7 +2698,7 @@ def generate_exam_schedule(
             # Step 6 — room allocation
             progress_callback(6, TOTAL_STEPS, f"Allocating rooms ...")
             try:
-                unaccommodated = allocate_shared_rooms(location, current_step=6, total_steps=TOTAL_STEPS, progress_callback= progress_callback, errors=errors)
+                unaccommodated = allocate_shared_rooms(location, current_step=6, total_steps=TOTAL_STEPS, progress_callback= progress_callback, errors=errors, master_timetable=master_timetable)
             except Exception as exc:
                 logger.error(f"Room allocation error: {exc}", exc_info=True)
                 errors.append(f"Room allocation error: {exc}")
